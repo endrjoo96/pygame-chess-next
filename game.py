@@ -1,9 +1,13 @@
 import os
+import time
+
 import pygame
 from pygame.locals import *
 from piece import Piece
 from chess import Chess
 from utils import Utils
+
+from threading import Thread
 
 class Game:
     def __init__(self):
@@ -24,6 +28,10 @@ class Game:
 
         # create game window
         self.screen = pygame.display.set_mode([screen_width, screen_height])
+        # background color
+        bg_color = (255, 255, 255)
+        # set background color
+        self.screen.fill(bg_color)
 
         # title of window
         window_title = "Chess"
@@ -41,7 +49,6 @@ class Game:
         # set game clock
         self.clock = pygame.time.Clock()
 
-
     def start_game(self):
         """Function containing main game loop""" 
         # chess board offset
@@ -51,7 +58,7 @@ class Game:
         
         # get location of chess board image
         board_src = os.path.join(self.resources, "board.png")
-        # load the chess board image
+        # load the chess board image 
         self.board_img = pygame.image.load(board_src).convert()
 
         # get the width of a chess board square
@@ -86,12 +93,8 @@ class Game:
                 elif key_pressed[K_SPACE]:
                     self.chess.reset()
             
-            winner = self.chess.winner
-
             if self.menu_showed == False:
                 self.menu()
-            elif len(winner) > 0:
-                self.declare_winner(winner)
             else:
                 self.game()
             
@@ -99,7 +102,6 @@ class Game:
 
             # for testing mechanics of the game
             #self.game()
-            #self.declare_winner(winner)
 
             # update display
             pygame.display.flip()
@@ -109,13 +111,8 @@ class Game:
         # call method to stop pygame
         pygame.quit()
     
-
     def menu(self):
         """method to show game menu"""
-        # background color
-        bg_color = (255, 255, 255)
-        # set background color
-        self.screen.fill(bg_color)
         # black color
         black_color = (0, 0, 0)
         # coordinates for "Play" button
@@ -155,18 +152,16 @@ class Game:
         if util.left_click_event():
             # call function to get mouse event
             mouse_coords = util.get_mouse_event()
-
             # check if "Play" button was clicked
             if start_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
                 # change button behavior as it is hovered
                 pygame.draw.rect(self.screen, white_color, start_btn, 3)
-                
+        
                 # change menu flag
                 self.menu_showed = True
-            # check if enter or return key was pressed
-            elif key_pressed[K_RETURN]:
-                self.menu_showed = True
-
+        # check if enter or return key was pressed
+        elif key_pressed[K_RETURN]:
+            self.menu_showed = True
 
     def game(self):
         # background color
@@ -202,7 +197,7 @@ class Game:
         small_font = pygame.font.SysFont("comicsansms", 20)
 
         # text to show winner
-        text = winner + " wins!" 
+        text = winner + " wins!"
         winner_text = big_font.render(text, False, black_color)
 
         # create text to be shown on the reset button
@@ -210,18 +205,18 @@ class Game:
         reset_btn_label = small_font.render(reset_label, True, white_color)
 
         # show winner text
-        self.screen.blit(winner_text, 
-                      ((self.screen.get_width() - winner_text.get_width()) // 2, 
+        self.screen.blit(winner_text,
+                      ((self.screen.get_width() - winner_text.get_width()) // 2,
                       150))
-        
+
         # show text on the reset button
-        self.screen.blit(reset_btn_label, 
-                      ((reset_btn.x + (reset_btn.width - reset_btn_label.get_width()) // 2, 
+        self.screen.blit(reset_btn_label,
+                      ((reset_btn.x + (reset_btn.width - reset_btn_label.get_width()) // 2,
                       reset_btn.y + (reset_btn.height - reset_btn_label.get_height()) // 2)))
 
         # get pressed keys
         key_pressed = pygame.key.get_pressed()
-        # 
+        #
         util = Utils()
 
         # check if left mouse button was clicked
@@ -233,7 +228,7 @@ class Game:
             if reset_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
                 # change button behavior as it is hovered
                 pygame.draw.rect(self.screen, white_color, reset_btn, 3)
-                
+
                 # change menu flag
                 self.menu_showed = False
             # check if enter or return key was pressed
