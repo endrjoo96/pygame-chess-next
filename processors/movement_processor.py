@@ -1,4 +1,4 @@
-from constants.chess_pieces import PIECE_TYPE, PIECE_COLOR, PIECE
+from constants.chess_pieces import PIECE_TYPE, COLOR, PIECE
 from constants.pos import xy_to_id
 
 
@@ -16,7 +16,7 @@ def process_possible_basic_moves(piece: PIECE, xy_coord, pieces_locations):
             # convert list index to dictionary key
             # calculate moves for white pawn
             color_var = 1
-            if piece.get_color() == PIECE_COLOR.BLACK:
+            if piece.get_color() == COLOR.BLACK:
                 color_var = -1
             if y_coord + (1 * color_var) < 8:
                 # get row in front of black pawn
@@ -25,8 +25,8 @@ def process_possible_basic_moves(piece: PIECE, xy_coord, pieces_locations):
                 if not front_piece.exists():
                     possible_positions_to_move.append([x_coord, y_coord + (1 * color_var)])
                     # black pawns can move two positions ahead for first move
-                    if (piece.get_color() == PIECE_COLOR.BLACK and y_coord == 6) or (
-                            piece.get_color() == PIECE_COLOR.WHITE and y_coord == 1):
+                    if (piece.get_color() == COLOR.BLACK and y_coord == 6) or (
+                            piece.get_color() == COLOR.WHITE and y_coord == 1):
                         possible_positions_to_move.append([x_coord, y_coord + (2 * color_var)])
                 __add_diag_hit_moves(possible_positions_to_move, piece.get_color(), xy_coord, pieces_locations)
 
@@ -223,7 +223,7 @@ def __add_linear_moves(positions, xy_coord, pieces_locations):
 def __add_diag_hit_moves(possible_positions_to_move, color, xy_coord, pieces_locations):
     x_coord, y_coord = xy_coord
     color_var = 1
-    if color == PIECE_COLOR.BLACK: color_var = -1
+    if color == COLOR.BLACK: color_var = -1
 
     # diagonal to the left
     if x_coord - 1 >= 0 and y_coord + color_var < 8:

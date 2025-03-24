@@ -1,19 +1,15 @@
 import os
-import time
-from html.parser import charref
 
 import pygame
 from pygame.locals import *
-from piece import Piece
+
 from chess import Chess
 from utils import Utils
 
-from threading import Thread
-
 
 class Game:
-    board_offset_x = 40
-    board_offset_y = 150
+    board_offset_x = 80
+    board_offset_y = 300
 
     def __init__(self):
         # screen dimensions
