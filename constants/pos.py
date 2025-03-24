@@ -1,4 +1,7 @@
-class POS:
+from enum import Enum
+
+
+class POS(Enum):
     A1 = 1
     B1 = 2
     C1 = 3
@@ -65,11 +68,19 @@ class POS:
     H8 = 64
 
 
-def notation_to_xy(POS):
-    x_coord = ((POS - 1) % 8)
-    y_coord = int((POS - x_coord) / 8)
+def notation_to_xy(pos: POS):
+    x_coord = ((pos.value - 1) % 8)
+    y_coord = int((pos.value - x_coord) / 8)
+    return [x_coord, y_coord]
+
+def id_to_xy(pos: int):
+    x_coord = ((pos - 1) % 8)
+    y_coord = int((pos - x_coord) / 8)
     return [x_coord, y_coord]
 
 
+def xy_to_id(x_coord, y_coord):
+    return (y_coord * 8) + x_coord + 1
+
 def xy_to_notation(x_coord, y_coord):
-    return ((y_coord) * 8) + x_coord + 1
+    return POS(xy_to_id(x_coord, y_coord))

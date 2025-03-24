@@ -1,5 +1,6 @@
 import os
 import time
+from html.parser import charref
 
 import pygame
 from pygame.locals import *
@@ -9,18 +10,23 @@ from utils import Utils
 
 from threading import Thread
 
+
 class Game:
+    board_offset_x = 40
+    board_offset_y = 150
+
     def __init__(self):
         # screen dimensions
-        screen_width = 640
-        screen_height = 750
+
+        screen_width = 640 + (self.board_offset_x * 2)
+        screen_height = 640 + (self.board_offset_y * 2)
         # flag to know if game menu has been showed
         self.menu_showed = False
         # flag to set game loop
         self.running = True
         # base folder for program resources
         self.resources = "res"
- 
+
         # initialize game window
         pygame.display.init()
         # initialize font for text
@@ -50,12 +56,10 @@ class Game:
         self.clock = pygame.time.Clock()
 
     def start_game(self):
-        """Function containing main game loop""" 
+        """Function containing main game loop"""
         # chess board offset
-        self.board_offset_x = 0
-        self.board_offset_y = 50
         self.board_dimensions = (self.board_offset_x, self.board_offset_y)
-        
+
         # get location of chess board image
         board_src = os.path.join(self.resources, "board.png")
         # load the chess board image 
@@ -71,17 +75,18 @@ class Game:
         for x in range(0, 8):
             self.board_locations.append([])
             for y in range(0, 8):
-                self.board_locations[x].append([self.board_offset_x+(x*square_length), 
-                                                self.board_offset_y+(y*square_length)])
+                self.board_locations[x].append([self.board_offset_x + (x * square_length),
+                                                self.board_offset_y + (y * square_length)])
+            self.board_locations[x].reverse()
 
         # get location of image containing the chess pieces
         pieces_src = os.path.join(self.resources, "pieces.png")
         # create class object that handles the gameplay logic
-        self.chess = Chess(self.screen, pieces_src, self.board_locations, square_length)
+        self.chess = Chess(self.screen, pieces_src, self.board_locations, square_length, self)
 
         # game loop
         while self.running:
-            self.clock.tick(5)
+            self.clock.tick(20)
             # poll events
             for event in pygame.event.get():
                 # get keys pressed
@@ -92,16 +97,14 @@ class Game:
                     self.running = False
                 elif key_pressed[K_SPACE]:
                     self.chess.reset()
-            
-            if self.menu_showed == False:
+
+            if not self.menu_showed:
                 self.menu()
             else:
                 self.game()
-            
-            
 
             # for testing mechanics of the game
-            #self.game()
+            # self.game()
 
             # update display
             pygame.display.flip()
@@ -110,7 +113,7 @@ class Game:
 
         # call method to stop pygame
         pygame.quit()
-    
+
     def menu(self):
         """method to show game menu"""
         # black color
@@ -129,19 +132,19 @@ class Game:
         welcome_text = big_font.render("Chess", False, black_color)
         created_by = small_font.render("Created by Sheriff", True, black_color)
         start_btn_label = small_font.render("Play", True, white_color)
-        
+
         # show welcome text
-        self.screen.blit(welcome_text, 
-                      ((self.screen.get_width() - welcome_text.get_width()) // 2, 
-                      150))
+        self.screen.blit(welcome_text,
+                         ((self.screen.get_width() - welcome_text.get_width()) // 2,
+                          150))
         # show credit text
-        self.screen.blit(created_by, 
-                      ((self.screen.get_width() - created_by.get_width()) // 2, 
-                      self.screen.get_height() - created_by.get_height() - 100))
+        self.screen.blit(created_by,
+                         ((self.screen.get_width() - created_by.get_width()) // 2,
+                          self.screen.get_height() - created_by.get_height() - 100))
         # show text on the Play button
-        self.screen.blit(start_btn_label, 
-                      ((start_btn.x + (start_btn.width - start_btn_label.get_width()) // 2, 
-                      start_btn.y + (start_btn.height - start_btn_label.get_height()) // 2)))
+        self.screen.blit(start_btn_label,
+                         ((start_btn.x + (start_btn.width - start_btn_label.get_width()) // 2,
+                           start_btn.y + (start_btn.height - start_btn_label.get_height()) // 2)))
 
         # get pressed keys
         key_pressed = pygame.key.get_pressed()
@@ -156,7 +159,7 @@ class Game:
             if start_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
                 # change button behavior as it is hovered
                 pygame.draw.rect(self.screen, white_color, start_btn, 3)
-        
+
                 # change menu flag
                 self.menu_showed = True
         # check if enter or return key was pressed
@@ -165,18 +168,20 @@ class Game:
 
     def game(self):
         # background color
-        color = (0,0,0)
+        color = (0, 0, 0)
         # set backgound color
         self.screen.fill(color)
-        
+
         # show the chess board
         self.screen.blit(self.board_img, self.board_dimensions)
 
         # call self.chess. something
-        self.chess.play_turn()
+        winner = self.chess.play_turn()
         # draw pieces on the chess board
         self.chess.draw_pieces()
 
+        if winner:
+            self.declare_winner(winner)
 
     def declare_winner(self, winner):
         # background color
@@ -197,7 +202,7 @@ class Game:
         small_font = pygame.font.SysFont("comicsansms", 20)
 
         # text to show winner
-        text = winner + " wins!"
+        text = str(winner).capitalize() + " wins!"
         winner_text = big_font.render(text, False, black_color)
 
         # create text to be shown on the reset button
@@ -206,13 +211,13 @@ class Game:
 
         # show winner text
         self.screen.blit(winner_text,
-                      ((self.screen.get_width() - winner_text.get_width()) // 2,
-                      150))
+                         ((self.screen.get_width() - winner_text.get_width()) // 2,
+                          150))
 
         # show text on the reset button
         self.screen.blit(reset_btn_label,
-                      ((reset_btn.x + (reset_btn.width - reset_btn_label.get_width()) // 2,
-                      reset_btn.y + (reset_btn.height - reset_btn_label.get_height()) // 2)))
+                         ((reset_btn.x + (reset_btn.width - reset_btn_label.get_width()) // 2,
+                           reset_btn.y + (reset_btn.height - reset_btn_label.get_height()) // 2)))
 
         # get pressed keys
         key_pressed = pygame.key.get_pressed()
@@ -236,5 +241,4 @@ class Game:
                 self.menu_showed = False
             # reset game
             self.chess.reset()
-            # clear winner
-            self.chess.winner = ""
+            self.start_game()

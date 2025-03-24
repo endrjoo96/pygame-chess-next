@@ -1,13 +1,15 @@
+from enum import Enum
+
 from constants.pos import POS
 
 
-class PIECE_COLOR:
+class PIECE_COLOR(Enum):
     BLACK = "black"
     WHITE = "white"
     EMPTY = ""
 
 
-class PIECE_TYPE:
+class PIECE_TYPE(Enum):
     PAWN = "pawn"
     KNIGHT = "knight"
     BISHOP = "bishop"
@@ -17,22 +19,26 @@ class PIECE_TYPE:
     EMPTY = ""
 
 
-class PIECE(PIECE_COLOR, PIECE_TYPE):
-    __color, __piece = "", ""
+class PIECE:
+    __color: PIECE_COLOR
+    __type: PIECE_TYPE
 
-    def __init__(self, color, piece):
-        self.__color, self.__piece = color, piece
-
-    def __init__(self):
-        pass
+    def __init__(self, color: PIECE_COLOR = PIECE_COLOR.EMPTY, piece_type: PIECE_TYPE = PIECE_TYPE.EMPTY):
+        self.__color, self.__type = color, piece_type
 
     def full_name(self):
-        if not self.__color and not self.__piece:
+        if not self.exists():
             return ""
-        return str(self.__color + "_" + self.__piece)
+        return str(self.__color.value + "_" + self.__type.value)
 
-    def is_empty(self):
-        return not self.full_name()
+    def get_type(self):
+        return self.__type
+
+    def get_color(self):
+        return self.__color
+
+    def exists(self):
+        return self.__type != PIECE_TYPE.EMPTY or self.__color != PIECE_COLOR.EMPTY
 
 
 pieces_starting_positions_map = {
