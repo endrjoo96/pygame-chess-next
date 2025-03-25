@@ -1,13 +1,12 @@
 from typing import List
 
-from gamecontext import GameContext
+from utils.gamecontext import GameContext
 from models.chess_pieces import Piece, COLOR, PIECE_TYPE
 
 
 class CaptureProcessor:
-    __captured_black = [Piece(COLOR.WHITE, PIECE_TYPE.BISHOP), Piece(COLOR.WHITE, PIECE_TYPE.PAWN)]
-    __captured_white = [Piece(COLOR.BLACK, PIECE_TYPE.ROOK), Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
-                        Piece(COLOR.WHITE, PIECE_TYPE.BISHOP)]
+    __captured_black = []
+    __captured_white = []
     __captured_king = None
     def capture_piece(self, piece: Piece):
         if piece.get_type() == PIECE_TYPE.KING:
@@ -25,17 +24,17 @@ class CaptureProcessor:
 
     def __recalculate_clickable_coordinates(self):
         context = GameContext()
-        self.__calculate_coordinates_for(context.captured_white_coordinates, context.captured_white_starting_point)
-        self.__calculate_coordinates_for(context.captured_black_coordinates, context.captured_black_starting_point)
+        self.__calculate_coordinates_for(context.captured_white_coordinates, context.captured_white_starting_point, self.__captured_white)
+        self.__calculate_coordinates_for(context.captured_black_coordinates, context.captured_black_starting_point, self.__captured_black)
 
-    def __calculate_coordinates_for(self, captured_coordinates_array, captured_coordinates_starting_point):
+    def __calculate_coordinates_for(self, captured_coordinates_array, captured_coordinates_starting_point, captured_list):
         context = GameContext()
         bottom_row = False
         column = 0
         captured_coordinates_array.clear()
         captured_coordinates_array.append([])
         captured_coordinates_array.append([])
-        for piece in self.__captured_white:
+        for piece in captured_list:
             captured_coordinates_array[int(bottom_row)].append([
                 captured_coordinates_starting_point[0] + column * context.piece_cell_thumbnail_width,
                 captured_coordinates_starting_point[1] + int(bottom_row) * context.piece_cell_thumbnail_height

@@ -1,6 +1,6 @@
 import pygame
 
-from gamecontext import GameContext
+from utils.gamecontext import GameContext
 
 
 class PieceSprite(pygame.sprite.Sprite):

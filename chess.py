@@ -1,9 +1,11 @@
 import pygame
 
-from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR
-from constants.predefined_colors import PREDEFINED_COLOR
 from constants.pos import id_to_xy, xy_to_id, POS
-from gamecontext import GameContext
+from constants.predefined_colors import PREDEFINED_COLOR
+from processors.cards_processor import CardsProcessor
+from utils.gamecontext import GameContext
+from models import enchantments
+from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR
 from piecesprite import PieceSprite
 from processors import input_processor
 from processors.capturing_piece_processor import CaptureProcessor
@@ -30,6 +32,7 @@ class Chess(object):
 
         # list containing captured pieces
         self.capture_processor = CaptureProcessor()
+        self.cards_processor = CardsProcessor()
 
         self.reset()
 
@@ -44,11 +47,10 @@ class Chess(object):
             # [piece name, currently selected]
             self.pieces_locations[i] = Piece()
 
-        for piece, positions_list in pieces_starting_positions_map.items():
-            for position in positions_list:
+        for position, piece in pieces_starting_positions_map.items():
                 self.pieces_locations[position.value] = piece
 
-    #
+    once = True
     def play_turn(self):
         # white color
         white_color = (255, 255, 255)
@@ -60,6 +62,12 @@ class Chess(object):
         self.screen.blit(rendered_text, ((self.screen.get_width() - rendered_text.get_width()) // 2,
                                          self.context.board_offset_y - rendered_text.get_height() - 5))
         self.print_annotations()
+        if self.once:
+            p: Piece = self.pieces_locations[POS.D2.value]
+            p.set_enchantment(enchantments.available_cards[0])
+            p.set_enchantment(enchantments.available_cards[1])
+            self.once = False
+
         self.process_player_turn()
 
         return self.capture_processor.is_king_captured()
@@ -122,6 +130,16 @@ class Chess(object):
                             # capture piece
                             self.capture_piece(position)
 
+        # TODO will be necessary for special ability cards, not for usual gameplay
+        # else:
+        #     color, index = input_processor.get_clicked_captured_piece_index()
+        #     if color == COLOR.WHITE:
+        #         print("clicked {} captured by {}".format(self.capture_processor.get_captured_white()[index].full_name(),
+        #                                                  color.value))
+        #     if color == COLOR.BLACK:
+        #         print("clicked {} captured by {}".format(self.capture_processor.get_captured_black()[index].full_name(),
+        #                                                  color.value))
+
     def capture_piece(self, destination):
         p: Piece = self.pieces_locations[destination]
         self.capture_processor.capture_piece(p)
@@ -180,13 +198,17 @@ class Chess(object):
         row = 0
 
         if not (self.context.captured_white_starting_point and self.context.captured_black_starting_point):
-            self.context.captured_white_starting_point = (self.context.board_offset_x, 0)
-            self.context.captured_black_starting_point = (self.context.board_offset_x, self.context.board_offset_y * 2 + (self.context.square_length * 8) - (2 * self.context.piece_cell_thumbnail_height))
+            self.context.captured_white_starting_point = (self.context.board_offset_x,
+                                                          self.context.board_offset_y * 2 + (
+                                                                      self.context.square_length * 8) - (
+                                                                      2 * self.context.piece_cell_thumbnail_height))
+            self.context.captured_black_starting_point = (self.context.board_offset_x, 0)
 
         for piece in self.capture_processor.get_captured_black():
             self.chess_pieces.draw(self.screen, piece.full_name(), (
-                self.context.captured_white_starting_point[0] + (iterator * int(self.context.piece_cell_thumbnail_width)),
-                self.context.captured_white_starting_point[1] + row * self.context.piece_cell_thumbnail_height
+                self.context.captured_black_starting_point[0] + (
+                            iterator * int(self.context.piece_cell_thumbnail_width)),
+                self.context.captured_black_starting_point[1] + row * self.context.piece_cell_thumbnail_height
             ), True)
             if row == 1:
                 row = 0
@@ -198,8 +220,9 @@ class Chess(object):
         row = 0
         for piece in self.capture_processor.get_captured_white():
             self.chess_pieces.draw(self.screen, piece.full_name(), (
-                self.context.captured_black_starting_point[0] + (iterator * int(self.context.piece_cell_thumbnail_width)),
-                self.context.captured_black_starting_point[1] + (row * self.context.piece_cell_thumbnail_height)
+                self.context.captured_white_starting_point[0] + (
+                            iterator * int(self.context.piece_cell_thumbnail_width)),
+                self.context.captured_white_starting_point[1] + (row * self.context.piece_cell_thumbnail_height)
             ), True)
             if row == 1:
                 row = 0

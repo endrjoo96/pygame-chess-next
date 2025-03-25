@@ -27,7 +27,10 @@ def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations):
                     # black pawns can move two positions ahead for first move
                     if (piece.get_color() == COLOR.BLACK and y_coord == 6) or (
                             piece.get_color() == COLOR.WHITE and y_coord == 1):
-                        possible_positions_to_move.append([x_coord, y_coord + (2 * color_var)])
+                        y = y_coord + (2 * color_var)
+                        front_piece: Piece = pieces_locations[xy_to_id(x_coord, y)]
+                        if not front_piece.exists():
+                            possible_positions_to_move.append([x_coord, y_coord + (2 * color_var)])
                 __add_diag_hit_moves(possible_positions_to_move, piece.get_color(), xy_coord, pieces_locations)
 
         # calculate moves for rook
@@ -98,6 +101,10 @@ def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations):
             __add_diagonal_moves(possible_positions_to_move, xy_coord, pieces_locations)
             # find linear moves
             __add_linear_moves(possible_positions_to_move, xy_coord, pieces_locations)
+
+    additional_behaviors = piece.get_enchantments_to_alter_behavior()
+    for behavior in additional_behaviors:
+        behavior(possible_positions_to_move, xy_coord, piece.get_color(), pieces_locations)
 
     # list of positions to be removed
     to_remove = []

@@ -35,3 +35,9 @@ class GameContext(metaclass=Singleton):
     cards_coordinates = []
     captured_white_coordinates = []
     captured_black_coordinates = []
+
+    white_cards_starting_point = ()
+    black_cards_starting_point = ()
+
+    white_cards_coordinates = []
+    black_cards_coordinates = []

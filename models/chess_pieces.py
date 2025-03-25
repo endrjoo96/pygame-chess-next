@@ -1,33 +1,16 @@
-from enum import Enum
 from typing import List
 
+from constants.piece_color import COLOR
+from constants.piece_type import PIECE_TYPE
 from constants.pos import POS
 from models.enchantments import Enchantment
 
 
-class COLOR(Enum):
-    BLACK = "black"
-    WHITE = "white"
-    EMPTY = ""
-
-
-class PIECE_TYPE(Enum):
-    PAWN = "pawn"
-    KNIGHT = "knight"
-    BISHOP = "bishop"
-    ROOK = "rook"
-    KING = "king"
-    QUEEN = "queen"
-    EMPTY = ""
-
-
 class Piece:
-    __color: COLOR
-    __type: PIECE_TYPE
-    __enchantments: List[Enchantment] = []
-
     def __init__(self, color: COLOR = COLOR.EMPTY, piece_type: PIECE_TYPE = PIECE_TYPE.EMPTY):
-        self.__color, self.__type = color, piece_type
+        self.__color: COLOR = color
+        self.__type: PIECE_TYPE = piece_type
+        self.__enchantments: List[Enchantment] = []
 
     def full_name(self) -> str:
         if not self.exists():
@@ -44,22 +27,52 @@ class Piece:
         return self.__type != PIECE_TYPE.EMPTY or self.__color != COLOR.EMPTY
 
     def set_enchantment(self, enchantment: Enchantment):
-        self.__enchantments.append(enchantment)
+        if enchantment.is_mandatory():
+            self.__enchantments.insert(0, enchantment)
+        else:
+            self.__enchantments.append(enchantment)
 
-
+    def get_enchantments_to_alter_behavior(self):
+        list_of_behaviors = []
+        for enchant in self.__enchantments:
+            list_of_behaviors.append(enchant.get_behavior_to_inject())
+            if enchant.is_mandatory(): break
+        return list_of_behaviors
 
 
 pieces_starting_positions_map = {
-    Piece(COLOR.WHITE, PIECE_TYPE.PAWN): [POS.A2, POS.B2, POS.C2, POS.D2, POS.E2, POS.F2, POS.G2, POS.H2],
-    Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT): [POS.B1, POS.G1],
-    Piece(COLOR.WHITE, PIECE_TYPE.BISHOP): [POS.C1, POS.F1],
-    Piece(COLOR.WHITE, PIECE_TYPE.ROOK): [POS.A1, POS.H1],
-    Piece(COLOR.WHITE, PIECE_TYPE.KING): [POS.E1],
-    Piece(COLOR.WHITE, PIECE_TYPE.QUEEN): [POS.D1],
-    Piece(COLOR.BLACK, PIECE_TYPE.PAWN): [POS.A7, POS.B7, POS.C7, POS.D7, POS.E7, POS.F7, POS.G7, POS.H7],
-    Piece(COLOR.BLACK, PIECE_TYPE.KNIGHT): [POS.B8, POS.G8],
-    Piece(COLOR.BLACK, PIECE_TYPE.BISHOP): [POS.C8, POS.F8],
-    Piece(COLOR.BLACK, PIECE_TYPE.ROOK): [POS.A8, POS.H8],
-    Piece(COLOR.BLACK, PIECE_TYPE.KING): [POS.E8],
-    Piece(COLOR.BLACK, PIECE_TYPE.QUEEN): [POS.D8],
+    POS.A1: Piece(COLOR.WHITE, PIECE_TYPE.ROOK),
+    POS.B1: Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT),
+    POS.C1: Piece(COLOR.WHITE, PIECE_TYPE.BISHOP),
+    POS.D1: Piece(COLOR.WHITE, PIECE_TYPE.QUEEN),
+    POS.E1: Piece(COLOR.WHITE, PIECE_TYPE.KING),
+    POS.F1: Piece(COLOR.WHITE, PIECE_TYPE.BISHOP),
+    POS.G1: Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT),
+    POS.H1: Piece(COLOR.WHITE, PIECE_TYPE.ROOK),
+    POS.A2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+    POS.B2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+    POS.C2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+    POS.D2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+    POS.E2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+    POS.F2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+    POS.G2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+    POS.H2: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+
+    POS.A8: Piece(COLOR.BLACK, PIECE_TYPE.ROOK),
+    POS.B8: Piece(COLOR.BLACK, PIECE_TYPE.KNIGHT),
+    POS.C8: Piece(COLOR.BLACK, PIECE_TYPE.BISHOP),
+    POS.D8: Piece(COLOR.BLACK, PIECE_TYPE.QUEEN),
+    POS.E8: Piece(COLOR.BLACK, PIECE_TYPE.KING),
+    POS.F8: Piece(COLOR.BLACK, PIECE_TYPE.BISHOP),
+    POS.G8: Piece(COLOR.BLACK, PIECE_TYPE.KNIGHT),
+    POS.H8: Piece(COLOR.BLACK, PIECE_TYPE.ROOK),
+    POS.A7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+    POS.B7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+    POS.C7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+    POS.D7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+    POS.E7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+    POS.F7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+    POS.G7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+    POS.H7: Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+
 }

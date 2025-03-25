@@ -4,7 +4,7 @@ import pygame
 from pygame.locals import *
 
 from chess import Chess
-from gamecontext import GameContext
+from utils.gamecontext import GameContext
 from utils import utils
 
 
