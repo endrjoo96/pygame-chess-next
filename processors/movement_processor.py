@@ -1,8 +1,8 @@
-from constants.chess_pieces import PIECE_TYPE, COLOR, PIECE
+from models.chess_pieces import PIECE_TYPE, COLOR, Piece
 from constants.pos import xy_to_id
 
 
-def process_possible_basic_moves(piece: PIECE, xy_coord, pieces_locations):
+def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations):
     # list to store possible moves of the selected piece
     possible_positions_to_move = []
     # find the possible locations to put a piece
@@ -20,7 +20,7 @@ def process_possible_basic_moves(piece: PIECE, xy_coord, pieces_locations):
                 color_var = -1
             if y_coord + (1 * color_var) < 8:
                 # get row in front of black pawn
-                front_piece: PIECE = pieces_locations[xy_to_id(x_coord, y_coord + (1 * color_var))]
+                front_piece: Piece = pieces_locations[xy_to_id(x_coord, y_coord + (1 * color_var))]
                 # pawns cannot move when blocked by another piece
                 if not front_piece.exists():
                     possible_positions_to_move.append([x_coord, y_coord + (1 * color_var)])
@@ -107,7 +107,7 @@ def process_possible_basic_moves(piece: PIECE, xy_coord, pieces_locations):
         pos = xy_to_id(xy[0], xy[1])
 
         # find the pieces to remove
-        des_piece: PIECE = pieces_locations[pos]
+        des_piece: Piece = pieces_locations[pos]
         if piece.get_color() == des_piece.get_color():
             to_remove.append(xy)
 
@@ -131,7 +131,7 @@ def __add_diagonal_moves(positions, xy_coord, pieces_locations):
             break
         else:
             positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
 
@@ -145,7 +145,7 @@ def __add_diagonal_moves(positions, xy_coord, pieces_locations):
             break
         else:
             positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
 
@@ -159,7 +159,7 @@ def __add_diagonal_moves(positions, xy_coord, pieces_locations):
             break
         else:
             positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
 
@@ -173,7 +173,7 @@ def __add_diagonal_moves(positions, xy_coord, pieces_locations):
             break
         else:
             positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
 
@@ -186,7 +186,7 @@ def __add_linear_moves(positions, xy_coord, pieces_locations):
     while x > 0:
         x = x - 1
         positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
 
@@ -196,7 +196,7 @@ def __add_linear_moves(positions, xy_coord, pieces_locations):
     while x < 7:
         x = x + 1
         positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
     # reset x, y coordniate value
@@ -205,7 +205,7 @@ def __add_linear_moves(positions, xy_coord, pieces_locations):
     while y > 0:
         y = y - 1
         positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
 
@@ -215,7 +215,7 @@ def __add_linear_moves(positions, xy_coord, pieces_locations):
     while y < 7:
         y = y + 1
         positions.append([x, y])
-        p: PIECE = pieces_locations[xy_to_id(x, y)]
+        p: Piece = pieces_locations[xy_to_id(x, y)]
         if p.exists():
             break
 
@@ -231,7 +231,7 @@ def __add_diag_hit_moves(possible_positions_to_move, color, xy_coord, pieces_loc
         y = y_coord + color_var
 
         # convert list index to dictionary key
-        to_capture: PIECE = pieces_locations[xy_to_id(x, y)]
+        to_capture: Piece = pieces_locations[xy_to_id(x, y)]
 
         if to_capture.exists() and to_capture.get_color() != color:
             possible_positions_to_move.append([x, y])
@@ -242,7 +242,7 @@ def __add_diag_hit_moves(possible_positions_to_move, color, xy_coord, pieces_loc
         y = y_coord + color_var
 
         # convert list index to dictionary key
-        to_capture: PIECE = pieces_locations[xy_to_id(x, y)]
+        to_capture: Piece = pieces_locations[xy_to_id(x, y)]
 
         if to_capture.exists() and to_capture.get_color() != color:
             possible_positions_to_move.append([x, y])

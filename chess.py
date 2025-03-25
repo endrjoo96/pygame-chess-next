@@ -1,24 +1,22 @@
 import pygame
 
-from constants.chess_pieces import pieces_starting_positions_map, PIECE, COLOR, PIECE_TYPE
-from constants.colors import PREDEFINED_COLOR
+from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR, PIECE_TYPE
+from constants.predefined_colors import PREDEFINED_COLOR
 from constants.pos import id_to_xy, xy_to_id, POS
-from piece import Piece
+from gamecontext import GameContext
+from piecesprite import PieceSprite
+from processors import input_processor
+from processors.capturing_piece_processor import CaptureProcessor
 from processors.movement_processor import process_possible_basic_moves
-from utils import Utils
 
 
 class Chess(object):
-    def __init__(self, screen, pieces_src, square_coords, square_length, context):
-        self.context = context
+    def __init__(self, screen):
+        self.context = GameContext()
         # display surface
         self.screen = screen
         # create an object of class to show chess pieces on the board
-        self.chess_pieces = Piece(pieces_src, cols=6, rows=2)
-        # store coordinates of the chess board squares
-        self.drawing_coordinates = square_coords
-        # length of the side of a chess board square
-        self.square_length = square_length
+        self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
         # dictionary to keeping track of player turn
         self.current_turn = COLOR.WHITE
 
@@ -26,19 +24,15 @@ class Chess(object):
         self.selected_piece_position: int = 0
         # list containing possible moves for the selected piece
         self.moves = []
-        #
-        self.utils = Utils()
-
-        # mapping of piece names to index of list containing piece coordinates on spritesheet
-        self.pieces = pieces_starting_positions_map
 
         # field_id: PIECE
         self.pieces_locations = {}
 
         # list containing captured pieces
-        self.captured_black = [PIECE(COLOR.WHITE, PIECE_TYPE.BISHOP), PIECE(COLOR.WHITE, PIECE_TYPE.PAWN)]
-        self.captured_white = [PIECE(COLOR.BLACK, PIECE_TYPE.ROOK), PIECE(COLOR.BLACK, PIECE_TYPE.PAWN),
-                               PIECE(COLOR.WHITE, PIECE_TYPE.BISHOP)]
+        self.capture_processor = CaptureProcessor()
+        self.captured_black = [Piece(COLOR.WHITE, PIECE_TYPE.BISHOP), Piece(COLOR.WHITE, PIECE_TYPE.PAWN)]
+        self.captured_white = [Piece(COLOR.BLACK, PIECE_TYPE.ROOK), Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
+                               Piece(COLOR.WHITE, PIECE_TYPE.BISHOP)]
 
         self.reset()
 
@@ -51,7 +45,7 @@ class Chess(object):
         # # reset the board
         for i in range(1, 64):
             # [piece name, currently selected]
-            self.pieces_locations[i] = PIECE()
+            self.pieces_locations[i] = Piece()
 
         for piece, positions_list in pieces_starting_positions_map.items():
             for position in positions_list:
@@ -62,7 +56,7 @@ class Chess(object):
         # white color
         white_color = (255, 255, 255)
         # create fonts for texts
-        small_font = pygame.font.SysFont("comicsansms", 20)
+        small_font = pygame.font.SysFont(self.context.comic_sans_font, 20)
         # create text to be shown on the game menu
         rendered_text = small_font.render("Turn: " + self.current_turn.value, True, white_color)
         # show welcome text
@@ -93,34 +87,32 @@ class Chess(object):
                 if self.selected_piece_position == position:
                     self.__change_background_to_selection(position)
                 self.chess_pieces.draw(self.screen, piece.full_name(),
-                                       self.drawing_coordinates[piece_coord_x][piece_coord_y])
+                                       self.context.chessboard_coordinates[piece_coord_x][piece_coord_y])
 
         # draw captured pieces on the top and bottom of chessboard
         self.draw_captured_pieces()
 
     def __change_background_to_selection(self, pos):
-        surface = pygame.Surface((self.square_length, self.square_length), pygame.SRCALPHA)
+        surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
         surface.fill(PREDEFINED_COLOR.transparent_blue)
 
         piece_coord_x, piece_coord_y = id_to_xy(pos)
-        self.screen.blit(surface, self.drawing_coordinates[piece_coord_x][piece_coord_y])
+        self.screen.blit(surface, self.context.chessboard_coordinates[piece_coord_x][piece_coord_y])
         if len(self.moves) > 0:
             for move in self.moves:
                 x_coord = move[0]
                 y_coord = move[1]
                 if 0 <= x_coord < 8 and 0 <= y_coord < 8:
-                    self.screen.blit(surface, self.drawing_coordinates[x_coord][y_coord])
+                    self.screen.blit(surface, self.context.chessboard_coordinates[x_coord][y_coord])
 
     def process_player_turn(self):
         # get the coordinates of the square selected on the board
-        # [piece name, position]
-        square = self.get_selected_square()
-
+        position = input_processor.get_clicked_chessboard_field_id()
         # if a square was selected
-        if square:
-            # get name of piece on the selected square
-            piece: PIECE = square[0]
-            position = square[1]
+        if position:
+            piece = self.pieces_locations[position]
+            if piece.exists() and piece.get_color() == self.current_turn:
+                self.selected_piece_position = position
 
             # if there's a piece on the selected square
             if (piece.exists()) and (piece.get_color() == self.current_turn):
@@ -140,34 +132,9 @@ class Chess(object):
                             # capture piece
                             self.capture_piece(position)
 
-    # returns: [PIECE, piece location]
-    def get_selected_square(self):
-        # get mouse event
-        mouse_event = self.utils.get_mouse_event()
-
-        # if there's a mouse event
-        if mouse_event and self.utils.left_click_event():
-            for i in range(len(self.drawing_coordinates)):
-                for j in range(len(self.drawing_coordinates)):
-                    rect = pygame.Rect(self.drawing_coordinates[i][j][0], self.drawing_coordinates[i][j][1],
-                                       self.square_length, self.square_length)
-                    collision = rect.collidepoint(mouse_event[0], mouse_event[1])
-                    if collision:
-                        selected = [rect.x, rect.y]
-                        # find x, y coordinates the selected square
-                        k = int((selected[0] - self.context.board_offset_x) / self.square_length)
-                        l = ((int((selected[1] - self.context.board_offset_y) / self.square_length)) - 7) * -1
-                        pos = xy_to_id(k, l)
-                        piece = self.pieces_locations[pos]
-                        if piece.exists() and piece.get_color() == self.current_turn:
-                            self.selected_piece_position = pos
-                        return [piece, pos]
-
-        else:
-            return None
-
     def capture_piece(self, destination):
-        p: PIECE = self.pieces_locations[destination]
+        p: Piece = self.pieces_locations[destination]
+        # self.capture_processor.capture_piece(p)
         # add the captured piece to list
         if p.get_color() == COLOR.WHITE:
             self.captured_black.append(p)
@@ -178,8 +145,8 @@ class Chess(object):
 
     def move_piece(self, destination, beats=False):
         if self.selected_piece_position > 0:
-            piece: PIECE = self.pieces_locations[self.selected_piece_position]
-            self.pieces_locations[self.selected_piece_position] = PIECE()
+            piece: Piece = self.pieces_locations[self.selected_piece_position]
+            self.pieces_locations[self.selected_piece_position] = Piece()
             self.pieces_locations[destination] = piece
 
             if self.current_turn == COLOR.WHITE:
@@ -197,32 +164,40 @@ class Chess(object):
             self.moves = []
 
     def print_annotations(self):
-        font_size = int(self.square_length / 3)
-        font = pygame.font.SysFont("comicsansms", font_size)
+        font_size = int(self.context.square_length / 3)
+        font = pygame.font.SysFont(self.context.comic_sans_font, font_size)
         color = (120, 120, 120)
-        top_margin = self.context.board_offset_y + self.square_length / 2
+        top_margin = self.context.board_offset_y + self.context.square_length / 2
         number_to_display = 8
+        # display numbers on the left
         for row in range(0, 8):
             rendered = font.render(str(number_to_display), True, color)
             self.screen.blit(rendered,
-                             (int(self.context.board_offset_x / 2 - rendered.get_width() / 2),
-                              int(top_margin + (row * self.square_length - rendered.get_height() / 2))))
+                             (int(self.context.board_offset_x - rendered.get_width() - 10),
+                              int(top_margin + (row * self.context.square_length - rendered.get_height() / 2))))
             number_to_display -= 1
 
-        left_margin = self.context.board_offset_x + self.square_length / 2
+        # display letters on the bottom
+        left_margin = self.context.board_offset_x + self.context.square_length / 2
         for column in range(0, 8):
             rendered = font.render(chr(65 + column), True, color)
             self.screen.blit(rendered,
-                             (int(left_margin + (column * self.square_length - rendered.get_width() / 2)),
-                              int(self.context.board_offset_y + (self.square_length * 8) + 5)))
+                             (int(left_margin + (column * self.context.square_length - rendered.get_width() / 2)),
+                              int(self.context.board_offset_y + (self.context.square_length * 8) + 5)))
 
     def draw_captured_pieces(self):
         iterator = 0
         row = 0
+
+        if not (self.context.captured_white_starting_point and self.context.captured_black_starting_point):
+            self.context.captured_white_starting_point = (self.context.board_offset_x, 0)
+            self.context.captured_black_starting_point = (self.context.board_offset_x, self.context.board_offset_y * 2 + (self.context.square_length * 8) - (2 * self.context.piece_cell_thumbnail_height))
+
         for piece in self.captured_black:
             self.chess_pieces.draw(self.screen, piece.full_name(), (
-            self.context.board_offset_x + (iterator * int(self.square_length / 2)), self.context.board_offset_y - 80 - (row*40)),
-                                   True)
+                self.context.captured_white_starting_point[0] + (iterator * int(self.context.piece_cell_thumbnail_width)),
+                self.context.captured_white_starting_point[1] + row * self.context.piece_cell_thumbnail_height
+            ), True)
             if row == 1:
                 row = 0
                 iterator += 1
@@ -233,8 +208,9 @@ class Chess(object):
         row = 0
         for piece in self.captured_white:
             self.chess_pieces.draw(self.screen, piece.full_name(), (
-            self.context.board_offset_x + (iterator * int(self.square_length / 2)),
-            self.context.board_offset_y + (self.square_length * 8) + 40 + (row*40)), True)
+                self.context.captured_black_starting_point[0] + (iterator * int(self.context.piece_cell_thumbnail_width)),
+                self.context.captured_black_starting_point[1] + (row * self.context.piece_cell_thumbnail_height)
+            ), True)
             if row == 1:
                 row = 0
                 iterator += 1
