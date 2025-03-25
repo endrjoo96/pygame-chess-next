@@ -29,18 +29,18 @@ class Piece:
     def __init__(self, color: COLOR = COLOR.EMPTY, piece_type: PIECE_TYPE = PIECE_TYPE.EMPTY):
         self.__color, self.__type = color, piece_type
 
-    def full_name(self):
+    def full_name(self) -> str:
         if not self.exists():
             return ""
-        return str(self.__color.value + "_" + self.__type.value)
+        return self.__color.value + "_" + self.__type.value
 
-    def get_type(self):
+    def get_type(self) -> PIECE_TYPE:
         return self.__type
 
-    def get_color(self):
+    def get_color(self) -> COLOR:
         return self.__color
 
-    def exists(self):
+    def exists(self) -> bool:
         return self.__type != PIECE_TYPE.EMPTY or self.__color != COLOR.EMPTY
 
     def set_enchantment(self, enchantment: Enchantment):

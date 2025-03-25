@@ -1,6 +1,6 @@
 import pygame
 
-from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR, PIECE_TYPE
+from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR
 from constants.predefined_colors import PREDEFINED_COLOR
 from constants.pos import id_to_xy, xy_to_id, POS
 from gamecontext import GameContext
@@ -30,9 +30,6 @@ class Chess(object):
 
         # list containing captured pieces
         self.capture_processor = CaptureProcessor()
-        self.captured_black = [Piece(COLOR.WHITE, PIECE_TYPE.BISHOP), Piece(COLOR.WHITE, PIECE_TYPE.PAWN)]
-        self.captured_white = [Piece(COLOR.BLACK, PIECE_TYPE.ROOK), Piece(COLOR.BLACK, PIECE_TYPE.PAWN),
-                               Piece(COLOR.WHITE, PIECE_TYPE.BISHOP)]
 
         self.reset()
 
@@ -65,14 +62,7 @@ class Chess(object):
         self.print_annotations()
         self.process_player_turn()
 
-        if len(self.captured_white) > 1 and self.captured_white[
-            len(self.captured_white) - 1].get_type() == PIECE_TYPE.KING:
-            return COLOR.WHITE.value
-        elif len(self.captured_black) > 1 and self.captured_black[
-            len(self.captured_black) - 1].get_type() == PIECE_TYPE.KING:
-            return COLOR.BLACK.value
-        else:
-            return None
+        return self.capture_processor.is_king_captured()
 
     # method to draw pieces on the chess board
     def draw_pieces(self):
@@ -134,12 +124,12 @@ class Chess(object):
 
     def capture_piece(self, destination):
         p: Piece = self.pieces_locations[destination]
-        # self.capture_processor.capture_piece(p)
+        self.capture_processor.capture_piece(p)
         # add the captured piece to list
-        if p.get_color() == COLOR.WHITE:
-            self.captured_black.append(p)
-        else:
-            self.captured_white.append(p)
+        # if p.get_color() == COLOR.WHITE:
+        #     self.captured_black.append(p)
+        # else:
+        #     self.captured_white.append(p)
         # move source piece to its destination
         self.move_piece(destination, beats=True)
 
@@ -193,7 +183,7 @@ class Chess(object):
             self.context.captured_white_starting_point = (self.context.board_offset_x, 0)
             self.context.captured_black_starting_point = (self.context.board_offset_x, self.context.board_offset_y * 2 + (self.context.square_length * 8) - (2 * self.context.piece_cell_thumbnail_height))
 
-        for piece in self.captured_black:
+        for piece in self.capture_processor.get_captured_black():
             self.chess_pieces.draw(self.screen, piece.full_name(), (
                 self.context.captured_white_starting_point[0] + (iterator * int(self.context.piece_cell_thumbnail_width)),
                 self.context.captured_white_starting_point[1] + row * self.context.piece_cell_thumbnail_height
@@ -206,7 +196,7 @@ class Chess(object):
 
         iterator = 0
         row = 0
-        for piece in self.captured_white:
+        for piece in self.capture_processor.get_captured_white():
             self.chess_pieces.draw(self.screen, piece.full_name(), (
                 self.context.captured_black_starting_point[0] + (iterator * int(self.context.piece_cell_thumbnail_width)),
                 self.context.captured_black_starting_point[1] + (row * self.context.piece_cell_thumbnail_height)

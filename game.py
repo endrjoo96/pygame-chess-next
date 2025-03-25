@@ -184,7 +184,7 @@ class Game:
         small_font = pygame.font.SysFont(context.comic_sans_font, 20)
 
         # text to show winner
-        text = str(winner).capitalize() + " wins!"
+        text = str(winner.get_color().value).capitalize() + " wins!"
         winner_text = big_font.render(text, False, black_color)
 
         # create text to be shown on the reset button

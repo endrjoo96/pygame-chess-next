@@ -1,6 +1,4 @@
 import pygame
-from pygame.locals import *
-import queue
 
 
 def get_mouse_event():
