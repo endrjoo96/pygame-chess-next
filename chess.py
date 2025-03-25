@@ -1,4 +1,5 @@
 import pygame
+from pygame import Surface
 
 from constants.pos import id_to_xy, xy_to_id, POS
 from constants.predefined_colors import PREDEFINED_COLOR
@@ -13,7 +14,7 @@ from processors.movement_processor import process_possible_basic_moves
 
 
 class Chess(object):
-    def __init__(self, screen):
+    def __init__(self, screen: Surface):
         self.context = GameContext()
         # display surface
         self.screen = screen
@@ -32,7 +33,7 @@ class Chess(object):
 
         # list containing captured pieces
         self.capture_processor = CaptureProcessor()
-        self.cards_processor = CardsProcessor()
+        self.cards_processor = CardsProcessor(screen)
 
         self.reset()
 
@@ -50,7 +51,6 @@ class Chess(object):
         for position, piece in pieces_starting_positions_map.items():
                 self.pieces_locations[position.value] = piece
 
-    once = True
     def play_turn(self):
         # white color
         white_color = (255, 255, 255)
@@ -62,12 +62,6 @@ class Chess(object):
         self.screen.blit(rendered_text, ((self.screen.get_width() - rendered_text.get_width()) // 2,
                                          self.context.board_offset_y - rendered_text.get_height() - 5))
         self.print_annotations()
-        if self.once:
-            p: Piece = self.pieces_locations[POS.D2.value]
-            p.set_enchantment(enchantments.available_cards[0])
-            p.set_enchantment(enchantments.available_cards[1])
-            self.once = False
-
         self.process_player_turn()
 
         return self.capture_processor.is_king_captured()
@@ -89,6 +83,7 @@ class Chess(object):
 
         # draw captured pieces on the top and bottom of chessboard
         self.draw_captured_pieces()
+        self.cards_processor.render(self.screen, self.chess_pieces)
 
     def __change_background_to_selection(self, pos):
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)

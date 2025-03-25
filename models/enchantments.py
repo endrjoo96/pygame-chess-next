@@ -28,6 +28,9 @@ class Enchantment:
     def get_rate_stun_after_use(self) -> int:
         return self.__enchantment_types.count(EnchantmentType.STUN_AFTER_USE)
 
+    def get_required_piece_type(self) -> PIECE_TYPE:
+        return self.__piece_type_restriction
+
 
 available_cards = [
     Enchantment([EnchantmentType.REUSABLE], "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,

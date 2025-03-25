@@ -41,3 +41,6 @@ class GameContext(metaclass=Singleton):
 
     white_cards_coordinates = []
     black_cards_coordinates = []
+
+    card_width=0
+    card_height=0
