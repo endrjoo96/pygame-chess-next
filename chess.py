@@ -134,6 +134,10 @@ class Chess(object):
         #     if color == COLOR.BLACK:
         #         print("clicked {} captured by {}".format(self.capture_processor.get_captured_black()[index].full_name(),
         #                                                  color.value))
+        else:
+            color, index = input_processor.get_clicked_card_index()
+            if color is not None:
+                print("clicked {} card with index {}".format(color.value, index))
 
     def capture_piece(self, destination):
         p: Piece = self.pieces_locations[destination]

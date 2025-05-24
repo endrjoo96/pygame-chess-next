@@ -13,7 +13,7 @@ def get_clicked_chessboard_field_id():
     # if there's a mouse event
     if mouse_event and utils.left_click_event():
         for i in range(len(context.chessboard_coordinates)):
-            for j in range(len(context.chessboard_coordinates)):
+            for j in range(len(context.chessboard_coordinates[i])):
                 rect = pygame.Rect(context.chessboard_coordinates[i][j][0], context.chessboard_coordinates[i][j][1],
                                    context.square_length, context.square_length)
                 collision = rect.collidepoint(mouse_event[0], mouse_event[1])
@@ -32,22 +32,40 @@ def get_clicked_captured_piece_index() -> tuple:
     mouse_event = utils.get_mouse_event()
     # if there's a mouse event
     if mouse_event and utils.left_click_event():
-        coordinates = __calculate_clicked_captured_square_for(context.captured_white_coordinates, mouse_event, context)
+        coordinates = __calculate_clicked_object_for(context.captured_white_coordinates, mouse_event, context, (context.piece_cell_thumbnail_width, context.piece_cell_thumbnail_height))
         if coordinates:
             row, col = coordinates
             return COLOR.WHITE, (col*2)+row
         else:
-            coordinates = __calculate_clicked_captured_square_for(context.captured_black_coordinates, mouse_event, context)
+            coordinates = __calculate_clicked_object_for(context.captured_black_coordinates, mouse_event, context, (context.piece_cell_thumbnail_width, context.piece_cell_thumbnail_height))
             if coordinates:
                 row, col = coordinates
                 return COLOR.BLACK, (col*2)+row
     return None, None
 
-def __calculate_clicked_captured_square_for(coordinates_array, mouse_event, context) -> []:
+def get_clicked_card_index():
+    context = GameContext()
+    # get mouse event
+    mouse_event = utils.get_mouse_event()
+    # if there's a mouse event
+    if mouse_event and utils.left_click_event():
+        coordinates = __calculate_clicked_object_for(context.white_cards_coordinates, mouse_event, context, (context.card_width, context.card_height))
+        if coordinates:
+            row, col = coordinates
+            return COLOR.WHITE, (row*2)+col
+        else:
+            coordinates = __calculate_clicked_object_for(context.black_cards_coordinates, mouse_event, context, (context.card_width, context.card_height))
+            if coordinates:
+                row, col = coordinates
+                return COLOR.BLACK, (row*2)+col
+    return None, None
+
+
+def __calculate_clicked_object_for(coordinates_array, mouse_event, context, object_size):
     for i in range(len(coordinates_array)):
         for j in range(len(coordinates_array[i])):
             rect = pygame.Rect(coordinates_array[i][j][0], coordinates_array[i][j][1],
-                               context.piece_cell_thumbnail_width, context.piece_cell_thumbnail_height)
+                               object_size[0], object_size[1])
             collision = rect.collidepoint(mouse_event[0], mouse_event[1])
             if collision:
                 return [i, j]

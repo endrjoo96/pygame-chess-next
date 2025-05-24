@@ -34,7 +34,7 @@ class Enchantment:
 
 available_cards = [
     Enchantment([EnchantmentType.REUSABLE], "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
-                pawn_behaviors.pawn_two_field_forward_move),
+                pawn_behaviors.two_field_forward_move),
     Enchantment([EnchantmentType.REUSABLE], "Wykonaj ruch do tyłu", PIECE_TYPE.PAWN,
-                pawn_behaviors.pawn_one_field_backwards_move),
+                pawn_behaviors.one_field_backwards_move),
 ]

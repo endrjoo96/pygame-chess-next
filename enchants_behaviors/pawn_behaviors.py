@@ -2,7 +2,7 @@ from constants.piece_color import COLOR
 from constants.pos import xy_to_id
 
 
-def pawn_two_field_forward_move(possible_positions_to_move, xy_coord, color, pieces_locations):
+def two_field_forward_move(possible_positions_to_move, xy_coord, color, pieces_locations):
     x, y = xy_coord
     color_var = 1
     if color == COLOR.BLACK:
@@ -13,7 +13,7 @@ def pawn_two_field_forward_move(possible_positions_to_move, xy_coord, color, pie
                 possible_positions_to_move.append([x, y + (2 * color_var)])
 
 
-def pawn_one_field_backwards_move(possible_positions_to_move, xy_coord, color, pieces_locations):
+def one_field_backwards_move(possible_positions_to_move, xy_coord, color, pieces_locations):
     x, y = xy_coord
     if color == COLOR.WHITE:
         if y - 1 >= 0:
