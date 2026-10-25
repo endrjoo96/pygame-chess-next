@@ -6,6 +6,7 @@ from constants.pos import id_to_xy, xy_to_id, POS
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
 from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR
+from models.enchantments import rook_jump_card
 from piecesprite import PieceSprite
 from processors import input_processor
 from processors.capturing_piece_processor import CaptureProcessor
@@ -29,6 +30,7 @@ class GameLogicLoop(object):
         # list containing possible moves for the selected piece
         self.moves = []
         self.selected_card = None
+        self.selected_captured_piece = None
 
         # field_id: PIECE
         self.pieces_locations = {}
@@ -36,6 +38,11 @@ class GameLogicLoop(object):
         # list containing captured pieces
         self.capture_processor = CaptureProcessor()
         self.cards_processor = CardsProcessor(screen)
+        self.board_card_position = POS.D5.value
+        self.board_card_available = True
+        card_image = pygame.image.load(self.context.card_on_board_src).convert_alpha()
+        self.board_card_image = pygame.transform.scale(
+            card_image, (self.context.square_length, self.context.square_length))
 
         self.reset()
 
@@ -44,6 +51,9 @@ class GameLogicLoop(object):
         self.moves = []
         self.selected_piece_position = 0
         self.selected_card = None
+        self.selected_captured_piece = None
+        self.board_card_available = True
+        self.cards_processor.reset_decks()
 
         # two dimensonal dictionary containing details about each board location
         # storage format is [piece_name, currently_selected, x_y_coordinate]
@@ -72,6 +82,13 @@ class GameLogicLoop(object):
 
     # method to draw pieces on the chess board
     def draw_pieces(self):
+        if self.board_card_available:
+            card_x, card_y = id_to_xy(self.board_card_position)
+            self.screen.blit(
+                self.board_card_image,
+                self.context.chessboard_coordinates[card_x][card_y],
+            )
+
         # loop to change background color of selected pieces
         for position, piece in self.pieces_locations.items():
             # name of the piece in the current location
@@ -88,6 +105,33 @@ class GameLogicLoop(object):
         # draw captured pieces on the top and bottom of chessboard
         self.draw_captured_pieces()
         self.cards_processor.render(self.screen, self.chess_pieces, self.selected_card)
+        self.__draw_board_card_preview()
+
+    def __draw_board_card_preview(self):
+        if not self.board_card_available:
+            return
+
+        card_x, card_y = id_to_xy(self.board_card_position)
+        square = pygame.Rect(
+            self.context.chessboard_coordinates[card_x][card_y],
+            (self.context.square_length, self.context.square_length),
+        )
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        if not square.collidepoint(mouse_x, mouse_y):
+            return
+
+        margin = 10
+        card_width = self.context.card_width
+        card_height = self.context.card_height
+        preview_x = mouse_x + margin
+        preview_y = mouse_y + margin
+        if preview_x + card_width > self.screen.get_width():
+            preview_x = mouse_x - card_width - margin
+        if preview_y + card_height > self.screen.get_height():
+            preview_y = mouse_y - card_height - margin
+
+        self.cards_processor.render_preview(
+            self.screen, self.chess_pieces, rook_jump_card, (preview_x, preview_y), self.current_turn)
 
     def __change_background_to_selection(self, pos):
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
@@ -142,24 +186,34 @@ class GameLogicLoop(object):
                             # capture piece
                             self.capture_piece(position)
 
-        # TODO will be necessary for special ability cards, not for usual gameplay
-        # else:
-        #     color, index = input_processor.get_clicked_captured_piece_index()
-        #     if color == COLOR.WHITE:
-        #         print("clicked {} captured by {}".format(self.capture_processor.get_captured_white()[index].full_name(),
-        #                                                  color.value))
-        #     if color == COLOR.BLACK:
-        #         print("clicked {} captured by {}".format(self.capture_processor.get_captured_black()[index].full_name(),
-        #                                                  color.value))
         else:
-            color, index = input_processor.get_clicked_card_index()
-            if color == self.current_turn:
-                card_deck = self.cards_processor.get_cards_for(color)
-                if index is not None and 0 <= index < len(card_deck):
-                    clicked_card = (color, index)
-                    self.selected_card = None if self.selected_card == clicked_card else clicked_card
-                    self.selected_piece_position = 0
-                    self.moves = []
+            color, index = input_processor.get_clicked_captured_piece_index()
+            if color is not None and index is not None:
+                captured_pieces = (
+                    self.capture_processor.get_captured_white()
+                    if color == COLOR.WHITE
+                    else self.capture_processor.get_captured_black()
+                )
+                if 0 <= index < len(captured_pieces):
+                    piece = captured_pieces[index]
+                    print(
+                        "Clicked captured piece: type={}, color={}, list_position={}".format(
+                            piece.get_type().value, piece.get_color().value, index
+                        )
+                    )
+                    clicked_piece = (color, index)
+                    self.selected_captured_piece = (
+                        None if self.selected_captured_piece == clicked_piece else clicked_piece
+                    )
+            else:
+                color, index = input_processor.get_clicked_card_index()
+                if color == self.current_turn:
+                    card_deck = self.cards_processor.get_cards_for(color)
+                    if index is not None and 0 <= index < len(card_deck):
+                        clicked_card = (color, index)
+                        self.selected_card = None if self.selected_card == clicked_card else clicked_card
+                        self.selected_piece_position = 0
+                        self.moves = []
 
     def capture_piece(self, destination):
         p: Piece = self.pieces_locations[destination]
@@ -185,6 +239,10 @@ class GameLogicLoop(object):
             piece: Piece = self.pieces_locations[self.selected_piece_position]
             self.pieces_locations[self.selected_piece_position] = Piece()
             self.pieces_locations[destination] = piece
+
+            if self.board_card_available and destination == self.board_card_position:
+                self.cards_processor.get_cards_for(moving_color).append(rook_jump_card)
+                self.board_card_available = False
 
             if used_card is not None and not used_card.is_reusable():
                 card_deck.pop(card_index)
@@ -227,9 +285,6 @@ class GameLogicLoop(object):
                               int(self.context.board_offset_y + (self.context.square_length * 8) + 5)))
 
     def draw_captured_pieces(self):
-        iterator = 0
-        row = 0
-
         if not (self.context.captured_white_starting_point and self.context.captured_black_starting_point):
             self.context.captured_white_starting_point = (self.context.board_offset_x,
                                                           self.context.board_offset_y * 2 + (
@@ -237,28 +292,30 @@ class GameLogicLoop(object):
                                                                   2 * self.context.piece_cell_thumbnail_height))
             self.context.captured_black_starting_point = (self.context.board_offset_x, 0)
 
-        for piece in self.capture_processor.get_captured_black():
-            self.chess_pieces.draw(self.screen, piece.full_name(), (
-                self.context.captured_black_starting_point[0] + (
-                        iterator * int(self.context.piece_cell_thumbnail_width)),
-                self.context.captured_black_starting_point[1] + row * self.context.piece_cell_thumbnail_height
-            ), True)
-            if row == 1:
-                row = 0
-                iterator += 1
-            else:
-                row = 1
+        self.__draw_captured_group(
+            self.capture_processor.get_captured_black(),
+            COLOR.BLACK,
+            self.context.captured_black_starting_point,
+        )
+        self.__draw_captured_group(
+            self.capture_processor.get_captured_white(),
+            COLOR.WHITE,
+            self.context.captured_white_starting_point,
+        )
 
-        iterator = 0
-        row = 0
-        for piece in self.capture_processor.get_captured_white():
-            self.chess_pieces.draw(self.screen, piece.full_name(), (
-                self.context.captured_white_starting_point[0] + (
-                        iterator * int(self.context.piece_cell_thumbnail_width)),
-                self.context.captured_white_starting_point[1] + (row * self.context.piece_cell_thumbnail_height)
-            ), True)
-            if row == 1:
-                row = 0
-                iterator += 1
-            else:
-                row = 1
+    def __draw_captured_group(self, pieces, color, starting_point):
+        width = self.context.piece_cell_thumbnail_width
+        height = self.context.piece_cell_thumbnail_height
+        for index, piece in enumerate(pieces):
+            coords = (
+                starting_point[0] + (index // 2) * width,
+                starting_point[1] + (index % 2) * height,
+            )
+            self.chess_pieces.draw(self.screen, piece.full_name(), coords, True)
+            if self.selected_captured_piece == (color, index):
+                pygame.draw.rect(
+                    self.screen,
+                    (255, 255, 255),
+                    pygame.Rect(coords, (width, height)),
+                    2,
+                )

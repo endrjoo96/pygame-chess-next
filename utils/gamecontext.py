@@ -24,6 +24,7 @@ class GameContext(metaclass=Singleton):
     icon_src = os.path.join(resources, "chess_icon.png")
     board_src = os.path.join(resources, "board.png")
     pieces_src = os.path.join(resources, "pieces.png")
+    card_on_board_src = os.path.join(resources, "card_on_board.png")
 
     board_starting_point = (board_offset_x, board_offset_y)
     captured_white_starting_point = ()

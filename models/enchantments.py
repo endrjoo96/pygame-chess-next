@@ -35,6 +35,10 @@ class Enchantment:
         return self.__piece_type_restriction
 
 
+rook_jump_card = Enchantment(
+    [], "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
+    PIECE_TYPE.ROOK, rook_behaviors.move_through_allied_pieces_without_capturing)
+
 available_cards = [
     Enchantment([EnchantmentType.REUSABLE], "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
                 pawn_behaviors.two_field_forward_move),
@@ -42,8 +46,7 @@ available_cards = [
                 pawn_behaviors.one_field_backwards_move),
     Enchantment([EnchantmentType.REUSABLE], "Skoczek porusza się o 1 pole w dowolnym kierunku",
                 PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction),
-    Enchantment([], "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
-                PIECE_TYPE.ROOK, rook_behaviors.move_through_allied_pieces_without_capturing),
+    rook_jump_card,
     Enchantment([EnchantmentType.MANDATORY],
                 "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
                 PIECE_TYPE.QUEEN,

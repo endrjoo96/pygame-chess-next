@@ -18,8 +18,9 @@ class CardsProcessor:
         context = GameContext()
 
         self.small_font = pygame.font.SysFont(context.comic_sans_font, 16)
-        self.white_cards = list(enchantments.available_cards)
-        self.black_cards = list(enchantments.available_cards)
+        self.white_cards = []
+        self.black_cards = []
+        self.reset_decks()
 
         context.white_cards_starting_point = (context.board_offset_x + (context.square_length * 8) + 20, 0)
         context.black_cards_starting_point = (0, 0)
@@ -46,6 +47,10 @@ class CardsProcessor:
                         starting_point[1] + row * context.card_height,
                     ])
 
+    def reset_decks(self):
+        self.white_cards[:] = enchantments.available_cards
+        self.black_cards[:] = enchantments.available_cards
+
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         if color == COLOR.WHITE:
             return self.white_cards
@@ -61,28 +66,39 @@ class CardsProcessor:
             screen, context.black_cards_coordinates, chess_pieces, self.black_cards,
             card_size, PREDEFINED_COLOR.transparent_blue, COLOR.BLACK.value, COLOR.BLACK, selected_card)
 
+    def render_preview(self, screen: Surface, chess_pieces: PieceSprite, card: Enchantment, coords, color: COLOR):
+        context = GameContext()
+        self.__render_card(
+            screen, coords, chess_pieces, card, (context.card_width, context.card_height),
+            (255, 255, 0, 170), card_color=color.value)
+
     def __render_cards(self, screen, coordinates, chess_pieces, card_deck, card_size, bg_color, color_name, color, selected_card):
         iterator = 0
         for row in coordinates:
             for coord in row:
-                if iterator >= len(card_deck): return
+                if iterator >= len(card_deck):
+                    return
                 card: Enchantment = card_deck[iterator]
-
-                surface = Surface((card_size[0] - 5, card_size[1] - 5), pygame.SRCALPHA)
-                surface.fill(bg_color)
-                screen.blit(surface, coord)
-
-                rendered_card_text = self.small_font.render(card.get_description(), True,
-                                                       PREDEFINED_COLOR.white, wraplength=card_size[0]-30)
-                x,y = coord
-                screen.blit(rendered_card_text, [x+15, y+(card_size[1]//2)-(rendered_card_text.get_height()//2)])
-
-                if card.get_required_piece_type() != PIECE_TYPE.EMPTY:
-                    chess_pieces.draw(screen, "{}_{}".format(color_name, card.get_required_piece_type().value), coord, True)
-
+                self.__render_card(
+                    screen, coord, chess_pieces, card, card_size, bg_color, color_name)
                 if selected_card == (color, iterator):
                     pygame.draw.rect(
                         screen, PREDEFINED_COLOR.white,
                         pygame.Rect(coord[0], coord[1], card_size[0] - 5, card_size[1] - 5), 4)
-
                 iterator += 1
+
+    def __render_card(self, screen, coords, chess_pieces, card, card_size, bg_color, card_color):
+        surface = Surface((card_size[0] - 5, card_size[1] - 5), pygame.SRCALPHA)
+        surface.fill(bg_color)
+        screen.blit(surface, coords)
+
+        rendered_card_text = self.small_font.render(
+            card.get_description(), True, PREDEFINED_COLOR.white, wraplength=card_size[0] - 30)
+        x, y = coords
+        screen.blit(
+            rendered_card_text,
+            [x + 15, y + (card_size[1] // 2) - (rendered_card_text.get_height() // 2)])
+
+        if card.get_required_piece_type() != PIECE_TYPE.EMPTY:
+            chess_pieces.draw(
+                screen, "{}_{}".format(card_color, card.get_required_piece_type().value), coords, True)
