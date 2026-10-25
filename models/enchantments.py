@@ -155,10 +155,26 @@ class EnchantmentCardType(Enum):
     PAWN_SWORDSMAN = (
         [EnchantmentType.PASSIVE], 0.75, "Szermierz", "Pozwala na poruszanie się na boki.",
         PIECE_TYPE.PAWN, pawn_behaviors.move_one_field_horizontally)
-    PAWN_RESURRECTION = (
+    KING_PAWN_RESURRECTION = (
         [], 0.35, "Wskrzeszenie piona",
         "Wskrzesza zbitego przez przeciwnika piona i umieszcza go w promieniu 1 od króla",
-        PIECE_TYPE.KING, any_piece_behaviors.no_additional_moves, None, None, True)
+        PIECE_TYPE.KING, any_piece_behaviors.no_additional_moves, None, None, True, PIECE_TYPE.PAWN)
+    KING_KNIGHT_RESURRECTION = (
+        [], 0.2, "Wskrzeszenie skoczka",
+        "Wskrzesza zbitego przez przeciwnika skoczka i umieszcza go w promieniu 1 pola od króla",
+        PIECE_TYPE.KING, any_piece_behaviors.no_additional_moves, None, None, True, PIECE_TYPE.KNIGHT)
+    KING_BISHOP_RESURRECTION = (
+        [], 0.2, "Wskrzeszenie gońca",
+        "Wskrzesza zbitego przez przeciwnika gońca i umieszcza go w promieniu 1 pola od króla",
+        PIECE_TYPE.KING, any_piece_behaviors.no_additional_moves, None, None, True, PIECE_TYPE.BISHOP)
+    KING_ROOK_RESURRECTION = (
+        [], 0.15, "Wskrzeszenie wieży",
+        "Wskrzesza zbita przez przeciwnika wieżę i umieszcza ją w promieniu 1 pola od króla",
+        PIECE_TYPE.KING, any_piece_behaviors.no_additional_moves, None, None, True, PIECE_TYPE.ROOK)
+    KING_QUEEN_RESURRECTION = (
+        [], 0.05, "Wskrzeszenie hetmana",
+        "Wskrzesza zbitego przez przeciwnika hetmana i umieszcza go w promieniu 1 pola od króla",
+        PIECE_TYPE.KING, any_piece_behaviors.no_additional_moves, None, None, True, PIECE_TYPE.QUEEN)
     ROOK_TOWER_THROW = (
         [EnchantmentType.MANDATORY, EnchantmentType.STUN_AFTER_USE, EnchantmentType.STUN_AFTER_USE], 0.3,
         "Rzut wieżą", "Zbija wszystkie figury na swojej drodze, w tym własne. "
@@ -168,6 +184,7 @@ class EnchantmentCardType(Enum):
     def __init__(
         self, enchantment_types, rarity, title, description, piece_type, behavior_to_inject,
         remaining_uses=None, delay_before_use=None, allows_captured_piece_selection=False,
+        resurrected_piece_type=None,
     ):
         self.enchantment_types = enchantment_types
         self.rarity = _resolve_rarity(rarity)
@@ -178,6 +195,7 @@ class EnchantmentCardType(Enum):
         self.remaining_uses_range = _resolve_remaining_uses_range(enchantment_types, remaining_uses)
         self.delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
         self.allows_captured_piece_selection = allows_captured_piece_selection
+        self.resurrected_piece_type = resurrected_piece_type
 
     def create(self, uses=None) -> Enchantment:
         if self.remaining_uses_range is None:

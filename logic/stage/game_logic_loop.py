@@ -223,9 +223,9 @@ class GameLogicLoop(object):
         position = input_processor.get_clicked_chessboard_field_id()
         # if a square was selected
         if position:
-            if self.__selected_card_is_pawn_resurrection():
+            if self.__selected_card_is_resurrection():
                 if position in self.resurrection_moves:
-                    self.__resurrect_selected_pawn(position)
+                    self.__resurrect_selected_piece(position)
                 return
 
             piece = self.pieces_locations[position]
@@ -319,7 +319,7 @@ class GameLogicLoop(object):
                         self.resurrection_moves = (
                             self.__get_resurrection_moves()
                             if self.selected_captured_piece is not None
-                            and self.__selected_card_is_pawn_resurrection()
+                            and self.__selected_card_is_resurrection()
                             else []
                         )
             else:
@@ -335,29 +335,36 @@ class GameLogicLoop(object):
                         self.moves = []
 
     def __is_valid_captured_piece_for_selected_card(self, piece):
-        if self.__selected_card_is_pawn_resurrection():
+        if self.__selected_card_is_resurrection():
             return (
                 piece.get_color() == self.current_turn
-                and piece.get_type() == PIECE_TYPE.PAWN
+                and piece.get_type() == self.__selected_resurrection_piece_type()
                 and self.__get_resurrection_king_position() is not None
             )
         return True
 
     def __is_valid_captured_piece_list_for_selected_card(self, color):
-        if self.__selected_card_is_pawn_resurrection():
+        if self.__selected_card_is_resurrection():
             return color != self.current_turn
         return True
 
-    def __selected_card_is_pawn_resurrection(self):
+    def __selected_card_is_resurrection(self):
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
 
         card_color, card_index = self.selected_card
         card_deck = self.cards_processor.get_cards_for(card_color)
-        return (
-            0 <= card_index < len(card_deck)
-            and card_deck[card_index].get_card_type() == EnchantmentCardType.PAWN_RESURRECTION
-        )
+        return 0 <= card_index < len(card_deck) and self.__selected_resurrection_piece_type() is not None
+
+    def __selected_resurrection_piece_type(self):
+        if self.selected_card is None:
+            return None
+
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        if not 0 <= card_index < len(card_deck):
+            return None
+        return card_deck[card_index].get_card_type().resurrected_piece_type
 
     def __get_resurrection_moves(self):
         if self.selected_captured_piece is None:
@@ -400,7 +407,7 @@ class GameLogicLoop(object):
             None,
         )
 
-    def __resurrect_selected_pawn(self, position):
+    def __resurrect_selected_piece(self, position):
         if self.selected_captured_piece is None or position not in self.resurrection_moves:
             return
 

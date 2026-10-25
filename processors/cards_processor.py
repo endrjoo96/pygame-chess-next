@@ -20,6 +20,7 @@ class CardsProcessor:
         EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.with_uses(2),
         EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.with_uses(2),
         EnchantmentCardType.PAWN_SWORDSMAN,
+        EnchantmentCardType.KING_PAWN_RESURRECTION,
     )
 
     def __init__(self, screen: Surface):
@@ -153,14 +154,6 @@ class CardsProcessor:
 
             if current_line:
                 lines.append(current_line)
-                current_line = ""
-
-            while font.size(word)[0] > max_width:
-                split_at = len(word)
-                while split_at > 1 and font.size(word[:split_at])[0] > max_width:
-                    split_at -= 1
-                lines.append(word[:split_at])
-                word = word[split_at:]
             current_line = word
 
         if current_line:
@@ -257,7 +250,9 @@ class CardsProcessor:
             title_font = self.title_font if font_size == 16 else pygame.font.SysFont(
                 "Arial", font_size, bold=True)
             title_lines = self.__wrap_text(card.get_title().upper(), title_font, title_width)
-            if len(title_lines) <= 2:
+            if len(title_lines) <= 2 and all(
+                title_font.size(line)[0] <= title_width for line in title_lines
+            ):
                 break
 
         title_text_height = len(title_lines) * title_font.get_linesize()
