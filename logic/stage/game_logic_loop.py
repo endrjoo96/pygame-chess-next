@@ -42,6 +42,8 @@ class GameLogicLoop(object):
         self.resurrection_moves = []
         self.selected_card = None
         self.selected_captured_piece = None
+        self.double_move_step = 0
+        self.double_move_collected_board_card = False
 
         # field_id: PIECE
         self.pieces_locations = {}
@@ -68,6 +70,8 @@ class GameLogicLoop(object):
         self.selected_piece_position = 0
         self.selected_card = None
         self.selected_captured_piece = None
+        self.double_move_step = 0
+        self.double_move_collected_board_card = False
         self.board_card_available = False
         self.board_card_position = POS.D5.value
         self.board_enchantment = None
@@ -316,6 +320,9 @@ class GameLogicLoop(object):
                 return
 
             if (piece.exists()) and (piece.get_color() == self.current_turn):
+                if self.__selected_card_is_piece_double_move() and self.double_move_step > 0:
+                    return
+
                 if not piece.can_receive_enchantment():
                     self.selected_piece_position = 0
                     self.moves = []
@@ -361,7 +368,8 @@ class GameLogicLoop(object):
 
                 self.selected_piece_position = position
                 self.moves = process_possible_basic_moves(
-                    piece, id_to_xy(position), self.pieces_locations, active_enchantment)
+                    piece, id_to_xy(position), self.pieces_locations,
+                    None if self.__selected_card_is_piece_double_move() else active_enchantment)
 
             else:
                 for i in self.moves:
@@ -411,10 +419,14 @@ class GameLogicLoop(object):
             else:
                 color, index = input_processor.get_clicked_card_index()
                 if color == self.current_turn:
+                    if self.double_move_step > 0:
+                        return
                     card_deck = self.cards_processor.get_cards_for(color)
                     if index is not None and 0 <= index < len(card_deck):
                         clicked_card = (color, index)
                         self.selected_card = None if self.selected_card == clicked_card else clicked_card
+                        self.double_move_step = 0
+                        self.double_move_collected_board_card = False
                         self.selected_captured_piece = None
                         self.resurrection_moves = []
                         self.selected_piece_position = 0
@@ -473,6 +485,17 @@ class GameLogicLoop(object):
         return (
             0 <= card_index < len(card_deck)
             and card_deck[card_index].get_card_type() == EnchantmentCardType.PIECE_TELEPORT
+        )
+
+    def __selected_card_is_piece_double_move(self):
+        if self.selected_card is None or self.selected_card[0] != self.current_turn:
+            return False
+
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        return (
+            0 <= card_index < len(card_deck)
+            and card_deck[card_index].get_card_type() == EnchantmentCardType.PIECE_DOUBLE_MOVE
         )
 
     def __get_return_to_start_targets(self):
@@ -653,7 +676,10 @@ class GameLogicLoop(object):
         if self.selected_piece_position > 0:
             collected_board_card = self.board_card_available and destination == self.board_card_position
             moving_color = self.current_turn
-            self.__advance_stun_effects(moving_color)
+            double_move = self.__selected_card_is_piece_double_move()
+            first_double_move = double_move and self.double_move_step == 0
+            if self.double_move_step == 0:
+                self.__advance_stun_effects(moving_color)
             used_card = None
             if self.selected_card is not None and self.selected_card[0] == moving_color:
                 card_color, card_index = self.selected_card
@@ -692,7 +718,8 @@ class GameLogicLoop(object):
                 self.cards_processor.add_card_for(moving_color, self.board_enchantment)
                 self.board_card_available = False
 
-            if used_card is not None and used_card.consume_use() == 0:
+            collected_board_card = collected_board_card or self.double_move_collected_board_card
+            if not first_double_move and used_card is not None and used_card.consume_use() == 0:
                 card_deck.pop(card_index)
 
             stun_turns = (
@@ -714,6 +741,17 @@ class GameLogicLoop(object):
                     if enchantment.get_rate_stun_after_use() > 0:
                         piece.add_stun_effect(enchantment, stun_turns)
 
+            if first_double_move:
+                self.double_move_step = 1
+                self.double_move_collected_board_card = collected_board_card
+                self.selected_piece_position = destination
+                self.moves = process_possible_basic_moves(
+                    piece, id_to_xy(destination), self.pieces_locations)
+                if self.moves:
+                    return
+                if used_card is not None and used_card.consume_use() == 0:
+                    card_deck.pop(card_index)
+
             self.__end_turn()
 
             if collected_board_card:
@@ -733,6 +771,8 @@ class GameLogicLoop(object):
             self.moves = []
             self.selected_card = None
             self.selected_captured_piece = None
+            self.double_move_step = 0
+            self.double_move_collected_board_card = False
 
     def __advance_stun_effects(self, color):
         for piece in self.pieces_locations.values():

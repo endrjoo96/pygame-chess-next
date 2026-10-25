@@ -25,6 +25,7 @@ class CardsProcessor:
         EnchantmentCardType.PIECE_UPGRADE,
         EnchantmentCardType.RETURN_TO_START,
         EnchantmentCardType.PIECE_TELEPORT,
+        EnchantmentCardType.PIECE_DOUBLE_MOVE,
     )
 
     def __init__(self, screen: Surface):

@@ -91,21 +91,24 @@ class EnchantmentCardType(Enum):
     ROOK_TOWER_THROW = (
         [EnchantmentType.MANDATORY, EnchantmentType.STUN_AFTER_USE, EnchantmentType.STUN_AFTER_USE], 0.3,
         "Rzut wieżą", "Zbija wszystkie figury na swojej drodze, w tym własne. "
-        "Porusza się do końca planszy. Blokuje ruch na dwie tury.",
+        "Porusza się do końca planszy.",
         PIECE_TYPE.ROOK, rook_behaviors.move_to_board_edge)
     PIECE_UPGRADE = (
-        [], 0.35, "Awans figury",
-        "Awansuje wybraną figurę o jeden poziom: pion → skoczek → goniec → wieża → hetman. "
-        "Nie działa na hetmana ani króla.",
+        [], 0.2, "Awans figury",
+        "Awansuje wybraną figurę: pion -> skoczek -> goniec -> wieża -> hetman.",
         PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves)
     RETURN_TO_START = (
-        [], 0.35, "Powrót na start",
+        [EnchantmentType.REUSABLE], 0.4, "Powrót na start",
         "Przenieś wybraną figurę na jej pole startowe, jeśli jest wolne. Ruch nie zbija figur.",
-        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves)
+        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves, (1, 3))
     PIECE_TELEPORT = (
-        [], 0.3, "Teleportacja",
-        "Zamień miejscami dwie figury. Najpierw wybierz własną figurę, potem dowolną inną.",
+        [], 0.2, "Teleportacja",
+        "Zamień miejscami swoją figurę z dowolną inną.",
         PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves)
+    PIECE_DOUBLE_MOVE = (
+        [EnchantmentType.REUSABLE], 0.2, "Podwójny ruch",
+        "Pozwala wykonać dwa ruchy tą samą figurą w jednej turze.",
+        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves, (1, 3))
 
     def __init__(
         self, enchantment_types, rarity, title, description, piece_type, behavior_to_inject,
@@ -152,19 +155,40 @@ class EnchantmentCardType(Enum):
         return ConfiguredEnchantmentCard(self, uses)
 
     @classmethod
-    def random_choice(cls) -> "EnchantmentCardType":
-        card_types = list(cls)
+    def _random_choice_with_uses(cls):
+        card_types_with_uses = [
+            (
+                card_type,
+                random.randint(*card_type.remaining_uses_range)
+                if card_type.remaining_uses_range is not None
+                else None,
+            )
+            for card_type in cls
+        ]
         if RUN_MODE is RunMode.DEBUG:
-            return random.choice(card_types)
+            return random.choice(card_types_with_uses)
 
-        weights = [card_type.rarity for card_type in card_types]
+        weights = [
+            card_type.rarity
+            * (
+                uses / card_type.remaining_uses_range[1]
+                if uses is not None
+                else 1
+            )
+            for card_type, uses in card_types_with_uses
+        ]
         if not any(weights):
             raise ValueError("At least one enchantment must have a non-zero rarity")
-        return random.choices(card_types, weights=weights, k=1)[0]
+        return random.choices(card_types_with_uses, weights=weights, k=1)[0]
+
+    @classmethod
+    def random_choice(cls) -> "EnchantmentCardType":
+        return cls._random_choice_with_uses()[0]
 
     @classmethod
     def create_random(cls) -> Enchantment:
-        return cls.random_choice().create()
+        card_type, uses = cls._random_choice_with_uses()
+        return card_type.create(uses=uses)
 
 
 class ConfiguredEnchantmentCard:
