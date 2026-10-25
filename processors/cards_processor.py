@@ -17,16 +17,7 @@ class CardsProcessor:
     MAX_CARDS_PER_PLAYER = 8
     CARD_COLUMNS = 2
 
-    STARTING_CARD_TYPES = (
-        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.with_uses(2),
-        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.with_uses(2),
-        EnchantmentCardType.PAWN_SWORDSMAN,
-        EnchantmentCardType.KING_PAWN_RESURRECTION,
-        EnchantmentCardType.PIECE_UPGRADE,
-        EnchantmentCardType.RETURN_TO_START,
-        EnchantmentCardType.PIECE_TELEPORT,
-        EnchantmentCardType.PIECE_DOUBLE_MOVE,
-    )
+    STARTING_CARD_TYPES = ()
 
     def __init__(self, screen: Surface):
         context = GameContext()

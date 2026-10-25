@@ -9,6 +9,7 @@ from models.enchantments import (
     _resolve_delay_before_use,
     _resolve_remaining_uses,
 )
+from utils.logging import debug_log
 from utils.run_config import RUN_MODE, RunMode
 
 
@@ -165,8 +166,20 @@ class EnchantmentCardType(Enum):
             )
             for card_type in cls
         ]
+        debug_log("Board card draw: sampled uses for candidate cards:")
+        for card_type, uses in card_types_with_uses:
+            debug_log(
+                "  {}: rarity={}, sampled uses={}".format(
+                    card_type.name, card_type.rarity, uses if uses is not None else "not reusable")
+            )
+
         if RUN_MODE is RunMode.DEBUG:
-            return random.choice(card_types_with_uses)
+            selected = random.choice(card_types_with_uses)
+            debug_log(
+                "Board card draw: DEBUG mode selected {} uniformly (rarity weights ignored)".format(
+                    selected[0].name)
+            )
+            return selected
 
         weights = [
             card_type.rarity
@@ -177,9 +190,17 @@ class EnchantmentCardType(Enum):
             )
             for card_type, uses in card_types_with_uses
         ]
+        debug_log("Board card draw: effective candidate weights:")
+        for (card_type, uses), weight in zip(card_types_with_uses, weights):
+            debug_log("  {}: {}".format(card_type.name, weight))
         if not any(weights):
             raise ValueError("At least one enchantment must have a non-zero rarity")
-        return random.choices(card_types_with_uses, weights=weights, k=1)[0]
+        selected = random.choices(card_types_with_uses, weights=weights, k=1)[0]
+        debug_log(
+            "Board card draw: selected {} with {} use(s)".format(
+                selected[0].name, selected[1] if selected[1] is not None else 1)
+        )
+        return selected
 
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":
@@ -188,7 +209,12 @@ class EnchantmentCardType(Enum):
     @classmethod
     def create_random(cls) -> Enchantment:
         card_type, uses = cls._random_choice_with_uses()
-        return card_type.create(uses=uses)
+        enchantment = card_type.create(uses=uses)
+        debug_log(
+            "Board card draw: created '{}' with {} use(s)".format(
+                enchantment.get_title(), enchantment.get_remaining_uses())
+        )
+        return enchantment
 
 
 class ConfiguredEnchantmentCard:

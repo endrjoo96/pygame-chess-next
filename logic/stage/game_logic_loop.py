@@ -758,7 +758,12 @@ class GameLogicLoop(object):
             if collected_board_card:
                 self.__schedule_next_board_card()
             elif self.pending_board_card_delay is not None:
+                previous_delay = self.pending_board_card_delay
                 self.pending_board_card_delay -= 1
+                debug_log(
+                    "Board card placement: countdown decreased from {} to {} turn(s)".format(
+                        previous_delay, self.pending_board_card_delay)
+                )
                 if self.pending_board_card_delay == 0:
                     self.__place_next_board_card()
 
@@ -785,17 +790,30 @@ class GameLogicLoop(object):
             position for position in range(1, 65)
             if not self.pieces_locations[position].exists()
         ]
+        debug_log(
+            "Board card placement: found {} empty square(s)".format(len(empty_positions))
+        )
         self.board_card_position = random.choice(empty_positions)
+        debug_log(
+            "Board card placement: selected square {}".format(POS(self.board_card_position).name)
+        )
         self.board_enchantment = EnchantmentCardType.create_random()
         self.board_card_available = True
         self.pending_board_card_delay = None
+        debug_log(
+            "Board card placement: '{}' is now available on {}".format(
+                self.board_enchantment.get_title(), POS(self.board_card_position).name)
+        )
 
     def __schedule_next_board_card(self):
         self.board_card_available = False
         self.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else random.randint(0, 4)
         )
-        debug_log("Next board card will appear in {} turns".format(self.pending_board_card_delay))
+        debug_log(
+            "Board card placement: scheduled; delay={} turn(s) (run mode={})".format(
+                self.pending_board_card_delay, RUN_MODE.value)
+        )
         if self.pending_board_card_delay == 0:
             self.__place_next_board_card()
 
