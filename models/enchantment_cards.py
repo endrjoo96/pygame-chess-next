@@ -100,17 +100,17 @@ class EnchantmentCardType(Enum):
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.KNIGHT)
     PAWN_UPGRADE_TO_BISHOP = (
-        [EnchantmentType.STUN_AFTER_USE] * 2, 0.1, "Awans piona: goniec",
+        [EnchantmentType.STUN_AFTER_USE] * 2, 0.025, "Awans piona: goniec",
         "Awansuje piona na gońca i ogłusza go na 2 tury.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.BISHOP)
     PAWN_UPGRADE_TO_ROOK = (
-        [EnchantmentType.STUN_AFTER_USE] * 3, 0.1, "Awans piona: wieża",
+        [EnchantmentType.STUN_AFTER_USE] * 3, 0.00625, "Awans piona: wieża",
         "Awansuje piona na wieżę i ogłusza go na 3 tury.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.ROOK)
     PAWN_UPGRADE_TO_QUEEN = (
-        [EnchantmentType.STUN_AFTER_USE] * 4, 0.1, "Awans piona: hetman",
+        [EnchantmentType.STUN_AFTER_USE] * 4, 0.0015625, "Awans piona: hetman",
         "Awansuje piona na hetmana i ogłusza go na 4 tury.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.QUEEN)
@@ -120,12 +120,12 @@ class EnchantmentCardType(Enum):
         PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.BISHOP)
     KNIGHT_UPGRADE_TO_ROOK = (
-        [EnchantmentType.STUN_AFTER_USE] * 2, 0.05, "Awans skoczka: wieża",
+        [EnchantmentType.STUN_AFTER_USE] * 2, 0.0125, "Awans skoczka: wieża",
         "Awansuje skoczka na wieżę i ogłusza go na 2 tury.",
         PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.ROOK)
     KNIGHT_UPGRADE_TO_QUEEN = (
-        [EnchantmentType.STUN_AFTER_USE] * 3, 0.05, "Awans skoczka: hetman",
+        [EnchantmentType.STUN_AFTER_USE] * 3, 0.003125, "Awans skoczka: hetman",
         "Awansuje skoczka na hetmana i ogłusza go na 3 tury.",
         PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.QUEEN)
@@ -135,7 +135,7 @@ class EnchantmentCardType(Enum):
         PIECE_TYPE.BISHOP, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.ROOK)
     BISHOP_UPGRADE_TO_QUEEN = (
-        [EnchantmentType.STUN_AFTER_USE] * 2, 0.05, "Awans gońca: hetman",
+        [EnchantmentType.STUN_AFTER_USE] * 2, 0.0125, "Awans gońca: hetman",
         "Awansuje gońca na hetmana i ogłusza go na 2 tury.",
         PIECE_TYPE.BISHOP, any_piece_behaviors.no_additional_moves,
         None, None, False, None, PIECE_TYPE.QUEEN)
@@ -238,7 +238,12 @@ class EnchantmentCardType(Enum):
             for card_type, uses in card_types_with_uses
         ]
         debug_log("Board card draw: effective candidate weights:")
-        for (card_type, uses), weight in zip(card_types_with_uses, weights):
+        sorted_candidates = sorted(
+            zip(card_types_with_uses, weights),
+            key=lambda candidate: candidate[1],
+            reverse=True,
+        )
+        for (card_type, uses), weight in sorted_candidates:
             debug_log("  {}: {}".format(card_type.name, weight))
         if not any(weights):
             raise ValueError("At least one enchantment must have a non-zero rarity")
