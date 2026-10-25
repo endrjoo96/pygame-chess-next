@@ -23,6 +23,7 @@ class CardsProcessor:
     def __init__(self, screen: Surface):
         context = GameContext()
 
+        self.title_font = pygame.font.SysFont(context.comic_sans_font, 16)
         self.small_font = pygame.font.SysFont(context.comic_sans_font, 14)
         self.use_count_font = pygame.font.SysFont(context.comic_sans_font, 12, bold=True)
         self.enchantment_icons = {
@@ -172,7 +173,13 @@ class CardsProcessor:
             else (29 if icon_types else 0),
             GameContext().piece_cell_thumbnail_height if has_piece_icon else 0,
         )
-        text_top = y + margin + graphics_height + (margin if graphics_height else 0)
+        title_top = y + margin + graphics_height + (margin if graphics_height else 0)
+        rendered_title = self.title_font.render(card.get_title(), True, PREDEFINED_COLOR.white)
+        screen.blit(
+            rendered_title,
+            (x + (card_size[0] - 5 - rendered_title.get_width()) // 2, title_top))
+
+        text_top = title_top + rendered_title.get_height() + margin
         text_height = y + card_size[1] - margin - text_top
         text_width = card_size[0] - 2 * margin
         for font_size in range(14, 0, -1):

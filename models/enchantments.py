@@ -1,23 +1,36 @@
 import random
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
 from constants.enchantment_type import EnchantmentType
 from constants.piece_type import PIECE_TYPE
 from enchants_behaviors import any_piece_behaviors, knight_behaviors, pawn_behaviors, queen_behaviors, rook_behaviors
 
 
+def _resolve_remaining_uses(enchantment_types, remaining_uses):
+    is_reusable = EnchantmentType.REUSABLE in enchantment_types
+    if is_reusable and remaining_uses is None:
+        raise ValueError("Reusable enchantments must define their number of uses")
+    if not is_reusable and remaining_uses not in (None, 1):
+        raise ValueError("Non-reusable enchantments must have exactly one use")
+    if remaining_uses is not None and remaining_uses < 1:
+        raise ValueError("An enchantment must have at least one use")
+    return remaining_uses if is_reusable else 1
+
+
 class Enchantment:
     def __init__(
-        self, enchantment_types: List[EnchantmentType], description: str, piece_type_restriction: PIECE_TYPE,
-        behavior_to_inject, card_type=None,
+        self, enchantment_types: List[EnchantmentType], title: str, description: str,
+        piece_type_restriction: PIECE_TYPE, behavior_to_inject, card_type=None,
+        remaining_uses: Optional[int] = None,
     ):
+        self.__remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
         self.__enchantment_types = enchantment_types
+        self.__title = title
         self.__description = description
         self.__piece_type_restriction = piece_type_restriction
         self.__behavior_to_inject = behavior_to_inject
         self.__card_type = card_type
-        self.__remaining_uses = 3 if EnchantmentType.REUSABLE in enchantment_types else 1
 
     def get_behavior_to_inject(self):
         return self.__behavior_to_inject
@@ -50,6 +63,9 @@ class Enchantment:
     def get_description(self) -> str:
         return self.__description
 
+    def get_title(self) -> str:
+        return self.__title
+
     def get_rate_delay_before_use(self) -> int:
         return self.__enchantment_types.count(EnchantmentType.DELAY_BEFORE_USE)
 
@@ -62,39 +78,43 @@ class Enchantment:
 
 class EnchantmentCardType(Enum):
     PAWN_TWO_FIELDS_FORWARD = (
-        [EnchantmentType.REUSABLE], "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
-        pawn_behaviors.two_field_forward_move)
+        [EnchantmentType.REUSABLE], "TITLE", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
+        pawn_behaviors.two_field_forward_move, 3)
     PAWN_ONE_FIELD_BACKWARD = (
-        [EnchantmentType.REUSABLE], "Wykonaj ruch do tyłu", PIECE_TYPE.PAWN,
-        pawn_behaviors.one_field_backwards_move)
+        [EnchantmentType.REUSABLE], "TITLE", "Wykonaj ruch do tyłu", PIECE_TYPE.PAWN,
+        pawn_behaviors.one_field_backwards_move, 3)
     KNIGHT_ONE_FIELD_ANY_DIRECTION = (
-        [EnchantmentType.REUSABLE], "Skoczek porusza się o 1 pole w dowolnym kierunku",
-        PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction)
+        [EnchantmentType.REUSABLE], "TITLE", "Skoczek porusza się o 1 pole w dowolnym kierunku",
+        PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction, 3)
     ROOK_JUMP_ALLIES = (
-        [], "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
+        [], "TITLE", "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
         PIECE_TYPE.ROOK, rook_behaviors.move_through_allied_pieces_without_capturing)
     QUEEN_JUMP_ALLIES = (
         [EnchantmentType.MANDATORY],
-        "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
+        "TITLE", "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
         PIECE_TYPE.QUEEN, queen_behaviors.move_up_to_four_fields_through_allies_without_capturing)
     PAWN_DETONATION = (
-        [EnchantmentType.PASSIVE],
+        [EnchantmentType.PASSIVE], "TITLE",
         "Detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
     PAWN_DETONATION_DELAYED = (
-        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE],
+        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], "TITLE",
         "Po 1 turze detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
 
-    def __init__(self, enchantment_types, description, piece_type, behavior_to_inject):
+    def __init__(self, enchantment_types, title, description, piece_type, behavior_to_inject, remaining_uses=None):
         self.enchantment_types = enchantment_types
+        self.title = title
         self.description = description
         self.piece_type = piece_type
         self.behavior_to_inject = behavior_to_inject
+        self.remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
 
     def create(self) -> Enchantment:
         return Enchantment(
-            self.enchantment_types.copy(), self.description, self.piece_type, self.behavior_to_inject, self)
+            self.enchantment_types.copy(), self.title, self.description, self.piece_type,
+            self.behavior_to_inject, self,
+            self.remaining_uses)
 
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":
