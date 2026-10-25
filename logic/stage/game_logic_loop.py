@@ -158,10 +158,17 @@ class GameLogicLoop(object):
         if not self.__selected_card_is_piece_upgrade():
             return
 
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        required_piece_type = card_deck[card_index].get_required_piece_type()
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
         surface.fill(PREDEFINED_COLOR.transparent_green)
         for position, piece in self.pieces_locations.items():
-            if piece.exists() and piece.get_color() == self.current_turn and piece.can_be_promoted():
+            if (
+                piece.exists()
+                and piece.get_color() == self.current_turn
+                and piece.get_type() == required_piece_type
+            ):
                 x, y = id_to_xy(position)
                 self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
 
@@ -281,14 +288,18 @@ class GameLogicLoop(object):
                 return
 
             if self.__selected_card_is_piece_upgrade():
-                stun_turns = piece.get_promotion_stun_turns()
+                card_color, card_index = self.selected_card
+                card_deck = self.cards_processor.get_cards_for(card_color)
+                used_card = card_deck[card_index]
+                card_type = used_card.get_card_type()
                 if (
                     piece.exists()
                     and piece.get_color() == self.current_turn
-                    and piece.promote()
+                    and piece.get_type() == used_card.get_required_piece_type()
+                    and piece.promote_to(card_type.promoted_piece_type)
                 ):
-                    card_color, card_index = self.selected_card
-                    used_card = self.cards_processor.get_cards_for(card_color).pop(card_index)
+                    card_deck.pop(card_index)
+                    stun_turns = used_card.get_rate_stun_after_use()
                     piece.set_stunned_for_turns(stun_turns)
                     piece.add_stun_effect(used_card, stun_turns)
                     self.selected_card = None
@@ -463,7 +474,7 @@ class GameLogicLoop(object):
         card_deck = self.cards_processor.get_cards_for(card_color)
         return (
             0 <= card_index < len(card_deck)
-            and card_deck[card_index].get_card_type() == EnchantmentCardType.PIECE_UPGRADE
+            and card_deck[card_index].get_card_type().promoted_piece_type is not None
         )
 
     def __selected_card_is_return_to_start(self):

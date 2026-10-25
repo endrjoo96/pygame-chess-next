@@ -94,10 +94,56 @@ class EnchantmentCardType(Enum):
         "Rzut wieżą", "Zbija wszystkie figury na swojej drodze, w tym własne. "
         "Porusza się do końca planszy.",
         PIECE_TYPE.ROOK, rook_behaviors.move_to_board_edge)
-    PIECE_UPGRADE = (
-        [], 0.2, "Awans figury",
-        "Awansuje wybraną figurę: pion -> skoczek -> goniec -> wieża -> hetman.",
-        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves)
+    PAWN_UPGRADE_TO_KNIGHT = (
+        [EnchantmentType.STUN_AFTER_USE], 0.1, "Awans piona: skoczek",
+        "Awansuje piona na skoczka i ogłusza go na 1 turę.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.KNIGHT)
+    PAWN_UPGRADE_TO_BISHOP = (
+        [EnchantmentType.STUN_AFTER_USE] * 2, 0.1, "Awans piona: goniec",
+        "Awansuje piona na gońca i ogłusza go na 2 tury.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.BISHOP)
+    PAWN_UPGRADE_TO_ROOK = (
+        [EnchantmentType.STUN_AFTER_USE] * 3, 0.1, "Awans piona: wieża",
+        "Awansuje piona na wieżę i ogłusza go na 3 tury.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.ROOK)
+    PAWN_UPGRADE_TO_QUEEN = (
+        [EnchantmentType.STUN_AFTER_USE] * 4, 0.1, "Awans piona: hetman",
+        "Awansuje piona na hetmana i ogłusza go na 4 tury.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.QUEEN)
+    KNIGHT_UPGRADE_TO_BISHOP = (
+        [EnchantmentType.STUN_AFTER_USE], 0.05, "Awans skoczka: goniec",
+        "Awansuje skoczka na gońca i ogłusza go na 1 turę.",
+        PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.BISHOP)
+    KNIGHT_UPGRADE_TO_ROOK = (
+        [EnchantmentType.STUN_AFTER_USE] * 2, 0.05, "Awans skoczka: wieża",
+        "Awansuje skoczka na wieżę i ogłusza go na 2 tury.",
+        PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.ROOK)
+    KNIGHT_UPGRADE_TO_QUEEN = (
+        [EnchantmentType.STUN_AFTER_USE] * 3, 0.05, "Awans skoczka: hetman",
+        "Awansuje skoczka na hetmana i ogłusza go na 3 tury.",
+        PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.QUEEN)
+    BISHOP_UPGRADE_TO_ROOK = (
+        [EnchantmentType.STUN_AFTER_USE], 0.05, "Awans gońca: wieża",
+        "Awansuje gońca na wieżę i ogłusza go na 1 turę.",
+        PIECE_TYPE.BISHOP, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.ROOK)
+    BISHOP_UPGRADE_TO_QUEEN = (
+        [EnchantmentType.STUN_AFTER_USE] * 2, 0.05, "Awans gońca: hetman",
+        "Awansuje gońca na hetmana i ogłusza go na 2 tury.",
+        PIECE_TYPE.BISHOP, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.QUEEN)
+    ROOK_UPGRADE_TO_QUEEN = (
+        [EnchantmentType.STUN_AFTER_USE], 0.01, "Awans wieży: hetman",
+        "Awansuje wieżę na hetmana i ogłusza ją na 1 turę.",
+        PIECE_TYPE.ROOK, any_piece_behaviors.no_additional_moves,
+        None, None, False, None, PIECE_TYPE.QUEEN)
     RETURN_TO_START = (
         [EnchantmentType.REUSABLE], 0.4, "Powrót na start",
         "Przenieś wybraną figurę na jej pole startowe, jeśli jest wolne. Ruch nie zbija figur.",
@@ -114,7 +160,7 @@ class EnchantmentCardType(Enum):
     def __init__(
         self, enchantment_types, rarity, title, description, piece_type, behavior_to_inject,
         remaining_uses=None, delay_before_use=None, allows_captured_piece_selection=False,
-        resurrected_piece_type=None,
+        resurrected_piece_type=None, promoted_piece_type=None,
     ):
         self.enchantment_types = enchantment_types
         self.rarity = _resolve_rarity(rarity)
@@ -126,6 +172,7 @@ class EnchantmentCardType(Enum):
         self.delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
         self.allows_captured_piece_selection = allows_captured_piece_selection
         self.resurrected_piece_type = resurrected_piece_type
+        self.promoted_piece_type = promoted_piece_type
 
     def create(self, uses=None) -> Enchantment:
         if self.remaining_uses_range is None:

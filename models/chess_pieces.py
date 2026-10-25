@@ -49,6 +49,22 @@ class Piece:
     def get_promotion_stun_turns(self) -> int:
         return self.PROMOTION_STUN_TURNS.get(self.__type, 0)
 
+    def get_promotion_stun_turns_to(self, promoted_type: PIECE_TYPE) -> int:
+        piece_type = self.__type
+        stun_turns = 0
+        while piece_type in self.PROMOTION_TYPES:
+            piece_type = self.PROMOTION_TYPES[piece_type]
+            stun_turns += 1
+            if piece_type == promoted_type:
+                return stun_turns
+        return 0
+
+    def promote_to(self, promoted_type: PIECE_TYPE) -> bool:
+        if self.get_promotion_stun_turns_to(promoted_type) == 0:
+            return False
+        self.__type = promoted_type
+        return True
+
     def promote(self) -> bool:
         promoted_type = self.PROMOTION_TYPES.get(self.__type)
         if promoted_type is None:
