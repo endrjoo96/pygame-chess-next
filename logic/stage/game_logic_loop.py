@@ -1,3 +1,5 @@
+import random
+
 import pygame
 from pygame import Surface
 from pygame.font import SysFont
@@ -6,7 +8,7 @@ from constants.pos import id_to_xy, xy_to_id, POS
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
 from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR
-from models.enchantments import rook_jump_card
+from models.enchantments import EnchantmentCardType
 from piecesprite import PieceSprite
 from processors import input_processor
 from processors.capturing_piece_processor import CaptureProcessor
@@ -40,6 +42,8 @@ class GameLogicLoop(object):
         self.cards_processor = CardsProcessor(screen)
         self.board_card_position = POS.D5.value
         self.board_card_available = True
+        self.board_enchantment = EnchantmentCardType.create_random()
+        self.pending_board_card_delay = None
         card_image = pygame.image.load(self.context.card_on_board_src).convert_alpha()
         self.board_card_image = pygame.transform.scale(
             card_image, (self.context.square_length, self.context.square_length))
@@ -53,15 +57,17 @@ class GameLogicLoop(object):
         self.selected_card = None
         self.selected_captured_piece = None
         self.board_card_available = True
+        self.board_card_position = POS.D5.value
+        self.board_enchantment = EnchantmentCardType.create_random()
+        self.pending_board_card_delay = None
         self.cards_processor.reset_decks()
 
         # two dimensonal dictionary containing details about each board location
         # storage format is [piece_name, currently_selected, x_y_coordinate]
         # # reset the board
-        for i in range(1, 64):
+        for i in range(1, 65):
             # [piece name, currently selected]
             self.pieces_locations[i] = Piece()
-
         for position, piece in pieces_starting_positions_map.items():
             self.pieces_locations[position.value] = piece
 
@@ -131,7 +137,7 @@ class GameLogicLoop(object):
             preview_y = mouse_y - card_height - margin
 
         self.cards_processor.render_preview(
-            self.screen, self.chess_pieces, rook_jump_card, (preview_x, preview_y), self.current_turn)
+            self.screen, self.chess_pieces, self.board_enchantment, (preview_x, preview_y), self.current_turn)
 
     def __change_background_to_selection(self, pos):
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
@@ -153,6 +159,11 @@ class GameLogicLoop(object):
         if position:
             piece = self.pieces_locations[position]
             if (piece.exists()) and (piece.get_color() == self.current_turn):
+                if position == self.selected_piece_position:
+                    self.selected_piece_position = 0
+                    self.moves = []
+                    return
+
                 active_enchantment = None
                 if self.selected_card is not None:
                     card_color, card_index = self.selected_card
@@ -228,6 +239,7 @@ class GameLogicLoop(object):
 
     def move_piece(self, destination, beats=False):
         if self.selected_piece_position > 0:
+            collected_board_card = self.board_card_available and destination == self.board_card_position
             moving_color = self.current_turn
             used_card = None
             if self.selected_card is not None and self.selected_card[0] == moving_color:
@@ -240,17 +252,42 @@ class GameLogicLoop(object):
             self.pieces_locations[self.selected_piece_position] = Piece()
             self.pieces_locations[destination] = piece
 
-            if self.board_card_available and destination == self.board_card_position:
-                self.cards_processor.get_cards_for(moving_color).append(rook_jump_card)
+            if collected_board_card:
+                card_deck = self.cards_processor.get_cards_for(moving_color)
+                if self.board_enchantment.is_reusable():
+                    matching_card = next(
+                        (
+                            card for card in card_deck
+                            if card.get_card_type() == self.board_enchantment.get_card_type()
+                            and card.is_reusable()
+                        ),
+                        None,
+                    )
+                    if matching_card is not None:
+                        matching_card.add_uses(self.board_enchantment.get_remaining_uses())
+                    else:
+                        card_deck.append(self.board_enchantment)
+                else:
+                    card_deck.append(self.board_enchantment)
                 self.board_card_available = False
 
-            if used_card is not None and not used_card.is_reusable():
+            if used_card is not None and used_card.consume_use() == 0:
                 card_deck.pop(card_index)
 
             if self.current_turn == COLOR.WHITE:
                 self.current_turn = COLOR.BLACK
             else:
                 self.current_turn = COLOR.WHITE
+
+            if collected_board_card:
+                self.pending_board_card_delay = random.randint(0, 4)
+                print("Next board card will appear in {} turns".format(self.pending_board_card_delay))
+                if self.pending_board_card_delay == 0:
+                    self.__place_next_board_card()
+            elif self.pending_board_card_delay is not None:
+                self.pending_board_card_delay -= 1
+                if self.pending_board_card_delay == 0:
+                    self.__place_next_board_card()
 
             beats_or_moves = "moves"
             if beats:
@@ -261,6 +298,16 @@ class GameLogicLoop(object):
             self.selected_piece_position = 0
             self.moves = []
             self.selected_card = None
+
+    def __place_next_board_card(self):
+        empty_positions = [
+            position for position in range(1, 65)
+            if not self.pieces_locations[position].exists()
+        ]
+        self.board_card_position = random.choice(empty_positions)
+        self.board_enchantment = EnchantmentCardType.create_random()
+        self.board_card_available = True
+        self.pending_board_card_delay = None
 
     def print_annotations(self):
         font_size = int(self.context.square_length / 3)

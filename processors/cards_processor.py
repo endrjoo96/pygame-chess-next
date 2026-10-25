@@ -3,11 +3,11 @@ from typing import List
 import pygame
 from pygame import Surface
 
+from constants.enchantment_type import EnchantmentType
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
-from models import enchantments
-from models.enchantments import Enchantment
+from models.enchantments import Enchantment, EnchantmentCardType
 from piecesprite import PieceSprite
 from utils.gamecontext import GameContext
 
@@ -17,7 +17,14 @@ class CardsProcessor:
     def __init__(self, screen: Surface):
         context = GameContext()
 
-        self.small_font = pygame.font.SysFont(context.comic_sans_font, 16)
+        self.small_font = pygame.font.SysFont(context.comic_sans_font, 14)
+        self.use_count_font = pygame.font.SysFont(context.comic_sans_font, 12, bold=True)
+        self.enchantment_icons = {
+            EnchantmentType.PASSIVE: pygame.transform.scale(
+                pygame.image.load(context.card_mod_passive_src).convert_alpha(), (24, 24)),
+            EnchantmentType.REUSABLE: pygame.transform.scale(
+                pygame.image.load(context.card_mod_reusable_src).convert_alpha(), (24, 24)),
+        }
         self.white_cards = []
         self.black_cards = []
         self.reset_decks()
@@ -48,8 +55,9 @@ class CardsProcessor:
                     ])
 
     def reset_decks(self):
-        self.white_cards[:] = enchantments.available_cards
-        self.black_cards[:] = enchantments.available_cards
+        deck = [card_type.create() for card_type in EnchantmentCardType]
+        self.white_cards[:] = deck
+        self.black_cards[:] = [card_type.create() for card_type in EnchantmentCardType]
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         if color == COLOR.WHITE:
@@ -70,7 +78,7 @@ class CardsProcessor:
         context = GameContext()
         self.__render_card(
             screen, coords, chess_pieces, card, (context.card_width, context.card_height),
-            (255, 255, 0, 170), card_color=color.value)
+            PREDEFINED_COLOR.transparent_brown, card_color=color.value)
 
     def __render_cards(self, screen, coordinates, chess_pieces, card_deck, card_size, bg_color, color_name, color, selected_card):
         iterator = 0
@@ -92,13 +100,46 @@ class CardsProcessor:
         surface.fill(bg_color)
         screen.blit(surface, coords)
 
-        rendered_card_text = self.small_font.render(
-            card.get_description(), True, PREDEFINED_COLOR.white, wraplength=card_size[0] - 30)
         x, y = coords
-        screen.blit(
-            rendered_card_text,
-            [x + 15, y + (card_size[1] // 2) - (rendered_card_text.get_height() // 2)])
+        icon_types = [
+            enchantment_type for enchantment_type in card.get_enchantment_types()
+            if enchantment_type in self.enchantment_icons
+        ]
+        has_piece_icon = card.get_required_piece_type() != PIECE_TYPE.EMPTY
+        reusable_icon_x = None
+        for index, enchantment_type in enumerate(icon_types):
+            icon_x = x + card_size[0] - 5 - 24 * (index + 1)
+            screen.blit(self.enchantment_icons[enchantment_type], (icon_x, y + 5))
+            if enchantment_type == EnchantmentType.REUSABLE:
+                reusable_icon_x = icon_x
 
-        if card.get_required_piece_type() != PIECE_TYPE.EMPTY:
+        if reusable_icon_x is not None:
+            use_count = self.use_count_font.render(
+                str(card.get_remaining_uses()), True, PREDEFINED_COLOR.white)
+            screen.blit(
+                use_count,
+                (reusable_icon_x + (24 - use_count.get_width()) // 2, y + 30))
+
+        if has_piece_icon:
             chess_pieces.draw(
                 screen, "{}_{}".format(card_color, card.get_required_piece_type().value), coords, True)
+
+        margin = 6
+        graphics_height = max(
+            46 if reusable_icon_x is not None else (29 if icon_types else 0),
+            GameContext().piece_cell_thumbnail_height if has_piece_icon else 0,
+        )
+        text_top = y + margin + graphics_height + (margin if graphics_height else 0)
+        text_height = y + card_size[1] - margin - text_top
+        text_width = card_size[0] - 2 * margin
+        for font_size in range(14, 0, -1):
+            card_font = self.small_font if font_size == 14 else pygame.font.SysFont(
+                GameContext().comic_sans_font, font_size)
+            rendered_card_text = card_font.render(
+                card.get_description(), True, PREDEFINED_COLOR.white, wraplength=text_width)
+            if rendered_card_text.get_height() <= text_height:
+                break
+
+        screen.blit(
+            rendered_card_text,
+            (x + margin, text_top + max(0, (text_height - rendered_card_text.get_height()) // 2)))

@@ -25,6 +25,8 @@ class GameContext(metaclass=Singleton):
     board_src = os.path.join(resources, "board.png")
     pieces_src = os.path.join(resources, "pieces.png")
     card_on_board_src = os.path.join(resources, "card_on_board.png")
+    card_mod_passive_src = os.path.join(resources, "card_mod_passive.png")
+    card_mod_reusable_src = os.path.join(resources, "card_mod_reusable.png")
 
     board_starting_point = (board_offset_x, board_offset_y)
     captured_white_starting_point = ()
