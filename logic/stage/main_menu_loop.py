@@ -1,6 +1,7 @@
 import os
 
 import pygame
+from pygame._sdl2 import Window
 from pygame.locals import *
 
 from logic.stage.game_logic_loop import GameLogicLoop
@@ -26,7 +27,10 @@ class Game:
         pygame.font.init()
 
         # create game window
-        self.screen = pygame.display.set_mode([context.screen_width, context.screen_height])
+        self.screen = pygame.display.set_mode(
+            [context.screen_width, context.screen_height], pygame.RESIZABLE | pygame.SCALED)
+        self.window = Window.from_display_module()
+        self.window.minimum_size = (context.screen_width, context.screen_height)
 
         # set background color
         self.screen.fill(context.bg_color)
