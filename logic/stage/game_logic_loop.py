@@ -66,6 +66,7 @@ class GameLogicLoop(object):
         self.board_card_position = POS.D5.value
         self.board_enchantment = EnchantmentCardType.create_random()
         self.pending_board_card_delay = None
+        self.capture_processor.reset()
         self.cards_processor.reset_decks()
 
         # two dimensonal dictionary containing details about each board location
@@ -88,9 +89,12 @@ class GameLogicLoop(object):
         self.screen.blit(rendered_text, ((self.screen.get_width() - rendered_text.get_width()) // 2,
                                          self.context.board_offset_y - rendered_text.get_height() - 5))
         self.print_annotations()
-        self.process_player_turn()
+        winner = self.capture_processor.get_winner()
+        if winner is None:
+            self.process_player_turn()
+            winner = self.capture_processor.get_winner()
 
-        return self.capture_processor.is_king_captured()
+        return winner
 
     # method to draw pieces on the chess board
     def draw_pieces(self):
@@ -304,7 +308,10 @@ class GameLogicLoop(object):
         self.moves = []
 
     def __apply_passive_enchantment(self, position, enchantment):
-        if enchantment.get_card_type() == EnchantmentCardType.PAWN_DETONATION:
+        if enchantment.get_card_type() in (
+            EnchantmentCardType.PAWN_DETONATION,
+            EnchantmentCardType.PAWN_DETONATION_DELAYED,
+        ):
             self.__detonate_pawn(position)
         else:
             self.pieces_locations[position].set_enchantment(enchantment)
@@ -346,8 +353,9 @@ class GameLogicLoop(object):
                 if card_index < len(card_deck):
                     used_card = card_deck[card_index]
 
-            piece: Piece = self.pieces_locations[self.selected_piece_position]
-            self.pieces_locations[self.selected_piece_position] = Piece()
+            source_position = self.selected_piece_position
+            piece: Piece = self.pieces_locations[source_position]
+            self.pieces_locations[source_position] = Piece()
             self.pieces_locations[destination] = piece
 
             if collected_board_card:
@@ -401,7 +409,7 @@ class GameLogicLoop(object):
             if beats:
                 beats_or_moves = "beats"
             print(
-                "{} {} from {} to {}".format(piece.full_name(), beats_or_moves, POS(self.selected_piece_position).name,
+                "{} {} from {} to {}".format(piece.full_name(), beats_or_moves, POS(source_position).name,
                                              POS(destination).name))
             self.selected_piece_position = 0
             self.moves = []

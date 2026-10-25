@@ -5,9 +5,11 @@ from models.chess_pieces import Piece, COLOR, PIECE_TYPE
 
 
 class CaptureProcessor:
-    __captured_black = []
-    __captured_white = []
-    __captured_king = None
+    def __init__(self):
+        self.__captured_black = []
+        self.__captured_white = []
+        self.__captured_king = None
+
     def capture_piece(self, piece: Piece):
         piece.clear_effects()
         if piece.get_type() == PIECE_TYPE.KING:
@@ -21,7 +23,17 @@ class CaptureProcessor:
 
     def get_captured_black(self) -> List[Piece]: return self.__captured_black
     def get_captured_white(self) -> List[Piece]: return self.__captured_white
-    def is_king_captured(self): return self.__captured_king
+
+    def get_winner(self):
+        if self.__captured_king is None:
+            return None
+        return COLOR.BLACK if self.__captured_king.get_color() == COLOR.WHITE else COLOR.WHITE
+
+    def reset(self):
+        self.__captured_black.clear()
+        self.__captured_white.clear()
+        self.__captured_king = None
+        self.__recalculate_clickable_coordinates()
 
     def __recalculate_clickable_coordinates(self):
         context = GameContext()
