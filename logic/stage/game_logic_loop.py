@@ -535,22 +535,7 @@ class GameLogicLoop(object):
             self.pieces_locations[destination] = piece
 
             if collected_board_card:
-                card_deck = self.cards_processor.get_cards_for(moving_color)
-                if self.board_enchantment.is_reusable():
-                    matching_card = next(
-                        (
-                            card for card in card_deck
-                            if card.get_card_type() == self.board_enchantment.get_card_type()
-                            and card.is_reusable()
-                        ),
-                        None,
-                    )
-                    if matching_card is not None:
-                        matching_card.add_uses(self.board_enchantment.get_remaining_uses())
-                    else:
-                        card_deck.append(self.board_enchantment)
-                else:
-                    card_deck.append(self.board_enchantment)
+                self.cards_processor.add_card_for(moving_color, self.board_enchantment)
                 self.board_card_available = False
 
             if used_card is not None and used_card.consume_use() == 0:

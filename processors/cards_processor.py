@@ -13,6 +13,9 @@ from utils.gamecontext import GameContext
 
 
 class CardsProcessor:
+    MAX_CARDS_PER_PLAYER = 8
+    CARD_COLUMNS = 2
+
     STARTING_CARD_TYPES = (
         EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.with_uses(2),
         EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.with_uses(2),
@@ -42,9 +45,8 @@ class CardsProcessor:
         context.white_cards_starting_point = (context.board_offset_x + (context.square_length * 8) + 20, 0)
         context.black_cards_starting_point = (0, 0)
 
-        columns = 2
-        max_card_count = max(len(self.white_cards), len(self.black_cards))
-        rows = max(4, (max_card_count + columns - 1) // columns)
+        columns = self.CARD_COLUMNS
+        rows = (self.MAX_CARDS_PER_PLAYER + columns - 1) // columns
 
         context.card_width = (context.board_offset_x - 20) // columns
         context.card_height = (screen.get_height() - 20) // rows
@@ -73,6 +75,27 @@ class CardsProcessor:
         if color == COLOR.WHITE:
             return self.white_cards
         return self.black_cards
+
+    def add_card_for(self, color: COLOR, card: Enchantment) -> bool:
+        card_deck = self.get_cards_for(color)
+        if card.is_reusable():
+            matching_card = next(
+                (
+                    existing_card for existing_card in card_deck
+                    if existing_card.get_card_type() == card.get_card_type()
+                    and existing_card.is_reusable()
+                ),
+                None,
+            )
+            if matching_card is not None:
+                matching_card.add_uses(card.get_remaining_uses())
+                return True
+
+        if len(card_deck) >= self.MAX_CARDS_PER_PLAYER:
+            return False
+
+        card_deck.append(card)
+        return True
 
     def render(self, screen: Surface, chess_pieces: PieceSprite, selected_card=None):
         context = GameContext()
