@@ -16,15 +16,14 @@ class CardsProcessor:
     STARTING_CARD_TYPES = (
         EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD,
         EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD,
-        EnchantmentCardType.PAWN_DETONATION,
-        EnchantmentCardType.PAWN_DETONATION_DELAYED,
+        EnchantmentCardType.PAWN_DETONATION_DELAYED_2,
     )
 
     def __init__(self, screen: Surface):
         context = GameContext()
 
-        self.title_font = pygame.font.SysFont(context.comic_sans_font, 16)
-        self.small_font = pygame.font.SysFont(context.comic_sans_font, 14)
+        self.title_font = pygame.font.SysFont("Arial", 16, bold=True)
+        self.small_font = pygame.font.SysFont(context.comic_sans_font, 13)
         self.use_count_font = pygame.font.SysFont(context.comic_sans_font, 12, bold=True)
         self.enchantment_icons = {
             EnchantmentType.PASSIVE: pygame.transform.scale(
@@ -117,6 +116,31 @@ class CardsProcessor:
                 screen, card_coords, chess_pieces, effect, (card_width, card_height),
                 PREDEFINED_COLOR.transparent_red, card_color=color.value)
 
+    def __wrap_text(self, text, font, max_width):
+        lines = []
+        current_line = ""
+        for word in text.split():
+            candidate = "{} {}".format(current_line, word).strip()
+            if font.size(candidate)[0] <= max_width:
+                current_line = candidate
+                continue
+
+            if current_line:
+                lines.append(current_line)
+                current_line = ""
+
+            while font.size(word)[0] > max_width:
+                split_at = len(word)
+                while split_at > 1 and font.size(word[:split_at])[0] > max_width:
+                    split_at -= 1
+                lines.append(word[:split_at])
+                word = word[split_at:]
+            current_line = word
+
+        if current_line:
+            lines.append(current_line)
+        return lines
+
     def __render_cards(self, screen, coordinates, chess_pieces, card_deck, card_size, bg_color, color_name, color, selected_card):
         iterator = 0
         for row in coordinates:
@@ -174,16 +198,33 @@ class CardsProcessor:
             GameContext().piece_cell_thumbnail_height if has_piece_icon else 0,
         )
         title_top = y + margin + graphics_height + (margin if graphics_height else 0)
-        rendered_title = self.title_font.render(card.get_title(), True, PREDEFINED_COLOR.white)
-        screen.blit(
-            rendered_title,
-            (x + (card_size[0] - 5 - rendered_title.get_width()) // 2, title_top))
+        title_width = card_size[0] - 2 * margin
+        title_area_height = 2 * self.title_font.get_linesize()
+        title_font = self.title_font
+        title_lines = []
+        for font_size in range(16, 0, -1):
+            title_font = self.title_font if font_size == 16 else pygame.font.SysFont(
+                "Arial", font_size, bold=True)
+            title_lines = self.__wrap_text(card.get_title().upper(), title_font, title_width)
+            if len(title_lines) <= 2:
+                break
 
-        text_top = title_top + rendered_title.get_height() + margin
+        title_text_height = len(title_lines) * title_font.get_linesize()
+        title_text_top = title_top + (title_area_height - title_text_height) // 2
+        for index, line in enumerate(title_lines):
+            rendered_title_line = title_font.render(line, True, PREDEFINED_COLOR.white)
+            screen.blit(
+                rendered_title_line,
+                (
+                    x + (card_size[0] - 5 - rendered_title_line.get_width()) // 2,
+                    title_text_top + index * title_font.get_linesize(),
+                ))
+
+        text_top = title_top + title_area_height + margin
         text_height = y + card_size[1] - margin - text_top
         text_width = card_size[0] - 2 * margin
-        for font_size in range(14, 0, -1):
-            card_font = self.small_font if font_size == 14 else pygame.font.SysFont(
+        for font_size in range(13, 0, -1):
+            card_font = self.small_font if font_size == 13 else pygame.font.SysFont(
                 GameContext().comic_sans_font, font_size)
             rendered_card_text = card_font.render(
                 card.get_description(), True, PREDEFINED_COLOR.white, wraplength=text_width)

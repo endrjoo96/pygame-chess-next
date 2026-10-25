@@ -18,13 +18,27 @@ def _resolve_remaining_uses(enchantment_types, remaining_uses):
     return remaining_uses if is_reusable else 1
 
 
+def _resolve_delay_before_use(enchantment_types, delay_before_use):
+    has_delay = EnchantmentType.DELAY_BEFORE_USE in enchantment_types
+    if has_delay and delay_before_use is None:
+        raise ValueError("Delayed enchantments must define their delay")
+    if not has_delay and delay_before_use is not None:
+        raise ValueError("Only delayed enchantments can define a delay")
+    if delay_before_use is not None and (
+        not isinstance(delay_before_use, int) or isinstance(delay_before_use, bool) or delay_before_use < 1
+    ):
+        raise ValueError("An enchantment delay must be a positive integer")
+    return delay_before_use if has_delay else 0
+
+
 class Enchantment:
     def __init__(
         self, enchantment_types: List[EnchantmentType], title: str, description: str,
         piece_type_restriction: PIECE_TYPE, behavior_to_inject, card_type=None,
-        remaining_uses: Optional[int] = None,
+        remaining_uses: Optional[int] = None, delay_before_use: Optional[int] = None,
     ):
         self.__remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
+        self.__delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
         self.__enchantment_types = enchantment_types
         self.__title = title
         self.__description = description
@@ -67,7 +81,7 @@ class Enchantment:
         return self.__title
 
     def get_rate_delay_before_use(self) -> int:
-        return self.__enchantment_types.count(EnchantmentType.DELAY_BEFORE_USE)
+        return self.__delay_before_use
 
     def get_rate_stun_after_use(self) -> int:
         return self.__enchantment_types.count(EnchantmentType.STUN_AFTER_USE)
@@ -78,43 +92,51 @@ class Enchantment:
 
 class EnchantmentCardType(Enum):
     PAWN_TWO_FIELDS_FORWARD = (
-        [EnchantmentType.REUSABLE], "TITLE", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
+        [EnchantmentType.REUSABLE], "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
         pawn_behaviors.two_field_forward_move, 3)
     PAWN_ONE_FIELD_BACKWARD = (
-        [EnchantmentType.REUSABLE], "TITLE", "Wykonaj ruch do tyłu", PIECE_TYPE.PAWN,
+        [EnchantmentType.REUSABLE], "Ruch do tyłu", "Wykonaj ruch do tyłu", PIECE_TYPE.PAWN,
         pawn_behaviors.one_field_backwards_move, 3)
     KNIGHT_ONE_FIELD_ANY_DIRECTION = (
-        [EnchantmentType.REUSABLE], "TITLE", "Skoczek porusza się o 1 pole w dowolnym kierunku",
+        [EnchantmentType.REUSABLE], "Przesunięcie skoczka", "Skoczek porusza się o 1 pole w dowolnym kierunku",
         PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction, 3)
     ROOK_JUMP_ALLIES = (
-        [], "TITLE", "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
+        [], "Wystrzał wieży", "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
         PIECE_TYPE.ROOK, rook_behaviors.move_through_allied_pieces_without_capturing)
     QUEEN_JUMP_ALLIES = (
         [EnchantmentType.MANDATORY],
-        "TITLE", "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
+        "Wystrzał hetmana", "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
         PIECE_TYPE.QUEEN, queen_behaviors.move_up_to_four_fields_through_allies_without_capturing)
     PAWN_DETONATION = (
-        [EnchantmentType.PASSIVE], "TITLE",
+        [EnchantmentType.PASSIVE], "Kamikaze",
         "Detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
-    PAWN_DETONATION_DELAYED = (
-        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], "TITLE",
+    PAWN_DETONATION_DELAYED_1 = (
+        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], "Kamikaze z opóźnieniem",
         "Po 1 turze detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
-        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves, None, 1)
+    PAWN_DETONATION_DELAYED_2 = (
+        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], "Kamikaze z opóźnieniem",
+        "Po 2 turach detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves, None, 2)
 
-    def __init__(self, enchantment_types, title, description, piece_type, behavior_to_inject, remaining_uses=None):
+    def __init__(
+        self, enchantment_types, title, description, piece_type, behavior_to_inject,
+        remaining_uses=None, delay_before_use=None,
+    ):
         self.enchantment_types = enchantment_types
         self.title = title
         self.description = description
         self.piece_type = piece_type
         self.behavior_to_inject = behavior_to_inject
         self.remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
+        self.delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
 
     def create(self) -> Enchantment:
         return Enchantment(
             self.enchantment_types.copy(), self.title, self.description, self.piece_type,
             self.behavior_to_inject, self,
-            self.remaining_uses)
+            self.remaining_uses, self.delay_before_use if self.delay_before_use else None)
 
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":

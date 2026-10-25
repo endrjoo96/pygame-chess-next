@@ -310,7 +310,8 @@ class GameLogicLoop(object):
     def __apply_passive_enchantment(self, position, enchantment):
         if enchantment.get_card_type() in (
             EnchantmentCardType.PAWN_DETONATION,
-            EnchantmentCardType.PAWN_DETONATION_DELAYED,
+            EnchantmentCardType.PAWN_DETONATION_DELAYED_1,
+            EnchantmentCardType.PAWN_DETONATION_DELAYED_2,
         ):
             self.__detonate_pawn(position)
         else:
