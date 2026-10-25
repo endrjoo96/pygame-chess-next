@@ -16,6 +16,7 @@ class Game:
         self.menu_showed = False
         # flag to set game loop
         self.running = True
+        self.winner = None
         # base folder for program resources
         self.resources = "res"
 
@@ -150,6 +151,10 @@ class Game:
             self.menu_showed = True
 
     def game(self):
+        if self.winner is not None:
+            self.declare_winner(self.winner)
+            return
+
         context = GameContext()
         # background color
         color = (0, 0, 0)
@@ -165,6 +170,7 @@ class Game:
         self.chess.draw_pieces()
 
         if winner:
+            self.winner = winner
             self.declare_winner(winner)
 
     def declare_winner(self, winner):
@@ -205,23 +211,15 @@ class Game:
                          ((reset_btn.x + (reset_btn.width - reset_btn_label.get_width()) // 2,
                            reset_btn.y + (reset_btn.height - reset_btn_label.get_height()) // 2)))
 
-        # get pressed keys
-        key_pressed = pygame.key.get_pressed()
-
         # check if left mouse button was clicked
         if utils.left_click_event():
-            # call function to get mouse event
             mouse_coords = utils.get_mouse_event()
 
             # check if reset button was clicked
             if reset_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
-                # change button behavior as it is hovered
                 pygame.draw.rect(self.screen, white_color, reset_btn, 3)
-
-                # change menu flag
-                self.menu_showed = True
-            # check if enter or return key was pressed
-            elif key_pressed[K_RETURN]:
-                self.menu_showed = True
-            # reset game
+                self.chess.reset()
+                self.winner = None
+        elif pygame.key.get_pressed()[K_RETURN]:
             self.chess.reset()
+            self.winner = None
