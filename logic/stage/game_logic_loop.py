@@ -16,6 +16,7 @@ from processors.capturing_piece_processor import CaptureProcessor
 from processors.cards_processor import CardsProcessor
 from processors.movement_processor import process_possible_basic_moves
 from utils.gamecontext import GameContext
+from utils.logging import debug_log
 from utils.run_config import RUN_MODE, RunMode
 
 
@@ -401,7 +402,7 @@ class GameLogicLoop(object):
                         and self.__is_valid_captured_piece_for_selected_card(captured_pieces[index])
                     ):
                         piece = captured_pieces[index]
-                        print(
+                        debug_log(
                             "Clicked captured piece: type={}, color={}, list_position={}".format(
                                 piece.get_type().value, piece.get_color().value, index
                             )
@@ -764,7 +765,7 @@ class GameLogicLoop(object):
             beats_or_moves = "moves"
             if beats:
                 beats_or_moves = "beats"
-            print(
+            debug_log(
                 "{} {} from {} to {}".format(piece.full_name(), beats_or_moves, POS(source_position).name,
                                              POS(destination).name))
             self.selected_piece_position = 0
@@ -794,7 +795,7 @@ class GameLogicLoop(object):
         self.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else random.randint(0, 4)
         )
-        print("Next board card will appear in {} turns".format(self.pending_board_card_delay))
+        debug_log("Next board card will appear in {} turns".format(self.pending_board_card_delay))
         if self.pending_board_card_delay == 0:
             self.__place_next_board_card()
 
