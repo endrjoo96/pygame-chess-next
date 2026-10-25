@@ -3,7 +3,7 @@ import os
 import pygame
 from pygame.locals import *
 
-from chess import Chess
+from logic.stage.game_logic_loop import GameLogicLoop
 from utils.gamecontext import GameContext
 from utils import utils
 
@@ -48,7 +48,7 @@ class Game:
     def start_game(self):
         context = GameContext()
 
-        """Function containing main game loop"""
+        """Function containing logic game loop"""
 
         # get the width of a chess board square
         context.square_length = self.board_img.get_rect().width // 8
@@ -62,13 +62,15 @@ class Game:
             context.chessboard_coordinates[x].reverse()
 
         # create class object that handles the gameplay logic
-        self.chess = Chess(self.screen)
+        self.chess = GameLogicLoop(self.screen)
 
         # game loop
         while self.running:
             self.clock.tick(20)
             # poll events
-            for event in pygame.event.get():
+            events = pygame.event.get()
+            utils.begin_input_frame(events)
+            for event in events:
                 # get keys pressed
                 key_pressed = pygame.key.get_pressed()
                 # check if the game has been closed by the user
@@ -100,7 +102,8 @@ class Game:
         # black color
         black_color = (0, 0, 0)
         # coordinates for "Play" button
-        start_btn = pygame.Rect(270, 300, 100, 50)
+        start_btn = pygame.Rect(0, 0, 100, 50)
+        start_btn.center = self.screen.get_rect().center
         # show play button
         pygame.draw.rect(self.screen, black_color, start_btn)
 
@@ -173,7 +176,8 @@ class Game:
         # black color
         black_color = (0, 0, 0)
         # coordinates for play again button
-        reset_btn = pygame.Rect(250, 300, 140, 50)
+        reset_btn = pygame.Rect(0, 0, 100, 50)
+        reset_btn.center = self.screen.get_rect().center
         # show reset button
         pygame.draw.rect(self.screen, black_color, reset_btn)
 

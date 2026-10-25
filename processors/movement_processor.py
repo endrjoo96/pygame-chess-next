@@ -2,9 +2,16 @@ from models.chess_pieces import PIECE_TYPE, COLOR, Piece
 from constants.pos import xy_to_id
 
 
-def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations):
+def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations, active_enchantment=None):
     # list to store possible moves of the selected piece
     possible_positions_to_move = []
+    if active_enchantment is not None:
+        active_enchantment.get_behavior_to_inject()(
+            possible_positions_to_move, xy_coord, piece.get_color(), pieces_locations)
+        return [
+            xy for xy in possible_positions_to_move
+            if piece.get_color() != pieces_locations[xy_to_id(xy[0], xy[1])].get_color()
+        ]
     # find the possible locations to put a piece
     # get x, y coordinate
     x_coord, y_coord = xy_coord

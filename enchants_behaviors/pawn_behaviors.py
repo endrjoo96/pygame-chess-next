@@ -15,9 +15,6 @@ def two_field_forward_move(possible_positions_to_move, xy_coord, color, pieces_l
 
 def one_field_backwards_move(possible_positions_to_move, xy_coord, color, pieces_locations):
     x, y = xy_coord
-    if color == COLOR.WHITE:
-        if y - 1 >= 0:
-            possible_positions_to_move.append([x, y - 1])
-    elif color == COLOR.BLACK:
-        if y + 1 < 8:
-            possible_positions_to_move.append([x, y + 1])
+    target_y = y - 1 if color == COLOR.WHITE else y + 1
+    if 0 <= target_y < 8 and not pieces_locations[xy_to_id(x, target_y)].exists():
+        possible_positions_to_move.append([x, target_y])

@@ -3,7 +3,7 @@ from typing import List
 
 from constants.enchantment_type import EnchantmentType
 from constants.piece_type import PIECE_TYPE
-from enchants_behaviors import pawn_behaviors
+from enchants_behaviors import knight_behaviors, pawn_behaviors, queen_behaviors, rook_behaviors
 
 
 class Enchantment:
@@ -15,6 +15,9 @@ class Enchantment:
 
     def get_behavior_to_inject(self):
         return self.__behavior_to_inject
+
+    def is_reusable(self) -> bool:
+        return EnchantmentType.REUSABLE in self.__enchantment_types
 
     def is_mandatory(self) -> bool:
         return self.__enchantment_types.__contains__(EnchantmentType.MANDATORY)
@@ -37,4 +40,12 @@ available_cards = [
                 pawn_behaviors.two_field_forward_move),
     Enchantment([EnchantmentType.REUSABLE], "Wykonaj ruch do tyłu", PIECE_TYPE.PAWN,
                 pawn_behaviors.one_field_backwards_move),
+    Enchantment([EnchantmentType.REUSABLE], "Skoczek porusza się o 1 pole w dowolnym kierunku",
+                PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction),
+    Enchantment([], "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
+                PIECE_TYPE.ROOK, rook_behaviors.move_through_allied_pieces_without_capturing),
+    Enchantment([EnchantmentType.MANDATORY],
+                "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
+                PIECE_TYPE.QUEEN,
+                queen_behaviors.move_up_to_four_fields_through_allies_without_capturing),
 ]

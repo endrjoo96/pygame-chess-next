@@ -60,7 +60,6 @@ def get_clicked_card_index():
                 return COLOR.BLACK, (row*2)+col
     return None, None
 
-
 def __calculate_clicked_object_for(coordinates_array, mouse_event, context, object_size):
     for i in range(len(coordinates_array)):
         for j in range(len(coordinates_array[i])):

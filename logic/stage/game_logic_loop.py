@@ -1,19 +1,20 @@
 import pygame
 from pygame import Surface
+from pygame.font import SysFont
 
 from constants.pos import id_to_xy, xy_to_id, POS
+from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
-from processors.cards_processor import CardsProcessor
-from utils.gamecontext import GameContext
-from models import enchantments
 from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR
 from piecesprite import PieceSprite
 from processors import input_processor
 from processors.capturing_piece_processor import CaptureProcessor
+from processors.cards_processor import CardsProcessor
 from processors.movement_processor import process_possible_basic_moves
+from utils.gamecontext import GameContext
 
 
-class Chess(object):
+class GameLogicLoop(object):
     def __init__(self, screen: Surface):
         self.context = GameContext()
         # display surface
@@ -27,6 +28,7 @@ class Chess(object):
         self.selected_piece_position: int = 0
         # list containing possible moves for the selected piece
         self.moves = []
+        self.selected_card = None
 
         # field_id: PIECE
         self.pieces_locations = {}
@@ -40,6 +42,8 @@ class Chess(object):
     def reset(self):
         # clear moves lists
         self.moves = []
+        self.selected_piece_position = 0
+        self.selected_card = None
 
         # two dimensonal dictionary containing details about each board location
         # storage format is [piece_name, currently_selected, x_y_coordinate]
@@ -49,13 +53,13 @@ class Chess(object):
             self.pieces_locations[i] = Piece()
 
         for position, piece in pieces_starting_positions_map.items():
-                self.pieces_locations[position.value] = piece
+            self.pieces_locations[position.value] = piece
 
     def play_turn(self):
         # white color
         white_color = (255, 255, 255)
         # create fonts for texts
-        small_font = pygame.font.SysFont(self.context.comic_sans_font, 20)
+        small_font = SysFont(self.context.comic_sans_font, 20)
         # create text to be shown on the game menu
         rendered_text = small_font.render("Turn: " + self.current_turn.value, True, white_color)
         # show welcome text
@@ -83,7 +87,7 @@ class Chess(object):
 
         # draw captured pieces on the top and bottom of chessboard
         self.draw_captured_pieces()
-        self.cards_processor.render(self.screen, self.chess_pieces)
+        self.cards_processor.render(self.screen, self.chess_pieces, self.selected_card)
 
     def __change_background_to_selection(self, pos):
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
@@ -104,13 +108,26 @@ class Chess(object):
         # if a square was selected
         if position:
             piece = self.pieces_locations[position]
-            if piece.exists() and piece.get_color() == self.current_turn:
-                self.selected_piece_position = position
-
-            # if there's a piece on the selected square
             if (piece.exists()) and (piece.get_color() == self.current_turn):
-                # find possible moves for thr piece
-                self.moves = process_possible_basic_moves(piece, id_to_xy(position), self.pieces_locations)
+                active_enchantment = None
+                if self.selected_card is not None:
+                    card_color, card_index = self.selected_card
+                    card_deck = self.cards_processor.get_cards_for(card_color)
+                    if card_index >= len(card_deck):
+                        self.selected_card = None
+                        self.moves = []
+                        self.selected_piece_position = 0
+                        return
+                    active_enchantment = card_deck[card_index]
+                    required_piece_type = active_enchantment.get_required_piece_type()
+                    if required_piece_type != piece.get_type() and required_piece_type != PIECE_TYPE.EMPTY:
+                        self.moves = []
+                        self.selected_piece_position = 0
+                        return
+
+                self.selected_piece_position = position
+                self.moves = process_possible_basic_moves(
+                    piece, id_to_xy(position), self.pieces_locations, active_enchantment)
 
             else:
                 for i in self.moves:
@@ -136,8 +153,13 @@ class Chess(object):
         #                                                  color.value))
         else:
             color, index = input_processor.get_clicked_card_index()
-            if color is not None:
-                print("clicked {} card with index {}".format(color.value, index))
+            if color == self.current_turn:
+                card_deck = self.cards_processor.get_cards_for(color)
+                if index is not None and 0 <= index < len(card_deck):
+                    clicked_card = (color, index)
+                    self.selected_card = None if self.selected_card == clicked_card else clicked_card
+                    self.selected_piece_position = 0
+                    self.moves = []
 
     def capture_piece(self, destination):
         p: Piece = self.pieces_locations[destination]
@@ -152,9 +174,20 @@ class Chess(object):
 
     def move_piece(self, destination, beats=False):
         if self.selected_piece_position > 0:
+            moving_color = self.current_turn
+            used_card = None
+            if self.selected_card is not None and self.selected_card[0] == moving_color:
+                card_color, card_index = self.selected_card
+                card_deck = self.cards_processor.get_cards_for(card_color)
+                if card_index < len(card_deck):
+                    used_card = card_deck[card_index]
+
             piece: Piece = self.pieces_locations[self.selected_piece_position]
             self.pieces_locations[self.selected_piece_position] = Piece()
             self.pieces_locations[destination] = piece
+
+            if used_card is not None and not used_card.is_reusable():
+                card_deck.pop(card_index)
 
             if self.current_turn == COLOR.WHITE:
                 self.current_turn = COLOR.BLACK
@@ -169,6 +202,7 @@ class Chess(object):
                                              POS(destination).name))
             self.selected_piece_position = 0
             self.moves = []
+            self.selected_card = None
 
     def print_annotations(self):
         font_size = int(self.context.square_length / 3)
@@ -199,14 +233,14 @@ class Chess(object):
         if not (self.context.captured_white_starting_point and self.context.captured_black_starting_point):
             self.context.captured_white_starting_point = (self.context.board_offset_x,
                                                           self.context.board_offset_y * 2 + (
-                                                                      self.context.square_length * 8) - (
-                                                                      2 * self.context.piece_cell_thumbnail_height))
+                                                                  self.context.square_length * 8) - (
+                                                                  2 * self.context.piece_cell_thumbnail_height))
             self.context.captured_black_starting_point = (self.context.board_offset_x, 0)
 
         for piece in self.capture_processor.get_captured_black():
             self.chess_pieces.draw(self.screen, piece.full_name(), (
                 self.context.captured_black_starting_point[0] + (
-                            iterator * int(self.context.piece_cell_thumbnail_width)),
+                        iterator * int(self.context.piece_cell_thumbnail_width)),
                 self.context.captured_black_starting_point[1] + row * self.context.piece_cell_thumbnail_height
             ), True)
             if row == 1:
@@ -220,7 +254,7 @@ class Chess(object):
         for piece in self.capture_processor.get_captured_white():
             self.chess_pieces.draw(self.screen, piece.full_name(), (
                 self.context.captured_white_starting_point[0] + (
-                            iterator * int(self.context.piece_cell_thumbnail_width)),
+                        iterator * int(self.context.piece_cell_thumbnail_width)),
                 self.context.captured_white_starting_point[1] + (row * self.context.piece_cell_thumbnail_height)
             ), True)
             if row == 1:
