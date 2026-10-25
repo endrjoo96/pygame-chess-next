@@ -13,6 +13,12 @@ from utils.gamecontext import GameContext
 
 
 class CardsProcessor:
+    STARTING_CARD_TYPES = (
+        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD,
+        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD,
+        EnchantmentCardType.PAWN_DETONATION,
+        EnchantmentCardType.PAWN_DETONATION_DELAYED,
+    )
 
     def __init__(self, screen: Surface):
         context = GameContext()
@@ -24,6 +30,8 @@ class CardsProcessor:
                 pygame.image.load(context.card_mod_passive_src).convert_alpha(), (24, 24)),
             EnchantmentType.REUSABLE: pygame.transform.scale(
                 pygame.image.load(context.card_mod_reusable_src).convert_alpha(), (24, 24)),
+            EnchantmentType.DELAY_BEFORE_USE: pygame.transform.scale(
+                pygame.image.load(context.card_mod_delay_src).convert_alpha(), (24, 24)),
         }
         self.white_cards = []
         self.black_cards = []
@@ -55,9 +63,9 @@ class CardsProcessor:
                     ])
 
     def reset_decks(self):
-        deck = [card_type.create() for card_type in EnchantmentCardType]
+        deck = [card_type.create() for card_type in self.STARTING_CARD_TYPES]
         self.white_cards[:] = deck
-        self.black_cards[:] = [card_type.create() for card_type in EnchantmentCardType]
+        self.black_cards[:] = [card_type.create() for card_type in self.STARTING_CARD_TYPES]
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         if color == COLOR.WHITE:
@@ -79,6 +87,34 @@ class CardsProcessor:
         self.__render_card(
             screen, coords, chess_pieces, card, (context.card_width, context.card_height),
             PREDEFINED_COLOR.transparent_brown, card_color=color.value)
+
+    def render_effects_preview(self, screen: Surface, chess_pieces: PieceSprite, effects, coords, color: COLOR):
+        if not effects:
+            return
+
+        context = GameContext()
+        columns = min(3, len(effects))
+        rows = (len(effects) + columns - 1) // columns
+        card_width = context.card_width
+        card_height = min(context.card_height, max(60, (screen.get_height() - 20) // rows))
+        preview_width = columns * card_width
+        preview_height = rows * card_height
+        x, y = coords
+        if x + preview_width > screen.get_width():
+            x -= preview_width + 20
+        if y + preview_height > screen.get_height():
+            y -= preview_height + 20
+        x = max(0, min(x, screen.get_width() - preview_width))
+        y = max(0, min(y, screen.get_height() - preview_height))
+
+        for index, effect in enumerate(effects):
+            card_coords = (
+                x + (index % 3) * card_width,
+                y + (index // 3) * card_height,
+            )
+            self.__render_card(
+                screen, card_coords, chess_pieces, effect, (card_width, card_height),
+                PREDEFINED_COLOR.transparent_red, card_color=color.value)
 
     def __render_cards(self, screen, coordinates, chess_pieces, card_deck, card_size, bg_color, color_name, color, selected_card):
         iterator = 0
@@ -112,6 +148,12 @@ class CardsProcessor:
             screen.blit(self.enchantment_icons[enchantment_type], (icon_x, y + 5))
             if enchantment_type == EnchantmentType.REUSABLE:
                 reusable_icon_x = icon_x
+            if enchantment_type == EnchantmentType.DELAY_BEFORE_USE:
+                delay = self.use_count_font.render(
+                    str(card.get_rate_delay_before_use()), True, PREDEFINED_COLOR.white)
+                screen.blit(
+                    delay,
+                    (icon_x + (24 - delay.get_width()) // 2, y + 30))
 
         if reusable_icon_x is not None:
             use_count = self.use_count_font.render(
@@ -126,7 +168,8 @@ class CardsProcessor:
 
         margin = 6
         graphics_height = max(
-            46 if reusable_icon_x is not None else (29 if icon_types else 0),
+            46 if reusable_icon_x is not None or EnchantmentType.DELAY_BEFORE_USE in icon_types
+            else (29 if icon_types else 0),
             GameContext().piece_cell_thumbnail_height if has_piece_icon else 0,
         )
         text_top = y + margin + graphics_height + (margin if graphics_height else 0)

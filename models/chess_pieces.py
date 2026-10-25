@@ -1,5 +1,6 @@
-from typing import List
+from typing import List, Tuple
 
+from constants.enchantment_type import EnchantmentType
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.pos import POS
@@ -11,6 +12,8 @@ class Piece:
         self.__color: COLOR = color
         self.__type: PIECE_TYPE = piece_type
         self.__enchantments: List[Enchantment] = []
+        self.__delayed_enchantments: List[Tuple[Enchantment, int]] = []
+        self.__stunned_until_turn = 0
 
     def full_name(self) -> str:
         if not self.exists():
@@ -38,6 +41,58 @@ class Piece:
             list_of_behaviors.append(enchant.get_behavior_to_inject())
             if enchant.is_mandatory(): break
         return list_of_behaviors
+
+    def has_passive_enchantment(self) -> bool:
+        return any(enchantment.is_passive() for enchantment in self.__enchantments)
+
+    def has_delay_enchantment(self) -> bool:
+        return any(
+            EnchantmentType.DELAY_BEFORE_USE in enchantment.get_enchantment_types()
+            for enchantment in self.__enchantments
+        ) or any(
+            EnchantmentType.DELAY_BEFORE_USE in enchantment.get_enchantment_types()
+            for enchantment, _ in self.__delayed_enchantments
+        )
+
+    def get_passive_enchantments(self) -> List[Enchantment]:
+        return [enchantment for enchantment in self.__enchantments if enchantment.is_passive()]
+
+    def get_effects(self) -> List[Enchantment]:
+        return (
+            self.__enchantments.copy()
+            + [enchantment for enchantment, _ in self.__delayed_enchantments]
+        )
+
+    def remove_passive_enchantments(self):
+        self.__enchantments = [
+            enchantment for enchantment in self.__enchantments
+            if not enchantment.is_passive()
+        ]
+
+    def add_delayed_enchantment(self, enchantment: Enchantment, ready_turn: int):
+        self.__delayed_enchantments.append((enchantment, ready_turn))
+
+    def get_delayed_enchantments_ready_at(self, turn: int) -> List[Enchantment]:
+        ready = [
+            enchantment for enchantment, ready_turn in self.__delayed_enchantments
+            if ready_turn <= turn
+        ]
+        self.__delayed_enchantments = [
+            (enchantment, ready_turn) for enchantment, ready_turn in self.__delayed_enchantments
+            if ready_turn > turn
+        ]
+        return ready
+
+    def set_stunned_until_turn(self, turn: int):
+        self.__stunned_until_turn = max(self.__stunned_until_turn, turn)
+
+    def is_stunned(self, current_turn: int) -> bool:
+        return current_turn < self.__stunned_until_turn
+
+    def clear_effects(self):
+        self.__enchantments.clear()
+        self.__delayed_enchantments.clear()
+        self.__stunned_until_turn = 0
 
 
 pieces_starting_positions_map = {

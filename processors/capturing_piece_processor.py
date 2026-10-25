@@ -9,6 +9,7 @@ class CaptureProcessor:
     __captured_white = []
     __captured_king = None
     def capture_piece(self, piece: Piece):
+        piece.clear_effects()
         if piece.get_type() == PIECE_TYPE.KING:
             self.__captured_king = piece
         if piece.get_color() == COLOR.WHITE:

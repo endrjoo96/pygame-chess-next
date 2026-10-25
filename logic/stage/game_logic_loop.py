@@ -24,6 +24,10 @@ class GameLogicLoop(object):
         self.screen = screen
         # create an object of class to show chess pieces on the board
         self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
+        passive_icon = pygame.image.load(self.context.card_mod_passive_src).convert_alpha()
+        self.passive_icon = pygame.transform.scale(passive_icon, (16, 16))
+        delay_icon = pygame.image.load(self.context.card_mod_delay_src).convert_alpha()
+        self.delay_icon = pygame.transform.scale(delay_icon, (16, 16))
         # dictionary to keeping track of player turn
         self.current_turn = COLOR.WHITE
 
@@ -52,6 +56,8 @@ class GameLogicLoop(object):
 
     def reset(self):
         # clear moves lists
+        self.current_turn = COLOR.WHITE
+        self.turns_started = {COLOR.WHITE: 1, COLOR.BLACK: 0}
         self.moves = []
         self.selected_piece_position = 0
         self.selected_card = None
@@ -69,7 +75,7 @@ class GameLogicLoop(object):
             # [piece name, currently selected]
             self.pieces_locations[i] = Piece()
         for position, piece in pieces_starting_positions_map.items():
-            self.pieces_locations[position.value] = piece
+            self.pieces_locations[position.value] = Piece(piece.get_color(), piece.get_type())
 
     def play_turn(self):
         # white color
@@ -105,13 +111,23 @@ class GameLogicLoop(object):
                 piece_coord_x, piece_coord_y = id_to_xy(position)
                 if self.selected_piece_position == position:
                     self.__change_background_to_selection(position)
+                if piece.is_stunned(self.turns_started[piece.get_color()]):
+                    self.__change_background_to_stunned(position)
                 self.chess_pieces.draw(self.screen, piece.full_name(),
                                        self.context.chessboard_coordinates[piece_coord_x][piece_coord_y])
+                square_x, square_y = self.context.chessboard_coordinates[piece_coord_x][piece_coord_y]
+                icon_x = square_x + self.context.square_length - 16
+                if piece.has_passive_enchantment():
+                    self.screen.blit(self.passive_icon, (icon_x, square_y))
+                    icon_x -= 16
+                if piece.has_delay_enchantment():
+                    self.screen.blit(self.delay_icon, (icon_x, square_y))
 
         # draw captured pieces on the top and bottom of chessboard
         self.draw_captured_pieces()
         self.cards_processor.render(self.screen, self.chess_pieces, self.selected_card)
         self.__draw_board_card_preview()
+        self.__draw_piece_effect_preview()
 
     def __draw_board_card_preview(self):
         if not self.board_card_available:
@@ -139,6 +155,23 @@ class GameLogicLoop(object):
         self.cards_processor.render_preview(
             self.screen, self.chess_pieces, self.board_enchantment, (preview_x, preview_y), self.current_turn)
 
+    def __draw_piece_effect_preview(self):
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        for position, piece in self.pieces_locations.items():
+            effects = piece.get_effects()
+            if not piece.exists() or not effects:
+                continue
+
+            piece_x, piece_y = id_to_xy(position)
+            square_x, square_y = self.context.chessboard_coordinates[piece_x][piece_y]
+            square = pygame.Rect(
+                square_x, square_y, self.context.square_length, self.context.square_length)
+            if square.collidepoint(mouse_x, mouse_y):
+                self.cards_processor.render_effects_preview(
+                    self.screen, self.chess_pieces, effects,
+                    (mouse_x + 10, mouse_y + 10), piece.get_color())
+                return
+
     def __change_background_to_selection(self, pos):
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
         surface.fill(PREDEFINED_COLOR.transparent_blue)
@@ -152,6 +185,12 @@ class GameLogicLoop(object):
                 if 0 <= x_coord < 8 and 0 <= y_coord < 8:
                     self.screen.blit(surface, self.context.chessboard_coordinates[x_coord][y_coord])
 
+    def __change_background_to_stunned(self, pos):
+        surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
+        surface.fill(PREDEFINED_COLOR.transparent_red)
+        piece_coord_x, piece_coord_y = id_to_xy(pos)
+        self.screen.blit(surface, self.context.chessboard_coordinates[piece_coord_x][piece_coord_y])
+
     def process_player_turn(self):
         # get the coordinates of the square selected on the board
         position = input_processor.get_clicked_chessboard_field_id()
@@ -159,6 +198,11 @@ class GameLogicLoop(object):
         if position:
             piece = self.pieces_locations[position]
             if (piece.exists()) and (piece.get_color() == self.current_turn):
+                if piece.is_stunned(self.turns_started[self.current_turn]):
+                    self.selected_piece_position = 0
+                    self.moves = []
+                    return
+
                 if position == self.selected_piece_position:
                     self.selected_piece_position = 0
                     self.moves = []
@@ -178,6 +222,22 @@ class GameLogicLoop(object):
                     if required_piece_type != piece.get_type() and required_piece_type != PIECE_TYPE.EMPTY:
                         self.moves = []
                         self.selected_piece_position = 0
+                        return
+
+                    if active_enchantment.is_passive():
+                        delay = active_enchantment.get_rate_delay_before_use()
+                        if delay > 0:
+                            piece.add_delayed_enchantment(
+                                active_enchantment,
+                                self.turns_started[self.current_turn] + delay,
+                            )
+                        else:
+                            self.__apply_passive_enchantment(position, active_enchantment)
+                        card_deck.pop(card_index)
+                        self.selected_card = None
+                        self.selected_piece_position = 0
+                        self.moves = []
+                        self.__end_turn()
                         return
 
                 self.selected_piece_position = position
@@ -225,6 +285,44 @@ class GameLogicLoop(object):
                         self.selected_card = None if self.selected_card == clicked_card else clicked_card
                         self.selected_piece_position = 0
                         self.moves = []
+
+    def __detonate_pawn(self, position):
+        x, y = id_to_xy(position)
+        for target_y in range(max(0, y - 1), min(7, y + 1) + 1):
+            for target_x in range(max(0, x - 1), min(7, x + 1) + 1):
+                if target_x == x and target_y == y:
+                    continue
+
+                target_position = xy_to_id(target_x, target_y)
+                target_piece = self.pieces_locations[target_position]
+                if target_piece.exists():
+                    self.capture_processor.capture_piece(target_piece)
+                    self.pieces_locations[target_position] = Piece()
+
+        self.pieces_locations[position] = Piece()
+        self.selected_piece_position = 0
+        self.moves = []
+
+    def __apply_passive_enchantment(self, position, enchantment):
+        if enchantment.get_card_type() == EnchantmentCardType.PAWN_DETONATION:
+            self.__detonate_pawn(position)
+        else:
+            self.pieces_locations[position].set_enchantment(enchantment)
+
+    def __apply_ready_passive_enchantments(self, color):
+        turn = self.turns_started[color]
+        for position, piece in self.pieces_locations.items():
+            if not piece.exists() or piece.get_color() != color:
+                continue
+            for enchantment in piece.get_delayed_enchantments_ready_at(turn):
+                if not piece.exists():
+                    break
+                self.__apply_passive_enchantment(position, enchantment)
+
+    def __end_turn(self):
+        self.current_turn = COLOR.BLACK if self.current_turn == COLOR.WHITE else COLOR.WHITE
+        self.turns_started[self.current_turn] += 1
+        self.__apply_ready_passive_enchantments(self.current_turn)
 
     def capture_piece(self, destination):
         p: Piece = self.pieces_locations[destination]
@@ -274,10 +372,20 @@ class GameLogicLoop(object):
             if used_card is not None and used_card.consume_use() == 0:
                 card_deck.pop(card_index)
 
-            if self.current_turn == COLOR.WHITE:
-                self.current_turn = COLOR.BLACK
-            else:
-                self.current_turn = COLOR.WHITE
+            stun_turns = (
+                used_card.get_rate_stun_after_use()
+                if used_card is not None
+                else sum(
+                    enchantment.get_rate_stun_after_use()
+                    for enchantment in piece.get_passive_enchantments()
+                )
+            )
+            if stun_turns > 0:
+                piece.set_stunned_until_turn(
+                    self.turns_started[moving_color] + stun_turns + 1
+                )
+
+            self.__end_turn()
 
             if collected_board_card:
                 self.pending_board_card_delay = random.randint(0, 4)

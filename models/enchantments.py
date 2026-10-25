@@ -4,7 +4,7 @@ from typing import List
 
 from constants.enchantment_type import EnchantmentType
 from constants.piece_type import PIECE_TYPE
-from enchants_behaviors import knight_behaviors, pawn_behaviors, queen_behaviors, rook_behaviors
+from enchants_behaviors import any_piece_behaviors, knight_behaviors, pawn_behaviors, queen_behaviors, rook_behaviors
 
 
 class Enchantment:
@@ -24,6 +24,9 @@ class Enchantment:
 
     def is_reusable(self) -> bool:
         return EnchantmentType.REUSABLE in self.__enchantment_types
+
+    def is_passive(self) -> bool:
+        return EnchantmentType.PASSIVE in self.__enchantment_types
 
     def get_remaining_uses(self) -> int:
         return self.__remaining_uses
@@ -47,8 +50,8 @@ class Enchantment:
     def get_description(self) -> str:
         return self.__description
 
-    def get_rate_stun_after_cast(self) -> int:
-        return self.__enchantment_types.count(EnchantmentType.STUN_AFTER_CAST)
+    def get_rate_delay_before_use(self) -> int:
+        return self.__enchantment_types.count(EnchantmentType.DELAY_BEFORE_USE)
 
     def get_rate_stun_after_use(self) -> int:
         return self.__enchantment_types.count(EnchantmentType.STUN_AFTER_USE)
@@ -74,6 +77,14 @@ class EnchantmentCardType(Enum):
         [EnchantmentType.MANDATORY],
         "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
         PIECE_TYPE.QUEEN, queen_behaviors.move_up_to_four_fields_through_allies_without_capturing)
+    PAWN_DETONATION = (
+        [EnchantmentType.PASSIVE],
+        "Detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
+    PAWN_DETONATION_DELAYED = (
+        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE],
+        "Po 1 turze detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
 
     def __init__(self, enchantment_types, description, piece_type, behavior_to_inject):
         self.enchantment_types = enchantment_types
