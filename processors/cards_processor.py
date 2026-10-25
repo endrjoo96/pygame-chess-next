@@ -14,9 +14,9 @@ from utils.gamecontext import GameContext
 
 class CardsProcessor:
     STARTING_CARD_TYPES = (
-        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD,
-        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD,
-        EnchantmentCardType.PAWN_DETONATION_DELAYED_2,
+        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD_3,
+        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD_3,
+        EnchantmentCardType.PAWN_SWORDSMAN,
     )
 
     def __init__(self, screen: Surface):
@@ -32,6 +32,8 @@ class CardsProcessor:
                 pygame.image.load(context.card_mod_reusable_src).convert_alpha(), (24, 24)),
             EnchantmentType.DELAY_BEFORE_USE: pygame.transform.scale(
                 pygame.image.load(context.card_mod_delay_src).convert_alpha(), (24, 24)),
+            EnchantmentType.STUN_AFTER_USE: pygame.transform.scale(
+                pygame.image.load(context.card_mod_stun_src).convert_alpha(), (24, 24)),
         }
         self.white_cards = []
         self.black_cards = []
@@ -107,14 +109,15 @@ class CardsProcessor:
         x = max(0, min(x, screen.get_width() - preview_width))
         y = max(0, min(y, screen.get_height() - preview_height))
 
-        for index, effect in enumerate(effects):
+        for index, (effect, delay_remaining, stun_remaining) in enumerate(effects):
             card_coords = (
                 x + (index % 3) * card_width,
                 y + (index // 3) * card_height,
             )
             self.__render_card(
                 screen, card_coords, chess_pieces, effect, (card_width, card_height),
-                PREDEFINED_COLOR.transparent_red, card_color=color.value)
+                PREDEFINED_COLOR.transparent_red, card_color=color.value,
+                delay_remaining=delay_remaining, stun_remaining=stun_remaining)
 
     def __wrap_text(self, text, font, max_width):
         lines = []
@@ -156,16 +159,19 @@ class CardsProcessor:
                         pygame.Rect(coord[0], coord[1], card_size[0] - 5, card_size[1] - 5), 4)
                 iterator += 1
 
-    def __render_card(self, screen, coords, chess_pieces, card, card_size, bg_color, card_color):
+    def __render_card(
+        self, screen, coords, chess_pieces, card, card_size, bg_color, card_color,
+        delay_remaining=None, stun_remaining=None,
+    ):
         surface = Surface((card_size[0] - 5, card_size[1] - 5), pygame.SRCALPHA)
         surface.fill(bg_color)
         screen.blit(surface, coords)
 
         x, y = coords
-        icon_types = [
+        icon_types = list(dict.fromkeys(
             enchantment_type for enchantment_type in card.get_enchantment_types()
             if enchantment_type in self.enchantment_icons
-        ]
+        ))
         has_piece_icon = card.get_required_piece_type() != PIECE_TYPE.EMPTY
         reusable_icon_x = None
         for index, enchantment_type in enumerate(icon_types):
@@ -174,11 +180,27 @@ class CardsProcessor:
             if enchantment_type == EnchantmentType.REUSABLE:
                 reusable_icon_x = icon_x
             if enchantment_type == EnchantmentType.DELAY_BEFORE_USE:
-                delay = self.use_count_font.render(
-                    str(card.get_rate_delay_before_use()), True, PREDEFINED_COLOR.white)
+                value = self.use_count_font.render(
+                    str(
+                        delay_remaining
+                        if delay_remaining is not None
+                        else card.get_rate_delay_before_use()
+                    ),
+                    True, PREDEFINED_COLOR.white)
                 screen.blit(
-                    delay,
-                    (icon_x + (24 - delay.get_width()) // 2, y + 30))
+                    value,
+                    (icon_x + (24 - value.get_width()) // 2, y + 30))
+            if enchantment_type == EnchantmentType.STUN_AFTER_USE:
+                value = self.use_count_font.render(
+                    str(
+                        stun_remaining
+                        if stun_remaining is not None
+                        else card.get_rate_stun_after_use()
+                    ),
+                    True, PREDEFINED_COLOR.white)
+                screen.blit(
+                    value,
+                    (icon_x + (24 - value.get_width()) // 2, y + 30))
 
         if reusable_icon_x is not None:
             use_count = self.use_count_font.render(
@@ -193,7 +215,13 @@ class CardsProcessor:
 
         margin = 6
         graphics_height = max(
-            46 if reusable_icon_x is not None or EnchantmentType.DELAY_BEFORE_USE in icon_types
+            46 if reusable_icon_x is not None or any(
+                enchantment_type in icon_types
+                for enchantment_type in (
+                    EnchantmentType.DELAY_BEFORE_USE,
+                    EnchantmentType.STUN_AFTER_USE,
+                )
+            )
             else (29 if icon_types else 0),
             GameContext().piece_cell_thumbnail_height if has_piece_icon else 0,
         )

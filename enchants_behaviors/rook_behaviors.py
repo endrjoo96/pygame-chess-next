@@ -1,6 +1,17 @@
 from constants.pos import xy_to_id
 
 
+def move_to_board_edge(possible_positions_to_move, xy_coord, color, pieces_locations):
+    x, y = xy_coord
+    for x_offset, y_offset in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+        target_x, target_y = x, y
+        while 0 <= target_x + x_offset < 8 and 0 <= target_y + y_offset < 8:
+            target_x += x_offset
+            target_y += y_offset
+        if (target_x, target_y) != (x, y):
+            possible_positions_to_move.append([target_x, target_y])
+
+
 def move_through_allied_pieces_without_capturing(
         possible_positions_to_move, xy_coord, color, pieces_locations):
     x, y = xy_coord

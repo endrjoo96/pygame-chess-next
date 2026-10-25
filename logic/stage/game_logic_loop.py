@@ -28,6 +28,8 @@ class GameLogicLoop(object):
         self.passive_icon = pygame.transform.scale(passive_icon, (16, 16))
         delay_icon = pygame.image.load(self.context.card_mod_delay_src).convert_alpha()
         self.delay_icon = pygame.transform.scale(delay_icon, (16, 16))
+        stun_icon = pygame.image.load(self.context.card_mod_stun_src).convert_alpha()
+        self.stun_icon = pygame.transform.scale(stun_icon, (16, 16))
         # dictionary to keeping track of player turn
         self.current_turn = COLOR.WHITE
 
@@ -35,6 +37,7 @@ class GameLogicLoop(object):
         self.selected_piece_position: int = 0
         # list containing possible moves for the selected piece
         self.moves = []
+        self.resurrection_moves = []
         self.selected_card = None
         self.selected_captured_piece = None
 
@@ -45,8 +48,8 @@ class GameLogicLoop(object):
         self.capture_processor = CaptureProcessor()
         self.cards_processor = CardsProcessor(screen)
         self.board_card_position = POS.D5.value
-        self.board_card_available = True
-        self.board_enchantment = EnchantmentCardType.create_random()
+        self.board_card_available = False
+        self.board_enchantment = None
         self.pending_board_card_delay = None
         card_image = pygame.image.load(self.context.card_on_board_src).convert_alpha()
         self.board_card_image = pygame.transform.scale(
@@ -59,12 +62,13 @@ class GameLogicLoop(object):
         self.current_turn = COLOR.WHITE
         self.turns_started = {COLOR.WHITE: 1, COLOR.BLACK: 0}
         self.moves = []
+        self.resurrection_moves = []
         self.selected_piece_position = 0
         self.selected_card = None
         self.selected_captured_piece = None
-        self.board_card_available = True
+        self.board_card_available = False
         self.board_card_position = POS.D5.value
-        self.board_enchantment = EnchantmentCardType.create_random()
+        self.board_enchantment = None
         self.pending_board_card_delay = None
         self.capture_processor.reset()
         self.cards_processor.reset_decks()
@@ -77,6 +81,7 @@ class GameLogicLoop(object):
             self.pieces_locations[i] = Piece()
         for position, piece in pieces_starting_positions_map.items():
             self.pieces_locations[position.value] = Piece(piece.get_color(), piece.get_type())
+        self.__schedule_next_board_card()
 
     def play_turn(self):
         # white color
@@ -115,7 +120,7 @@ class GameLogicLoop(object):
                 piece_coord_x, piece_coord_y = id_to_xy(position)
                 if self.selected_piece_position == position:
                     self.__change_background_to_selection(position)
-                if piece.is_stunned(self.turns_started[piece.get_color()]):
+                if piece.is_stunned():
                     self.__change_background_to_stunned(position)
                 self.chess_pieces.draw(self.screen, piece.full_name(),
                                        self.context.chessboard_coordinates[piece_coord_x][piece_coord_y])
@@ -126,6 +131,11 @@ class GameLogicLoop(object):
                     icon_x -= 16
                 if piece.has_delay_enchantment():
                     self.screen.blit(self.delay_icon, (icon_x, square_y))
+                    icon_x -= 16
+                if piece.is_stunned():
+                    self.screen.blit(self.stun_icon, (icon_x, square_y))
+
+        self.__draw_resurrection_moves()
 
         # draw captured pieces on the top and bottom of chessboard
         self.draw_captured_pieces()
@@ -162,8 +172,10 @@ class GameLogicLoop(object):
     def __draw_piece_effect_preview(self):
         mouse_x, mouse_y = pygame.mouse.get_pos()
         for position, piece in self.pieces_locations.items():
-            effects = piece.get_effects()
-            if not piece.exists() or not effects:
+            if not piece.exists():
+                continue
+            effects = piece.get_effects(self.turns_started[piece.get_color()])
+            if not effects:
                 continue
 
             piece_x, piece_y = id_to_xy(position)
@@ -195,14 +207,30 @@ class GameLogicLoop(object):
         piece_coord_x, piece_coord_y = id_to_xy(pos)
         self.screen.blit(surface, self.context.chessboard_coordinates[piece_coord_x][piece_coord_y])
 
+    def __draw_resurrection_moves(self):
+        surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
+        surface.fill(PREDEFINED_COLOR.transparent_green)
+        for position in self.resurrection_moves:
+            x, y = id_to_xy(position)
+            self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
+
     def process_player_turn(self):
+        if not self.__selected_card_allows_captured_piece_selection():
+            self.selected_captured_piece = None
+            self.resurrection_moves = []
+
         # get the coordinates of the square selected on the board
         position = input_processor.get_clicked_chessboard_field_id()
         # if a square was selected
         if position:
+            if self.__selected_card_is_pawn_resurrection():
+                if position in self.resurrection_moves:
+                    self.__resurrect_selected_pawn(position)
+                return
+
             piece = self.pieces_locations[position]
             if (piece.exists()) and (piece.get_color() == self.current_turn):
-                if piece.is_stunned(self.turns_started[self.current_turn]):
+                if not piece.can_receive_enchantment():
                     self.selected_piece_position = 0
                     self.moves = []
                     return
@@ -239,6 +267,7 @@ class GameLogicLoop(object):
                             self.__apply_passive_enchantment(position, active_enchantment)
                         card_deck.pop(card_index)
                         self.selected_card = None
+                        self.selected_captured_piece = None
                         self.selected_piece_position = 0
                         self.moves = []
                         self.__end_turn()
@@ -264,22 +293,35 @@ class GameLogicLoop(object):
         else:
             color, index = input_processor.get_clicked_captured_piece_index()
             if color is not None and index is not None:
-                captured_pieces = (
-                    self.capture_processor.get_captured_white()
-                    if color == COLOR.WHITE
-                    else self.capture_processor.get_captured_black()
-                )
-                if 0 <= index < len(captured_pieces):
-                    piece = captured_pieces[index]
-                    print(
-                        "Clicked captured piece: type={}, color={}, list_position={}".format(
-                            piece.get_type().value, piece.get_color().value, index
+                if (
+                    self.__selected_card_allows_captured_piece_selection()
+                    and self.__is_valid_captured_piece_list_for_selected_card(color)
+                ):
+                    captured_pieces = (
+                        self.capture_processor.get_captured_white()
+                        if color == COLOR.WHITE
+                        else self.capture_processor.get_captured_black()
+                    )
+                    if (
+                        0 <= index < len(captured_pieces)
+                        and self.__is_valid_captured_piece_for_selected_card(captured_pieces[index])
+                    ):
+                        piece = captured_pieces[index]
+                        print(
+                            "Clicked captured piece: type={}, color={}, list_position={}".format(
+                                piece.get_type().value, piece.get_color().value, index
+                            )
                         )
-                    )
-                    clicked_piece = (color, index)
-                    self.selected_captured_piece = (
-                        None if self.selected_captured_piece == clicked_piece else clicked_piece
-                    )
+                        clicked_piece = (color, index)
+                        self.selected_captured_piece = (
+                            None if self.selected_captured_piece == clicked_piece else clicked_piece
+                        )
+                        self.resurrection_moves = (
+                            self.__get_resurrection_moves()
+                            if self.selected_captured_piece is not None
+                            and self.__selected_card_is_pawn_resurrection()
+                            else []
+                        )
             else:
                 color, index = input_processor.get_clicked_card_index()
                 if color == self.current_turn:
@@ -287,8 +329,104 @@ class GameLogicLoop(object):
                     if index is not None and 0 <= index < len(card_deck):
                         clicked_card = (color, index)
                         self.selected_card = None if self.selected_card == clicked_card else clicked_card
+                        self.selected_captured_piece = None
+                        self.resurrection_moves = []
                         self.selected_piece_position = 0
                         self.moves = []
+
+    def __is_valid_captured_piece_for_selected_card(self, piece):
+        if self.__selected_card_is_pawn_resurrection():
+            return (
+                piece.get_color() == self.current_turn
+                and piece.get_type() == PIECE_TYPE.PAWN
+                and self.__get_resurrection_king_position() is not None
+            )
+        return True
+
+    def __is_valid_captured_piece_list_for_selected_card(self, color):
+        if self.__selected_card_is_pawn_resurrection():
+            return color != self.current_turn
+        return True
+
+    def __selected_card_is_pawn_resurrection(self):
+        if self.selected_card is None or self.selected_card[0] != self.current_turn:
+            return False
+
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        return (
+            0 <= card_index < len(card_deck)
+            and card_deck[card_index].get_card_type() == EnchantmentCardType.PAWN_RESURRECTION
+        )
+
+    def __get_resurrection_moves(self):
+        if self.selected_captured_piece is None:
+            return []
+
+        color, index = self.selected_captured_piece
+        captured_pieces = (
+            self.capture_processor.get_captured_white()
+            if color == COLOR.WHITE
+            else self.capture_processor.get_captured_black()
+        )
+        if (
+            color == self.current_turn
+            or not 0 <= index < len(captured_pieces)
+            or captured_pieces[index].get_color() != self.current_turn
+            or not self.__is_valid_captured_piece_for_selected_card(captured_pieces[index])
+        ):
+            return []
+
+        king_position = self.__get_resurrection_king_position()
+        if king_position is None:
+            return []
+
+        king_x, king_y = id_to_xy(king_position)
+        return [
+            xy_to_id(x, y)
+            for y in range(max(0, king_y - 1), min(7, king_y + 1) + 1)
+            for x in range(max(0, king_x - 1), min(7, king_x + 1) + 1)
+            if (x, y) != (king_x, king_y)
+            and not self.pieces_locations[xy_to_id(x, y)].exists()
+        ]
+
+    def __get_resurrection_king_position(self):
+        return next(
+            (
+                position for position, piece in self.pieces_locations.items()
+                if piece.exists() and piece.get_color() == self.current_turn
+                and piece.get_type() == PIECE_TYPE.KING and piece.can_receive_enchantment()
+            ),
+            None,
+        )
+
+    def __resurrect_selected_pawn(self, position):
+        if self.selected_captured_piece is None or position not in self.resurrection_moves:
+            return
+
+        color, index = self.selected_captured_piece
+        piece = self.capture_processor.release_captured_piece(color, index)
+        self.pieces_locations[position] = piece
+
+        card_color, card_index = self.selected_card
+        self.cards_processor.get_cards_for(card_color).pop(card_index)
+        self.selected_card = None
+        self.selected_captured_piece = None
+        self.resurrection_moves = []
+        self.selected_piece_position = 0
+        self.moves = []
+        self.__end_turn()
+
+    def __selected_card_allows_captured_piece_selection(self):
+        if self.selected_card is None or self.selected_card[0] != self.current_turn:
+            return False
+
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        return (
+            0 <= card_index < len(card_deck)
+            and card_deck[card_index].allows_captured_piece_selection()
+        )
 
     def __detonate_pawn(self, position):
         x, y = id_to_xy(position)
@@ -333,6 +471,10 @@ class GameLogicLoop(object):
         self.__apply_ready_passive_enchantments(self.current_turn)
 
     def capture_piece(self, destination):
+        if self.__is_rook_tower_throw_selected():
+            self.move_piece(destination, beats=True)
+            return
+
         p: Piece = self.pieces_locations[destination]
         self.capture_processor.capture_piece(p)
         # add the captured piece to list
@@ -343,10 +485,21 @@ class GameLogicLoop(object):
         # move source piece to its destination
         self.move_piece(destination, beats=True)
 
+    def __is_rook_tower_throw_selected(self):
+        if self.selected_card is None or self.selected_card[0] != self.current_turn:
+            return False
+        card_deck = self.cards_processor.get_cards_for(self.current_turn)
+        card_index = self.selected_card[1]
+        return (
+            0 <= card_index < len(card_deck)
+            and card_deck[card_index].get_card_type() == EnchantmentCardType.ROOK_TOWER_THROW
+        )
+
     def move_piece(self, destination, beats=False):
         if self.selected_piece_position > 0:
             collected_board_card = self.board_card_available and destination == self.board_card_position
             moving_color = self.current_turn
+            self.__advance_stun_effects(moving_color)
             used_card = None
             if self.selected_card is not None and self.selected_card[0] == moving_color:
                 card_color, card_index = self.selected_card
@@ -356,6 +509,28 @@ class GameLogicLoop(object):
 
             source_position = self.selected_piece_position
             piece: Piece = self.pieces_locations[source_position]
+            tower_throw = (
+                used_card is not None
+                and used_card.get_card_type() == EnchantmentCardType.ROOK_TOWER_THROW
+            )
+            if tower_throw:
+                source_x, source_y = id_to_xy(source_position)
+                destination_x, destination_y = id_to_xy(destination)
+                step_x = (destination_x > source_x) - (destination_x < source_x)
+                step_y = (destination_y > source_y) - (destination_y < source_y)
+                target_x, target_y = source_x + step_x, source_y + step_y
+                while (target_x, target_y) != (destination_x, destination_y):
+                    target_position = xy_to_id(target_x, target_y)
+                    target_piece = self.pieces_locations[target_position]
+                    if target_piece.exists():
+                        self.capture_processor.capture_piece(target_piece)
+                        self.pieces_locations[target_position] = Piece()
+                    target_x += step_x
+                    target_y += step_y
+
+                target_piece = self.pieces_locations[destination]
+                if target_piece.exists():
+                    self.capture_processor.capture_piece(target_piece)
             self.pieces_locations[source_position] = Piece()
             self.pieces_locations[destination] = piece
 
@@ -390,17 +565,20 @@ class GameLogicLoop(object):
                 )
             )
             if stun_turns > 0:
-                piece.set_stunned_until_turn(
-                    self.turns_started[moving_color] + stun_turns + 1
+                piece.set_stunned_for_turns(stun_turns)
+                stun_enchantments = (
+                    [used_card]
+                    if used_card is not None and used_card.get_rate_stun_after_use() > 0
+                    else piece.get_passive_enchantments()
                 )
+                for enchantment in stun_enchantments:
+                    if enchantment.get_rate_stun_after_use() > 0:
+                        piece.add_stun_effect(enchantment, stun_turns)
 
             self.__end_turn()
 
             if collected_board_card:
-                self.pending_board_card_delay = random.randint(0, 4)
-                print("Next board card will appear in {} turns".format(self.pending_board_card_delay))
-                if self.pending_board_card_delay == 0:
-                    self.__place_next_board_card()
+                self.__schedule_next_board_card()
             elif self.pending_board_card_delay is not None:
                 self.pending_board_card_delay -= 1
                 if self.pending_board_card_delay == 0:
@@ -415,6 +593,12 @@ class GameLogicLoop(object):
             self.selected_piece_position = 0
             self.moves = []
             self.selected_card = None
+            self.selected_captured_piece = None
+
+    def __advance_stun_effects(self, color):
+        for piece in self.pieces_locations.values():
+            if piece.exists() and piece.get_color() == color:
+                piece.advance_stun_effects()
 
     def __place_next_board_card(self):
         empty_positions = [
@@ -425,6 +609,13 @@ class GameLogicLoop(object):
         self.board_enchantment = EnchantmentCardType.create_random()
         self.board_card_available = True
         self.pending_board_card_delay = None
+
+    def __schedule_next_board_card(self):
+        self.board_card_available = False
+        self.pending_board_card_delay = random.randint(0, 4)
+        print("Next board card will appear in {} turns".format(self.pending_board_card_delay))
+        if self.pending_board_card_delay == 0:
+            self.__place_next_board_card()
 
     def print_annotations(self):
         font_size = int(self.context.square_length / 3)

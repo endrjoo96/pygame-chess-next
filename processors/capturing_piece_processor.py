@@ -24,6 +24,12 @@ class CaptureProcessor:
     def get_captured_black(self) -> List[Piece]: return self.__captured_black
     def get_captured_white(self) -> List[Piece]: return self.__captured_white
 
+    def release_captured_piece(self, color: COLOR, index: int) -> Piece:
+        captured_pieces = self.__captured_white if color == COLOR.WHITE else self.__captured_black
+        piece = captured_pieces.pop(index)
+        self.__recalculate_clickable_coordinates()
+        return piece
+
     def get_winner(self):
         if self.__captured_king is None:
             return None

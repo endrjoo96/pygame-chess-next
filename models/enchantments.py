@@ -31,11 +31,18 @@ def _resolve_delay_before_use(enchantment_types, delay_before_use):
     return delay_before_use if has_delay else 0
 
 
+def _resolve_rarity(rarity):
+    if isinstance(rarity, bool) or not isinstance(rarity, (int, float)) or not 0 <= rarity <= 1:
+        raise ValueError("An enchantment rarity must be a number between 0 and 1")
+    return float(rarity)
+
+
 class Enchantment:
     def __init__(
         self, enchantment_types: List[EnchantmentType], title: str, description: str,
         piece_type_restriction: PIECE_TYPE, behavior_to_inject, card_type=None,
         remaining_uses: Optional[int] = None, delay_before_use: Optional[int] = None,
+        allows_captured_piece_selection: bool = False,
     ):
         self.__remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
         self.__delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
@@ -45,6 +52,7 @@ class Enchantment:
         self.__piece_type_restriction = piece_type_restriction
         self.__behavior_to_inject = behavior_to_inject
         self.__card_type = card_type
+        self.__allows_captured_piece_selection = allows_captured_piece_selection
 
     def get_behavior_to_inject(self):
         return self.__behavior_to_inject
@@ -67,6 +75,9 @@ class Enchantment:
 
     def get_card_type(self):
         return self.__card_type
+
+    def allows_captured_piece_selection(self) -> bool:
+        return self.__allows_captured_piece_selection
 
     def get_enchantment_types(self) -> List[EnchantmentType]:
         return self.__enchantment_types.copy()
@@ -91,56 +102,88 @@ class Enchantment:
 
 
 class EnchantmentCardType(Enum):
-    PAWN_TWO_FIELDS_FORWARD = (
-        [EnchantmentType.REUSABLE], "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
+    PAWN_TWO_FIELDS_FORWARD_3 = (
+        [EnchantmentType.REUSABLE], 0.4, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
         pawn_behaviors.two_field_forward_move, 3)
-    PAWN_ONE_FIELD_BACKWARD = (
-        [EnchantmentType.REUSABLE], "Ruch do tyłu", "Wykonaj ruch do tyłu", PIECE_TYPE.PAWN,
-        pawn_behaviors.one_field_backwards_move, 3)
+    PAWN_ONE_FIELD_BACKWARD_3 = (
+        [EnchantmentType.REUSABLE], 0.4, "Ruch do tyłu", "Wykonaj ruch do tyłu. Pozwala również na zbicie",
+        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, 3)
+    PAWN_TWO_FIELDS_FORWARD_2 = (
+        [EnchantmentType.REUSABLE], 0.7, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
+        pawn_behaviors.two_field_forward_move, 2)
+    PAWN_ONE_FIELD_BACKWARD_2 = (
+        [EnchantmentType.REUSABLE], 0.7, "Ruch do tyłu", "Wykonaj ruch do tyłu. Pozwala również na zbicie",
+        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, 2)
+    PAWN_TWO_FIELDS_FORWARD_1 = (
+        [EnchantmentType.REUSABLE], 0.9, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
+        pawn_behaviors.two_field_forward_move, 1)
+    PAWN_ONE_FIELD_BACKWARD_1 = (
+        [EnchantmentType.REUSABLE], 0.9, "Ruch do tyłu", "Wykonaj ruch do tyłu. Pozwala również na zbicie",
+        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, 1)
     KNIGHT_ONE_FIELD_ANY_DIRECTION = (
-        [EnchantmentType.REUSABLE], "Przesunięcie skoczka", "Skoczek porusza się o 1 pole w dowolnym kierunku",
+        [EnchantmentType.REUSABLE], 0.75, "Przesunięcie skoczka",
+        "Skoczek porusza się o 1 pole w dowolnym kierunku",
         PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction, 3)
     ROOK_JUMP_ALLIES = (
-        [], "Wystrzał wieży", "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
+        [], 0.65, "Wystrzał wieży", "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
         PIECE_TYPE.ROOK, rook_behaviors.move_through_allied_pieces_without_capturing)
     QUEEN_JUMP_ALLIES = (
-        [EnchantmentType.MANDATORY],
+        [EnchantmentType.MANDATORY], 0.45,
         "Wystrzał hetmana", "Hetman przeskakuje nad sojusznikami do 4 pól, ale nie może zbijać",
         PIECE_TYPE.QUEEN, queen_behaviors.move_up_to_four_fields_through_allies_without_capturing)
     PAWN_DETONATION = (
-        [EnchantmentType.PASSIVE], "Kamikaze",
+        [EnchantmentType.PASSIVE], 0.1, "Kamikaze",
         "Detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
     PAWN_DETONATION_DELAYED_1 = (
-        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], "Kamikaze z opóźnieniem",
+        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], 0.3, "Kamikaze z opóźnieniem",
         "Po 1 turze detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves, None, 1)
     PAWN_DETONATION_DELAYED_2 = (
-        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], "Kamikaze z opóźnieniem",
+        [EnchantmentType.PASSIVE, EnchantmentType.DELAY_BEFORE_USE], 0.6, "Kamikaze z opóźnieniem",
         "Po 2 turach detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves, None, 2)
+    PAWN_SWORDSMAN = (
+        [EnchantmentType.PASSIVE], 0.75, "Szermierz", "Pozwala na poruszanie się na boki.",
+        PIECE_TYPE.PAWN, pawn_behaviors.move_one_field_horizontally)
+    PAWN_RESURRECTION = (
+        [], 0.35, "Wskrzeszenie piona",
+        "Wskrzesza zbitego przez przeciwnika piona i umieszcza go w promieniu 1 od króla",
+        PIECE_TYPE.KING, any_piece_behaviors.no_additional_moves, None, None, True)
+    ROOK_TOWER_THROW = (
+        [EnchantmentType.MANDATORY, EnchantmentType.STUN_AFTER_USE, EnchantmentType.STUN_AFTER_USE], 0.3,
+        "Rzut wieżą", "Zbija wszystkie figury na swojej drodze, w tym własne. "
+        "Porusza się do końca planszy. Blokuje ruch na dwie tury.",
+        PIECE_TYPE.ROOK, rook_behaviors.move_to_board_edge)
 
     def __init__(
-        self, enchantment_types, title, description, piece_type, behavior_to_inject,
-        remaining_uses=None, delay_before_use=None,
+        self, enchantment_types, rarity, title, description, piece_type, behavior_to_inject,
+        remaining_uses=None, delay_before_use=None, allows_captured_piece_selection=False,
     ):
         self.enchantment_types = enchantment_types
+        self.rarity = _resolve_rarity(rarity)
         self.title = title
         self.description = description
         self.piece_type = piece_type
         self.behavior_to_inject = behavior_to_inject
         self.remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
         self.delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
+        self.allows_captured_piece_selection = allows_captured_piece_selection
 
     def create(self) -> Enchantment:
         return Enchantment(
             self.enchantment_types.copy(), self.title, self.description, self.piece_type,
-            self.behavior_to_inject, self,
-            self.remaining_uses, self.delay_before_use if self.delay_before_use else None)
+            self.behavior_to_inject, self, self.remaining_uses,
+            self.delay_before_use if self.delay_before_use else None,
+            self.allows_captured_piece_selection)
 
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":
-        return random.choice(list(cls))
+        card_types = list(cls)
+        weights = [card_type.rarity for card_type in card_types]
+        if not any(weights):
+            raise ValueError("At least one enchantment must have a non-zero rarity")
+        return random.choices(card_types, weights=weights, k=1)[0]
 
     @classmethod
     def create_random(cls) -> Enchantment:

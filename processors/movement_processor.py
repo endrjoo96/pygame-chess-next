@@ -1,4 +1,5 @@
 from models.chess_pieces import PIECE_TYPE, COLOR, Piece
+from models.enchantments import EnchantmentCardType
 from constants.pos import xy_to_id
 
 
@@ -8,6 +9,8 @@ def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations, activ
     if active_enchantment is not None:
         active_enchantment.get_behavior_to_inject()(
             possible_positions_to_move, xy_coord, piece.get_color(), pieces_locations)
+        if active_enchantment.get_card_type() == EnchantmentCardType.ROOK_TOWER_THROW:
+            return possible_positions_to_move
         return [
             xy for xy in possible_positions_to_move
             if piece.get_color() != pieces_locations[xy_to_id(xy[0], xy[1])].get_color()

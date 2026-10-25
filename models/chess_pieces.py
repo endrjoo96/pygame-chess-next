@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from constants.enchantment_type import EnchantmentType
 from constants.piece_color import COLOR
@@ -13,7 +13,8 @@ class Piece:
         self.__type: PIECE_TYPE = piece_type
         self.__enchantments: List[Enchantment] = []
         self.__delayed_enchantments: List[Tuple[Enchantment, int]] = []
-        self.__stunned_until_turn = 0
+        self.__stun_effects: List[Tuple[Enchantment, int]] = []
+        self.__stunned_turns_remaining = 0
 
     def full_name(self) -> str:
         if not self.exists():
@@ -57,11 +58,19 @@ class Piece:
     def get_passive_enchantments(self) -> List[Enchantment]:
         return [enchantment for enchantment in self.__enchantments if enchantment.is_passive()]
 
-    def get_effects(self) -> List[Enchantment]:
-        return (
-            self.__enchantments.copy()
-            + [enchantment for enchantment, _ in self.__delayed_enchantments]
+    def get_effects(
+        self, current_turn: int,
+    ) -> List[Tuple[Enchantment, Optional[int], Optional[int]]]:
+        effects = [(enchantment, None, None) for enchantment in self.__enchantments]
+        effects.extend(
+            (enchantment, ready_turn - current_turn, None)
+            for enchantment, ready_turn in self.__delayed_enchantments
         )
+        effects.extend(
+            (enchantment, None, turns_remaining)
+            for enchantment, turns_remaining in self.__stun_effects
+        )
+        return effects
 
     def remove_passive_enchantments(self):
         self.__enchantments = [
@@ -83,16 +92,31 @@ class Piece:
         ]
         return ready
 
-    def set_stunned_until_turn(self, turn: int):
-        self.__stunned_until_turn = max(self.__stunned_until_turn, turn)
+    def set_stunned_for_turns(self, turns: int):
+        self.__stunned_turns_remaining = max(self.__stunned_turns_remaining, turns)
 
-    def is_stunned(self, current_turn: int) -> bool:
-        return current_turn < self.__stunned_until_turn
+    def add_stun_effect(self, enchantment: Enchantment, turns: int):
+        self.__stun_effects.append((enchantment, turns))
+
+    def advance_stun_effects(self):
+        self.__stunned_turns_remaining = max(0, self.__stunned_turns_remaining - 1)
+        self.__stun_effects = [
+            (enchantment, turns_remaining - 1)
+            for enchantment, turns_remaining in self.__stun_effects
+            if turns_remaining > 1
+        ]
+
+    def is_stunned(self) -> bool:
+        return self.__stunned_turns_remaining > 0
+
+    def can_receive_enchantment(self) -> bool:
+        return not self.is_stunned()
 
     def clear_effects(self):
         self.__enchantments.clear()
         self.__delayed_enchantments.clear()
-        self.__stunned_until_turn = 0
+        self.__stun_effects.clear()
+        self.__stunned_turns_remaining = 0
 
 
 pieces_starting_positions_map = {
