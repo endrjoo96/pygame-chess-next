@@ -11,11 +11,32 @@ def _resolve_remaining_uses(enchantment_types, remaining_uses):
     is_reusable = EnchantmentType.REUSABLE in enchantment_types
     if is_reusable and remaining_uses is None:
         raise ValueError("Reusable enchantments must define their number of uses")
-    if not is_reusable and remaining_uses not in (None, 1):
+    if not is_reusable and remaining_uses is not None and (
+        not isinstance(remaining_uses, int) or isinstance(remaining_uses, bool) or remaining_uses != 1
+    ):
         raise ValueError("Non-reusable enchantments must have exactly one use")
-    if remaining_uses is not None and remaining_uses < 1:
-        raise ValueError("An enchantment must have at least one use")
+    if is_reusable and (
+        not isinstance(remaining_uses, int) or isinstance(remaining_uses, bool) or remaining_uses < 1
+    ):
+        raise ValueError("An enchantment must have a positive integer number of uses")
     return remaining_uses if is_reusable else 1
+
+
+def _resolve_remaining_uses_range(enchantment_types, remaining_uses):
+    if EnchantmentType.REUSABLE not in enchantment_types:
+        _resolve_remaining_uses(enchantment_types, remaining_uses)
+        return None
+
+    if isinstance(remaining_uses, tuple) and len(remaining_uses) == 2:
+        minimum, maximum = remaining_uses
+    else:
+        minimum = maximum = remaining_uses
+
+    _resolve_remaining_uses(enchantment_types, minimum)
+    _resolve_remaining_uses(enchantment_types, maximum)
+    if minimum > maximum:
+        raise ValueError("The minimum number of uses cannot exceed the maximum")
+    return minimum, maximum
 
 
 def _resolve_delay_before_use(enchantment_types, delay_before_use):
@@ -102,28 +123,16 @@ class Enchantment:
 
 
 class EnchantmentCardType(Enum):
-    PAWN_TWO_FIELDS_FORWARD_3 = (
+    PAWN_TWO_FIELDS_FORWARD = (
         [EnchantmentType.REUSABLE], 0.4, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
-        pawn_behaviors.two_field_forward_move, 3)
-    PAWN_ONE_FIELD_BACKWARD_3 = (
+        pawn_behaviors.two_field_forward_move, (1, 3))
+    PAWN_ONE_FIELD_BACKWARD = (
         [EnchantmentType.REUSABLE], 0.4, "Ruch do tyłu", "Wykonaj ruch do tyłu. Pozwala również na zbicie",
-        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, 3)
-    PAWN_TWO_FIELDS_FORWARD_2 = (
-        [EnchantmentType.REUSABLE], 0.7, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
-        pawn_behaviors.two_field_forward_move, 2)
-    PAWN_ONE_FIELD_BACKWARD_2 = (
-        [EnchantmentType.REUSABLE], 0.7, "Ruch do tyłu", "Wykonaj ruch do tyłu. Pozwala również na zbicie",
-        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, 2)
-    PAWN_TWO_FIELDS_FORWARD_1 = (
-        [EnchantmentType.REUSABLE], 0.9, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
-        pawn_behaviors.two_field_forward_move, 1)
-    PAWN_ONE_FIELD_BACKWARD_1 = (
-        [EnchantmentType.REUSABLE], 0.9, "Ruch do tyłu", "Wykonaj ruch do tyłu. Pozwala również na zbicie",
-        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, 1)
+        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, (1, 3))
     KNIGHT_ONE_FIELD_ANY_DIRECTION = (
         [EnchantmentType.REUSABLE], 0.75, "Przesunięcie skoczka",
         "Skoczek porusza się o 1 pole w dowolnym kierunku",
-        PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction, 3)
+        PIECE_TYPE.KNIGHT, knight_behaviors.one_field_in_any_direction, (1, 3))
     ROOK_JUMP_ALLIES = (
         [], 0.65, "Wystrzał wieży", "Wieża przeskakuje nad sojuszniczymi figurami, ale nie może zbijać",
         PIECE_TYPE.ROOK, rook_behaviors.move_through_allied_pieces_without_capturing)
@@ -166,16 +175,37 @@ class EnchantmentCardType(Enum):
         self.description = description
         self.piece_type = piece_type
         self.behavior_to_inject = behavior_to_inject
-        self.remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
+        self.remaining_uses_range = _resolve_remaining_uses_range(enchantment_types, remaining_uses)
         self.delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
         self.allows_captured_piece_selection = allows_captured_piece_selection
 
-    def create(self) -> Enchantment:
+    def create(self, uses=None) -> Enchantment:
+        if self.remaining_uses_range is None:
+            if uses is not None:
+                _resolve_remaining_uses(self.enchantment_types, uses)
+            remaining_uses = None
+        elif uses is None:
+            remaining_uses = random.randint(*self.remaining_uses_range)
+        else:
+            _resolve_remaining_uses(self.enchantment_types, uses)
+            minimum, maximum = self.remaining_uses_range
+            if not minimum <= uses <= maximum:
+                raise ValueError("The selected number of uses is outside the card's configured range")
+            remaining_uses = uses
+
         return Enchantment(
             self.enchantment_types.copy(), self.title, self.description, self.piece_type,
-            self.behavior_to_inject, self, self.remaining_uses,
+            self.behavior_to_inject, self, remaining_uses,
             self.delay_before_use if self.delay_before_use else None,
             self.allows_captured_piece_selection)
+
+    def with_uses(self, uses: int):
+        _resolve_remaining_uses(self.enchantment_types, uses)
+        if self.remaining_uses_range is not None:
+            minimum, maximum = self.remaining_uses_range
+            if not minimum <= uses <= maximum:
+                raise ValueError("The selected number of uses is outside the card's configured range")
+        return ConfiguredEnchantmentCard(self, uses)
 
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":
@@ -188,6 +218,15 @@ class EnchantmentCardType(Enum):
     @classmethod
     def create_random(cls) -> Enchantment:
         return cls.random_choice().create()
+
+
+class ConfiguredEnchantmentCard:
+    def __init__(self, card_type: EnchantmentCardType, uses: int):
+        self.card_type = card_type
+        self.uses = uses
+
+    def create(self) -> Enchantment:
+        return self.card_type.create(uses=self.uses)
 
 
 rook_jump_card = EnchantmentCardType.ROOK_JUMP_ALLIES.create()

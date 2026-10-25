@@ -14,8 +14,8 @@ from utils.gamecontext import GameContext
 
 class CardsProcessor:
     STARTING_CARD_TYPES = (
-        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD_3,
-        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD_3,
+        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.with_uses(2),
+        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.with_uses(2),
         EnchantmentCardType.PAWN_SWORDSMAN,
     )
 
