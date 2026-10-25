@@ -7,9 +7,26 @@ from models.enchantments import Enchantment
 
 
 class Piece:
-    def __init__(self, color: COLOR = COLOR.EMPTY, piece_type: PIECE_TYPE = PIECE_TYPE.EMPTY):
+    PROMOTION_TYPES = {
+        PIECE_TYPE.PAWN: PIECE_TYPE.KNIGHT,
+        PIECE_TYPE.KNIGHT: PIECE_TYPE.BISHOP,
+        PIECE_TYPE.BISHOP: PIECE_TYPE.ROOK,
+        PIECE_TYPE.ROOK: PIECE_TYPE.QUEEN,
+    }
+    PROMOTION_STUN_TURNS = {
+        PIECE_TYPE.PAWN: 1,
+        PIECE_TYPE.KNIGHT: 2,
+        PIECE_TYPE.BISHOP: 3,
+        PIECE_TYPE.ROOK: 4,
+    }
+
+    def __init__(
+        self, color: COLOR = COLOR.EMPTY, piece_type: PIECE_TYPE = PIECE_TYPE.EMPTY,
+        starting_position: Optional[int] = None,
+    ):
         self.__color: COLOR = color
         self.__type: PIECE_TYPE = piece_type
+        self.__starting_position = starting_position
         self.__enchantments: List[Enchantment] = []
         self.__delayed_enchantments: List[Tuple[Enchantment, int]] = []
         self.__stun_effects: List[Tuple[Enchantment, int]] = []
@@ -22,6 +39,22 @@ class Piece:
 
     def get_type(self) -> PIECE_TYPE:
         return self.__type
+
+    def get_starting_position(self) -> Optional[int]:
+        return self.__starting_position
+
+    def can_be_promoted(self) -> bool:
+        return self.__type in self.PROMOTION_TYPES
+
+    def get_promotion_stun_turns(self) -> int:
+        return self.PROMOTION_STUN_TURNS.get(self.__type, 0)
+
+    def promote(self) -> bool:
+        promoted_type = self.PROMOTION_TYPES.get(self.__type)
+        if promoted_type is None:
+            return False
+        self.__type = promoted_type
+        return True
 
     def get_color(self) -> COLOR:
         return self.__color

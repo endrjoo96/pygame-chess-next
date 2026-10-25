@@ -93,6 +93,19 @@ class EnchantmentCardType(Enum):
         "Rzut wieżą", "Zbija wszystkie figury na swojej drodze, w tym własne. "
         "Porusza się do końca planszy. Blokuje ruch na dwie tury.",
         PIECE_TYPE.ROOK, rook_behaviors.move_to_board_edge)
+    PIECE_UPGRADE = (
+        [], 0.35, "Awans figury",
+        "Awansuje wybraną figurę o jeden poziom: pion → skoczek → goniec → wieża → hetman. "
+        "Nie działa na hetmana ani króla.",
+        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves)
+    RETURN_TO_START = (
+        [], 0.35, "Powrót na start",
+        "Przenieś wybraną figurę na jej pole startowe, jeśli jest wolne. Ruch nie zbija figur.",
+        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves)
+    PIECE_TELEPORT = (
+        [], 0.3, "Teleportacja",
+        "Zamień miejscami dwie figury. Najpierw wybierz własną figurę, potem dowolną inną.",
+        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves)
 
     def __init__(
         self, enchantment_types, rarity, title, description, piece_type, behavior_to_inject,

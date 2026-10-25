@@ -22,6 +22,9 @@ class CardsProcessor:
         EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.with_uses(2),
         EnchantmentCardType.PAWN_SWORDSMAN,
         EnchantmentCardType.KING_PAWN_RESURRECTION,
+        EnchantmentCardType.PIECE_UPGRADE,
+        EnchantmentCardType.RETURN_TO_START,
+        EnchantmentCardType.PIECE_TELEPORT,
     )
 
     def __init__(self, screen: Surface):
@@ -189,6 +192,8 @@ class CardsProcessor:
             enchantment_type for enchantment_type in card.get_enchantment_types()
             if enchantment_type in self.enchantment_icons
         ))
+        if stun_remaining is not None and EnchantmentType.STUN_AFTER_USE not in icon_types:
+            icon_types.append(EnchantmentType.STUN_AFTER_USE)
         has_piece_icon = card.get_required_piece_type() != PIECE_TYPE.EMPTY
         reusable_icon_x = None
         for index, enchantment_type in enumerate(icon_types):

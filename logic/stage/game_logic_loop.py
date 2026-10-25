@@ -82,7 +82,8 @@ class GameLogicLoop(object):
             # [piece name, currently selected]
             self.pieces_locations[i] = Piece()
         for position, piece in pieces_starting_positions_map.items():
-            self.pieces_locations[position.value] = Piece(piece.get_color(), piece.get_type())
+            self.pieces_locations[position.value] = Piece(
+                piece.get_color(), piece.get_type(), position.value)
         self.__schedule_next_board_card()
 
     def play_turn(self):
@@ -111,6 +112,9 @@ class GameLogicLoop(object):
                 self.board_card_image,
                 self.context.chessboard_coordinates[card_x][card_y],
             )
+
+        self.__draw_promotion_targets()
+        self.__draw_return_to_start_targets()
 
         # loop to change background color of selected pieces
         for position, piece in self.pieces_locations.items():
@@ -144,6 +148,27 @@ class GameLogicLoop(object):
         self.cards_processor.render(self.screen, self.chess_pieces, self.selected_card)
         self.__draw_board_card_preview()
         self.__draw_piece_effect_preview()
+
+    def __draw_promotion_targets(self):
+        if not self.__selected_card_is_piece_upgrade():
+            return
+
+        surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
+        surface.fill(PREDEFINED_COLOR.transparent_green)
+        for position, piece in self.pieces_locations.items():
+            if piece.exists() and piece.get_color() == self.current_turn and piece.can_be_promoted():
+                x, y = id_to_xy(position)
+                self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
+
+    def __draw_return_to_start_targets(self):
+        if not self.__selected_card_is_return_to_start():
+            return
+
+        surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
+        surface.fill(PREDEFINED_COLOR.transparent_green)
+        for position in self.__get_return_to_start_targets():
+            x, y = id_to_xy(position)
+            self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
 
     def __draw_board_card_preview(self):
         if not self.board_card_available:
@@ -231,6 +256,65 @@ class GameLogicLoop(object):
                 return
 
             piece = self.pieces_locations[position]
+            if self.__selected_card_is_piece_teleport():
+                if self.selected_piece_position == 0:
+                    if piece.exists() and piece.get_color() == self.current_turn:
+                        self.selected_piece_position = position
+                    return
+
+                if position == self.selected_piece_position or not piece.exists():
+                    return
+
+                self.pieces_locations[self.selected_piece_position], self.pieces_locations[position] = (
+                    piece, self.pieces_locations[self.selected_piece_position])
+                card_color, card_index = self.selected_card
+                self.cards_processor.get_cards_for(card_color).pop(card_index)
+                self.selected_card = None
+                self.selected_piece_position = 0
+                self.moves = []
+                self.__end_turn()
+                return
+
+            if self.__selected_card_is_piece_upgrade():
+                stun_turns = piece.get_promotion_stun_turns()
+                if (
+                    piece.exists()
+                    and piece.get_color() == self.current_turn
+                    and piece.promote()
+                ):
+                    card_color, card_index = self.selected_card
+                    used_card = self.cards_processor.get_cards_for(card_color).pop(card_index)
+                    piece.set_stunned_for_turns(stun_turns)
+                    piece.add_stun_effect(used_card, stun_turns)
+                    self.selected_card = None
+                    self.selected_piece_position = 0
+                    self.moves = []
+                    self.__end_turn()
+                return
+
+            if self.__selected_card_is_return_to_start():
+                if self.selected_piece_position == 0:
+                    if (
+                        piece.exists()
+                        and piece.get_color() == self.current_turn
+                        and piece.can_receive_enchantment()
+                    ):
+                        self.selected_piece_position = position
+                    return
+
+                if position == self.selected_piece_position:
+                    self.selected_piece_position = 0
+                    return
+
+                if piece.exists() and piece.get_color() == self.current_turn:
+                    self.selected_piece_position = position
+                    return
+
+                if position in self.__get_return_to_start_targets():
+                    self.moves = [id_to_xy(position)]
+                    self.move_piece(position)
+                return
+
             if (piece.exists()) and (piece.get_color() == self.current_turn):
                 if not piece.can_receive_enchantment():
                     self.selected_piece_position = 0
@@ -357,6 +441,67 @@ class GameLogicLoop(object):
         card_color, card_index = self.selected_card
         card_deck = self.cards_processor.get_cards_for(card_color)
         return 0 <= card_index < len(card_deck) and self.__selected_resurrection_piece_type() is not None
+
+    def __selected_card_is_piece_upgrade(self):
+        if self.selected_card is None or self.selected_card[0] != self.current_turn:
+            return False
+
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        return (
+            0 <= card_index < len(card_deck)
+            and card_deck[card_index].get_card_type() == EnchantmentCardType.PIECE_UPGRADE
+        )
+
+    def __selected_card_is_return_to_start(self):
+        if self.selected_card is None or self.selected_card[0] != self.current_turn:
+            return False
+
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        return (
+            0 <= card_index < len(card_deck)
+            and card_deck[card_index].get_card_type() == EnchantmentCardType.RETURN_TO_START
+        )
+
+    def __selected_card_is_piece_teleport(self):
+        if self.selected_card is None or self.selected_card[0] != self.current_turn:
+            return False
+
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        return (
+            0 <= card_index < len(card_deck)
+            and card_deck[card_index].get_card_type() == EnchantmentCardType.PIECE_TELEPORT
+        )
+
+    def __get_return_to_start_targets(self):
+        if self.selected_piece_position == 0:
+            return []
+
+        selected_piece = self.pieces_locations[self.selected_piece_position]
+        origin = selected_piece.get_starting_position()
+        if origin is None:
+            return []
+
+        original_piece = next(
+            (
+                piece for starting_position, piece in pieces_starting_positions_map.items()
+                if starting_position.value == origin
+            ),
+            None,
+        )
+        if original_piece is None:
+            return []
+
+        return [
+            starting_position.value
+            for starting_position, piece in pieces_starting_positions_map.items()
+            if piece.get_color() == original_piece.get_color()
+            and piece.get_type() == original_piece.get_type()
+            and starting_position.value != self.selected_piece_position
+            and not self.pieces_locations[starting_position.value].exists()
+        ]
 
     def __selected_resurrection_piece_type(self):
         if self.selected_card is None:
