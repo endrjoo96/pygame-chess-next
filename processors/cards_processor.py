@@ -7,7 +7,8 @@ from constants.enchantment_type import EnchantmentType
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
-from models.enchantments import Enchantment, EnchantmentCardType
+from models.enchantment_cards import EnchantmentCardType
+from models.enchantments import Enchantment
 from piecesprite import PieceSprite
 from utils.gamecontext import GameContext
 

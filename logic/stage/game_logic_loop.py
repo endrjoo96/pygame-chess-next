@@ -7,8 +7,9 @@ from pygame.font import SysFont
 from constants.pos import id_to_xy, xy_to_id, POS
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
-from models.chess_pieces import pieces_starting_positions_map, Piece, COLOR
-from models.enchantments import EnchantmentCardType
+from models.chess_pieces import Piece, COLOR
+from models.enchantment_cards import EnchantmentCardType
+from models.starting_positions import pieces_starting_positions_map
 from piecesprite import PieceSprite
 from processors import input_processor
 from processors.capturing_piece_processor import CaptureProcessor

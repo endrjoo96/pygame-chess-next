@@ -1,5 +1,5 @@
 from models.chess_pieces import PIECE_TYPE, COLOR, Piece
-from models.enchantments import EnchantmentCardType
+from models.enchantment_cards import EnchantmentCardType
 from constants.pos import xy_to_id
 
 
