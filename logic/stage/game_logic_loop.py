@@ -16,6 +16,7 @@ from processors.capturing_piece_processor import CaptureProcessor
 from processors.cards_processor import CardsProcessor
 from processors.movement_processor import process_possible_basic_moves
 from utils.gamecontext import GameContext
+from utils.run_config import RUN_MODE, RunMode
 
 
 class GameLogicLoop(object):
@@ -605,7 +606,9 @@ class GameLogicLoop(object):
 
     def __schedule_next_board_card(self):
         self.board_card_available = False
-        self.pending_board_card_delay = random.randint(0, 4)
+        self.pending_board_card_delay = (
+            0 if RUN_MODE is RunMode.DEBUG else random.randint(0, 4)
+        )
         print("Next board card will appear in {} turns".format(self.pending_board_card_delay))
         if self.pending_board_card_delay == 0:
             self.__place_next_board_card()

@@ -9,6 +9,7 @@ from models.enchantments import (
     _resolve_delay_before_use,
     _resolve_remaining_uses,
 )
+from utils.run_config import RUN_MODE, RunMode
 
 
 def _resolve_remaining_uses_range(enchantment_types, remaining_uses):
@@ -140,6 +141,9 @@ class EnchantmentCardType(Enum):
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":
         card_types = list(cls)
+        if RUN_MODE is RunMode.DEBUG:
+            return random.choice(card_types)
+
         weights = [card_type.rarity for card_type in card_types]
         if not any(weights):
             raise ValueError("At least one enchantment must have a non-zero rarity")
