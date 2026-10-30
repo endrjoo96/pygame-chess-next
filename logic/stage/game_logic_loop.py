@@ -37,6 +37,7 @@ class GameLogicLoop(object):
         self.black_ai = black_ai
         self._ai_executor = ThreadPoolExecutor(max_workers=1)
         self._ai_future: Optional[Future] = None
+        self._ai_best_move = None
         # create an object of class to show chess pieces on the board
         self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
         passive_icon = pygame.image.load(self.context.card_mod_passive_src).convert_alpha()
@@ -93,6 +94,7 @@ class GameLogicLoop(object):
         if self._ai_future is not None:
             self._ai_future.cancel()
             self._ai_future = None
+        self._ai_best_move = None
         self.capture_processor.reset()
         self.cards_processor.reset_decks()
 
@@ -137,8 +139,19 @@ class GameLogicLoop(object):
         if self._ai_future is None:
             state = GameState.from_game(self)
             observation = GameObservation.from_state(state, COLOR.BLACK)
+            self._ai_best_move = None
+
+            def report_progress(action, depth):
+                self._ai_best_move = (
+                    self._format_ai_action_notation(state, action),
+                    depth,
+                )
+
             self._ai_future = self._ai_executor.submit(
-                self.black_ai.choose_action, observation)
+                self.black_ai.choose_action,
+                observation,
+                progress_callback=report_progress,
+            )
             return
         if not self._ai_future.done():
             return
@@ -181,6 +194,85 @@ class GameLogicLoop(object):
         self.screen.blit(
             message,
             (center_x - message.get_width() // 2, center_y + 18),
+        )
+        if self._ai_best_move is not None:
+            best_move, _ = self._ai_best_move
+            caption = SysFont(self.context.comic_sans_font, 20).render(
+                "Myślę, że najlepszy ruch to...", True, (255, 255, 255))
+            notation = SysFont(self.context.comic_sans_font, 30, bold=True).render(
+                best_move, True, (255, 255, 255))
+            self.screen.blit(caption, (24, 24))
+            self.screen.blit(notation, (24, 54))
+
+    @staticmethod
+    def _format_ai_action_notation(state, action):
+        piece = state.pieces_locations.get(action.source)
+        destination = action.destination
+        if piece is None or not piece.exists():
+            return "?"
+
+        piece_symbols = {
+            PIECE_TYPE.KING: "K",
+            PIECE_TYPE.QUEEN: "H",
+            PIECE_TYPE.ROOK: "W",
+            PIECE_TYPE.BISHOP: "G",
+            PIECE_TYPE.KNIGHT: "S",
+            PIECE_TYPE.PAWN: "",
+        }
+        source_square = POS(action.source).name.lower()
+
+        if action.action_type == GameActionType.APPLY_PASSIVE:
+            return "{}@{}".format(piece_symbols.get(piece.get_type(), "?"), source_square)
+        if action.action_type == GameActionType.TELEPORT and destination in range(1, 65):
+            return "{}{}↔{}".format(
+                piece_symbols.get(piece.get_type(), "?"),
+                source_square,
+                POS(destination).name.lower(),
+            )
+        if action.action_type == GameActionType.PROMOTE:
+            cards = state.get_cards_for(state.current_turn)
+            if 0 <= action.card_index < len(cards):
+                promoted_type = cards[action.card_index].get_card_type().promoted_piece_type
+                promoted_symbol = piece_symbols.get(promoted_type, "?")
+                return "{}={}".format(source_square, promoted_symbol)
+            return "{}=?".format(source_square)
+        if action.action_type == GameActionType.RESURRECT:
+            captured = state.get_captured_for(action.captured_color)
+            if 0 <= action.captured_index < len(captured):
+                resurrected_type = captured[action.captured_index].get_type()
+                symbol = piece_symbols.get(resurrected_type, "?")
+                return "{}@{}".format(symbol, POS(destination).name.lower())
+            return "@{}".format(POS(destination).name.lower())
+        if destination not in range(1, 65):
+            return source_square
+
+        destination_square = POS(destination).name.lower()
+        target = state.pieces_locations.get(destination)
+        is_capture = target is not None and target.exists()
+        if (
+            action.action_type == GameActionType.MOVE
+            and 0 <= action.card_index < len(state.get_cards_for(state.current_turn))
+            and state.get_cards_for(state.current_turn)[action.card_index].get_card_type()
+            == EnchantmentCardType.ROOK_TOWER_THROW
+        ):
+            source_x, source_y = id_to_xy(action.source)
+            destination_x, destination_y = id_to_xy(destination)
+            step_x = (destination_x > source_x) - (destination_x < source_x)
+            step_y = (destination_y > source_y) - (destination_y < source_y)
+            x, y = source_x + step_x, source_y + step_y
+            while (x, y) != (destination_x, destination_y):
+                if state.pieces_locations[xy_to_id(x, y)].exists():
+                    is_capture = True
+                    break
+                x += step_x
+                y += step_y
+        symbol = piece_symbols.get(piece.get_type(), "?")
+        if piece.get_type() == PIECE_TYPE.PAWN and is_capture:
+            return "{}x{}".format(source_square[0], destination_square)
+        return "{}{}{}".format(
+            symbol,
+            "x" if is_capture else "",
+            destination_square,
         )
 
     def apply_ai_action(self, action):

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
-from logic.game_rules import GameActionType
+from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from logic.stage.game_logic_loop import GameLogicLoop
 from models.chess_pieces import Piece
@@ -265,14 +265,17 @@ def test_ai_turn_receives_hidden_hand_count_and_applies_legal_action():
     )
 
     class StubAI:
-        def choose_action(self, observation):
+        def choose_action(self, observation, progress_callback=None):
             self.observation = observation
+            if progress_callback is not None:
+                progress_callback(action, 1)
             return SimpleNamespace(action=action)
 
     game.black_ai = StubAI()
     game.play_ai_turn()
     game._ai_future.result(timeout=1)
     assert game.is_ai_thinking
+    assert game._ai_best_move == ("Wb8", 1)
     game.play_ai_turn()
 
     assert game.black_ai.observation.own_color == COLOR.BLACK
@@ -280,3 +283,13 @@ def test_ai_turn_receives_hidden_hand_count_and_applies_legal_action():
     assert not hasattr(game.black_ai.observation, "white_cards")
     assert game.current_turn == COLOR.WHITE
     assert game.pieces_locations[action.destination].get_color() == COLOR.BLACK
+
+
+def test_ai_move_notation_uses_polish_piece_symbol_and_capture_marker():
+    game = make_game()
+    game.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    game.pieces_locations[9] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+    state = GameState.from_game(game)
+    action = GameAction(GameActionType.MOVE, 1, 9)
+
+    assert GameLogicLoop._format_ai_action_notation(state, action) == "Wxa2"

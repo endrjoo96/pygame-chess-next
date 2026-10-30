@@ -36,13 +36,19 @@ def test_ai_finds_immediate_king_capture():
     state.pieces_locations[2] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
     observation = GameObservation.from_state(state, COLOR.BLACK)
     ai = ChessAI(SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=1))
+    progress = []
 
-    decision = ai.choose_action(observation, random.Random(5))
+    decision = ai.choose_action(
+        observation,
+        random.Random(5),
+        progress_callback=lambda action, depth: progress.append((action, depth)),
+    )
 
     assert decision.action is not None
     result = GameSimulation.apply(state, decision.action)
     assert result.get_winner() == COLOR.BLACK
     assert decision.completed_depth == 1
+    assert [depth for _, depth in progress] == [0, 1]
 
 
 def test_ai_returns_a_legal_fallback_when_search_budget_expires():

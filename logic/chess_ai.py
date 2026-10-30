@@ -2,7 +2,7 @@ import math
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
@@ -89,6 +89,7 @@ class ChessAI:
         self,
         observation: GameObservation,
         rng: Optional[random.Random] = None,
+        progress_callback: Optional[Callable[[GameAction, int], None]] = None,
     ) -> SearchResult:
         """Szuka ruchu w próbkach ukrytych rąk i zwraca wynik ostatniej pełnej głębokości."""
         if observation.own_color != COLOR.BLACK:
@@ -113,6 +114,8 @@ class ChessAI:
         best_action = ordered_actions[0]
         best_score = self._quick_action_score(samples[0], best_action)
         completed_depth = 0
+        if progress_callback is not None:
+            progress_callback(best_action, completed_depth)
 
         for depth in range(1, self.config.max_depth + 1):
             try:
@@ -129,6 +132,8 @@ class ChessAI:
 
             best_score, best_action = max(depth_scores, key=lambda item: item[0])
             completed_depth = depth
+            if progress_callback is not None:
+                progress_callback(best_action, completed_depth)
             ordered_actions = [
                 action for _, action in sorted(depth_scores, key=lambda item: item[0], reverse=True)
             ]
