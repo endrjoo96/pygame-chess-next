@@ -35,7 +35,10 @@ def test_ai_finds_immediate_king_capture():
     state.pieces_locations[1] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     state.pieces_locations[2] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
     observation = GameObservation.from_state(state, COLOR.BLACK)
-    ai = ChessAI(SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=1))
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=1),
+        max_workers=1,
+    )
     progress = []
 
     decision = ai.choose_action(
@@ -55,7 +58,10 @@ def test_ai_returns_a_legal_fallback_when_search_budget_expires():
     state = make_black_to_move_state()
     state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     observation = GameObservation.from_state(state, COLOR.BLACK)
-    ai = ChessAI(SearchConfig(time_limit_seconds=1e-12, max_depth=4, hidden_hand_samples=1))
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=1e-12, max_depth=4, hidden_hand_samples=1),
+        max_workers=1,
+    )
 
     decision = ai.choose_action(observation, random.Random(5))
 
@@ -76,6 +82,40 @@ def test_ai_only_accepts_black_to_move_observations():
 def test_default_search_limits_match_run_properties():
     assert SearchConfig().time_limit_seconds == AI_SEARCH_TIME_LIMIT_SECONDS
     assert SearchConfig().max_depth == AI_SEARCH_MAX_DEPTH
+
+
+def test_parallel_search_matches_serial_search_and_reports_completed_depths():
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[9] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    config = SearchConfig(
+        time_limit_seconds=15,
+        max_depth=2,
+        hidden_hand_samples=2,
+    )
+    serial_progress = []
+    parallel_progress = []
+
+    serial_result = ChessAI(config, max_workers=1).choose_action(
+        observation,
+        random.Random(17),
+        progress_callback=lambda action, depth: serial_progress.append(
+            (action, depth)),
+    )
+    parallel_result = ChessAI(config, max_workers=2).choose_action(
+        observation,
+        random.Random(17),
+        progress_callback=lambda action, depth: parallel_progress.append(
+            (action, depth)),
+    )
+
+    assert parallel_result.action == serial_result.action
+    assert parallel_result.score == pytest.approx(serial_result.score)
+    assert parallel_result.completed_depth == serial_result.completed_depth == 2
+    assert [depth for _, depth in parallel_progress] == [0, 1, 2]
+    assert [depth for _, depth in serial_progress] == [0, 1, 2]
+    assert parallel_result.visited_nodes == serial_result.visited_nodes
 
 
 def test_evaluation_prefers_a_piece_not_under_immediate_attack():
@@ -136,7 +176,10 @@ def test_ai_prefers_a_safe_board_card_over_a_small_capture():
     state.board_card_position = 20
     state.board_enchantment = EnchantmentCardType.PIECE_TELEPORT.create()
     observation = GameObservation.from_state(state, COLOR.BLACK)
-    ai = ChessAI(SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=1))
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=1),
+        max_workers=1,
+    )
 
     decision = ai.choose_action(observation, random.Random(5))
 

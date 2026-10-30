@@ -1,6 +1,8 @@
 import math
+import os
 import random
 import time
+from concurrent.futures import ALL_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -76,11 +78,32 @@ class _SearchTimeout(Exception):
     pass
 
 
+def _evaluate_root_action(sample, action, depth, config, deadline):
+    """Ocenia jeden ruch startowy w izolowanym workerze."""
+    worker = ChessAI(config, max_workers=1)
+    worker._deadline = deadline
+    worker._nodes = 0
+    try:
+        worker._check_deadline()
+        child = GameSimulation.apply(sample, action)
+        score = worker._search(child, depth - 1, -math.inf, math.inf)
+    except _SearchTimeout:
+        return None, worker._nodes
+    return score, worker._nodes
+
+
 class ChessAI:
     """Wybiera akcje z perspektywy czarnych, nie otrzymując kart wroga."""
 
-    def __init__(self, config: SearchConfig = SearchConfig()):
+    def __init__(
+        self,
+        config: SearchConfig = SearchConfig(),
+        max_workers: Optional[int] = None,
+    ):
+        if max_workers is not None and max_workers < 1:
+            raise ValueError("The worker count must be at least one")
         self.config = config
+        self.max_workers = max_workers or (os.cpu_count() or 1)
         self.rng = random.Random()
         self._deadline = 0.0
         self._nodes = 0
@@ -117,26 +140,92 @@ class ChessAI:
         if progress_callback is not None:
             progress_callback(best_action, completed_depth)
 
-        for depth in range(1, self.config.max_depth + 1):
-            try:
+        worker_count = min(
+            self.max_workers, len(ordered_actions) * len(samples))
+        executor = (
+            ProcessPoolExecutor(max_workers=worker_count)
+            if worker_count > 1
+            else None
+        )
+        try:
+            for depth in range(1, self.config.max_depth + 1):
+                if time.monotonic() >= self._deadline:
+                    break
                 depth_scores = []
-                for action in ordered_actions:
-                    self._check_deadline()
-                    scores = []
-                    for sample in samples:
-                        child = GameSimulation.apply(sample, action)
-                        scores.append(self._search(child, depth - 1, -math.inf, math.inf))
-                    depth_scores.append((sum(scores) / len(scores), action))
-            except _SearchTimeout:
-                break
+                if executor is None:
+                    for action in ordered_actions:
+                        scores = []
+                        for sample in samples:
+                            score, nodes = _evaluate_root_action(
+                                sample, action, depth, self.config, self._deadline)
+                            self._nodes += nodes
+                            if score is None:
+                                break
+                            scores.append(score)
+                        if len(scores) != len(samples):
+                            break
+                        depth_scores.append((sum(scores) / len(scores), action))
+                    if len(depth_scores) != len(ordered_actions):
+                        break
+                else:
+                    tasks_per_depth = [
+                        (action, sample)
+                        for action in ordered_actions
+                        for sample in samples
+                    ]
+                    futures = [
+                        executor.submit(
+                            _evaluate_root_action,
+                            sample,
+                            action,
+                            depth,
+                            self.config,
+                            self._deadline,
+                        )
+                        for action, sample in tasks_per_depth
+                    ]
+                    remaining = max(0.0, self._deadline - time.monotonic())
+                    _, pending = wait(
+                        futures, timeout=remaining, return_when=ALL_COMPLETED)
+                    if pending:
+                        for future in pending:
+                            future.cancel()
+                        executor.shutdown(wait=True, cancel_futures=True)
+                        executor = None
+                        for future in futures:
+                            if not future.cancelled():
+                                _, nodes = future.result()
+                                self._nodes += nodes
+                        break
 
-            best_score, best_action = max(depth_scores, key=lambda item: item[0])
-            completed_depth = depth
-            if progress_callback is not None:
-                progress_callback(best_action, completed_depth)
-            ordered_actions = [
-                action for _, action in sorted(depth_scores, key=lambda item: item[0], reverse=True)
-            ]
+                    # Preserve action order for deterministic tie-breaking.
+                    results = [future.result() for future in futures]
+                    self._nodes += sum(nodes for _, nodes in results)
+                    if any(score is None for score, _ in results):
+                        break
+                    index = 0
+                    for action in ordered_actions:
+                        action_scores = [
+                            score
+                            for score, _ in results[index:index + len(samples)]
+                        ]
+                        index += len(samples)
+                        depth_scores.append(
+                            (sum(action_scores) / len(action_scores), action))
+
+                best_score, best_action = max(
+                    depth_scores, key=lambda item: item[0])
+                completed_depth = depth
+                if progress_callback is not None:
+                    progress_callback(best_action, completed_depth)
+                ordered_actions = [
+                    action
+                    for _, action in sorted(
+                        depth_scores, key=lambda item: item[0], reverse=True)
+                ]
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
 
         return SearchResult(best_action, best_score, completed_depth, self._nodes)
 

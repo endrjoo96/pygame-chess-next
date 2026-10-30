@@ -1,6 +1,7 @@
 import math
 import random
 from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Lock
 from typing import Optional
 
 import pygame
@@ -38,6 +39,8 @@ class GameLogicLoop(object):
         self._ai_executor = ThreadPoolExecutor(max_workers=1)
         self._ai_future: Optional[Future] = None
         self._ai_best_move = None
+        self._ai_progress_lock = Lock()
+        self._ai_generation = 0
         # create an object of class to show chess pieces on the board
         self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
         passive_icon = pygame.image.load(self.context.card_mod_passive_src).convert_alpha()
@@ -94,7 +97,9 @@ class GameLogicLoop(object):
         if self._ai_future is not None:
             self._ai_future.cancel()
             self._ai_future = None
-        self._ai_best_move = None
+        with self._ai_progress_lock:
+            self._ai_generation += 1
+            self._ai_best_move = None
         self.capture_processor.reset()
         self.cards_processor.reset_decks()
 
@@ -139,13 +144,16 @@ class GameLogicLoop(object):
         if self._ai_future is None:
             state = GameState.from_game(self)
             observation = GameObservation.from_state(state, COLOR.BLACK)
-            self._ai_best_move = None
+            with self._ai_progress_lock:
+                self._ai_generation += 1
+                generation = self._ai_generation
+                self._ai_best_move = None
 
             def report_progress(action, depth):
-                self._ai_best_move = (
-                    self._format_ai_action_notation(state, action),
-                    depth,
-                )
+                notation = self._format_ai_action_notation(state, action)
+                with self._ai_progress_lock:
+                    if generation == self._ai_generation:
+                        self._ai_best_move = (notation, depth)
 
             self._ai_future = self._ai_executor.submit(
                 self.black_ai.choose_action,
@@ -195,8 +203,13 @@ class GameLogicLoop(object):
             message,
             (center_x - message.get_width() // 2, center_y + 18),
         )
-        if self._ai_best_move is not None:
-            best_move, _ = self._ai_best_move
+        with self._ai_progress_lock:
+            best_move = (
+                self._ai_best_move[0]
+                if self._ai_best_move is not None
+                else None
+            )
+        if best_move is not None:
             caption = SysFont(self.context.comic_sans_font, 20).render(
                 "Myślę, że najlepszy ruch to...", True, (255, 255, 255))
             notation = SysFont(self.context.comic_sans_font, 30, bold=True).render(

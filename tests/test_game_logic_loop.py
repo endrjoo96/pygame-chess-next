@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from types import SimpleNamespace
 
 from constants.piece_color import COLOR
@@ -88,6 +89,8 @@ def make_game(card_type=None, uses=None):
     game.pending_board_card_delay = None
     game._ai_executor = ThreadPoolExecutor(max_workers=1)
     game._ai_future = None
+    game._ai_progress_lock = Lock()
+    game._ai_generation = 0
     return game
 
 
