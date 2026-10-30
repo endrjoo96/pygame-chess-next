@@ -73,8 +73,8 @@ class GameState:
 
     def get_winner(self) -> Optional[COLOR]:
         """Zwraca zwycięzcę, jeśli wśród zbitych figur jest król."""
-        if any(piece.get_type() == PIECE_TYPE.KING for piece in self.captured_white):
-            return COLOR.WHITE
         if any(piece.get_type() == PIECE_TYPE.KING for piece in self.captured_black):
             return COLOR.BLACK
+        if any(piece.get_type() == PIECE_TYPE.KING for piece in self.captured_white):
+            return COLOR.WHITE
         return None

@@ -7,7 +7,11 @@ from pygame.font import SysFont
 from constants.pos import id_to_xy, xy_to_id, POS
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
+from logic.chess_ai import ChessAI
+from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
+from models.game_observation import GameObservation
+from models.game_state import GameState
 from models.chess_pieces import Piece, COLOR
 from models.enchantment_cards import EnchantmentCardType
 from models.starting_positions import pieces_starting_positions_map
@@ -22,11 +26,12 @@ from utils.run_config import RUN_MODE, RunMode
 
 
 class GameLogicLoop(object):
-    def __init__(self, screen: Surface):
+    def __init__(self, screen: Surface, black_ai=None):
         """Tworzy stan rozgrywki, procesory i zasoby wizualne dla powierzchni ekranu."""
         self.context = GameContext()
         # display surface
         self.screen = screen
+        self.black_ai = black_ai
         # create an object of class to show chess pieces on the board
         self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
         passive_icon = pygame.image.load(self.context.card_mod_passive_src).convert_alpha()
@@ -108,10 +113,62 @@ class GameLogicLoop(object):
         self.print_annotations()
         winner = self.capture_processor.get_winner()
         if winner is None:
-            self.process_player_turn()
+            if self.current_turn == COLOR.BLACK and self.black_ai is not None:
+                self.play_ai_turn()
+            else:
+                self.process_player_turn()
             winner = self.capture_processor.get_winner()
 
         return winner
+
+    def play_ai_turn(self):
+        """Wykonuje jedną akcję bota czarnych na podstawie wyłącznie jego obserwacji."""
+        if self.black_ai is None or self.current_turn != COLOR.BLACK:
+            return
+
+        state = GameState.from_game(self)
+        observation = GameObservation.from_state(state, COLOR.BLACK)
+        decision = self.black_ai.choose_action(observation)
+        if decision.action is None:
+            return
+        self.apply_ai_action(decision.action)
+
+    def apply_ai_action(self, action):
+        """Zatwierdza kompletną akcję AI przez te same reguły co symulacja."""
+        self.__apply_domain_action(action)
+
+    def __apply_domain_action(self, action):
+        state = GameState.from_game(self)
+        result = GameSimulation.apply(state, action)
+
+        self.pieces_locations = result.pieces_locations
+        self.current_turn = result.current_turn
+        self.turns_started = result.turns_started
+        self.cards_processor.white_cards[:] = result.white_cards
+        self.cards_processor.black_cards[:] = result.black_cards
+        self.capture_processor.reset()
+        for piece in result.captured_white + result.captured_black:
+            self.capture_processor.capture_piece(piece)
+        self.board_card_available = result.board_card_available
+        self.board_card_position = result.board_card_position
+        self.board_enchantment = result.board_enchantment
+        self.pending_board_card_delay = result.pending_board_card_delay
+        self.selected_card = result.selected_card
+        self.selected_piece_position = result.selected_piece_position
+        self.selected_captured_piece = result.selected_captured_piece
+        self.double_move_step = result.double_move_step
+        self.double_move_collected_board_card = result.double_move_collected_board_card
+        self.resurrection_moves = result.resurrection_moves
+        if self.double_move_step > 0:
+            piece = self.pieces_locations[self.selected_piece_position]
+            self.moves = GameSimulation.destinations_for(
+                piece,
+                self.selected_piece_position,
+                self.pieces_locations,
+            )
+        else:
+            self.moves = []
+        random.setstate(result.random_state)
 
     # method to draw pieces on the chess board
     def draw_pieces(self):
@@ -290,7 +347,7 @@ class GameLogicLoop(object):
             self.__handle_piece_teleport(position, piece)
             return
         if self.__selected_card_is_piece_upgrade():
-            self.__handle_piece_upgrade(piece)
+            self.__handle_piece_upgrade(position, piece)
             return
         if self.__selected_card_is_return_to_start():
             self.__handle_return_to_start_click(position, piece)
@@ -310,37 +367,30 @@ class GameLogicLoop(object):
         if position == self.selected_piece_position or not piece.exists():
             return
 
-        self.pieces_locations[self.selected_piece_position], self.pieces_locations[position] = (
-            piece, self.pieces_locations[self.selected_piece_position])
         card_color, card_index = self.selected_card
-        self.cards_processor.get_cards_for(card_color).pop(card_index)
-        self.selected_card = None
-        self.selected_piece_position = 0
-        self.moves = []
-        self.__end_turn()
+        self.__apply_domain_action(GameAction(
+            GameActionType.TELEPORT,
+            self.selected_piece_position,
+            position,
+            card_index,
+        ))
 
-    def __handle_piece_upgrade(self, piece):
+    def __handle_piece_upgrade(self, position, piece):
         """Awansuje wskazaną figurę, zużywa kartę i ustawia jej ogłuszenie."""
         card_color, card_index = self.selected_card
         card_deck = self.cards_processor.get_cards_for(card_color)
         used_card = card_deck[card_index]
-        card_type = used_card.get_card_type()
         if (
             not piece.exists()
             or piece.get_color() != self.current_turn
             or piece.get_type() != used_card.get_required_piece_type()
-            or not piece.promote_to(card_type.promoted_piece_type)
+            or not piece.get_promotion_stun_turns_to(
+                used_card.get_card_type().promoted_piece_type)
         ):
             return
 
-        card_deck.pop(card_index)
-        stun_turns = used_card.get_rate_stun_after_use()
-        piece.set_stunned_for_turns(stun_turns)
-        piece.add_stun_effect(used_card, stun_turns)
-        self.selected_card = None
-        self.selected_piece_position = 0
-        self.moves = []
-        self.__end_turn()
+        self.__apply_domain_action(GameAction(
+            GameActionType.PROMOTE, position, card_index=card_index))
 
     def __handle_return_to_start_click(self, position, piece):
         """Wybiera figurę do przeniesienia albo wykonuje jej powrót na pole startowe."""
@@ -359,8 +409,12 @@ class GameLogicLoop(object):
             self.selected_piece_position = position
             return
         if position in self.__get_return_to_start_targets():
-            self.moves = [id_to_xy(position)]
-            self.move_piece(position)
+            self.__apply_domain_action(GameAction(
+                GameActionType.RETURN_TO_START,
+                self.selected_piece_position,
+                position,
+                self.selected_card[1],
+            ))
 
     def __select_piece_for_movement(self, position, piece):
         """Waliduje własną figurę i oblicza jej ruchy z wybraną kartą."""
@@ -409,20 +463,9 @@ class GameLogicLoop(object):
 
     def __apply_selected_passive_enchantment(self, position, piece, enchantment):
         """Przypisuje efekt pasywny lub planuje go, zużywa kartę i kończy turę."""
-        delay = enchantment.get_rate_delay_before_use()
-        if delay > 0:
-            piece.add_delayed_enchantment(
-                enchantment, self.turns_started[self.current_turn] + delay)
-        else:
-            self.__apply_passive_enchantment(position, enchantment)
-
         card_color, card_index = self.selected_card
-        self.cards_processor.get_cards_for(card_color).pop(card_index)
-        self.selected_card = None
-        self.selected_captured_piece = None
-        self.selected_piece_position = 0
-        self.moves = []
-        self.__end_turn()
+        self.__apply_domain_action(GameAction(
+            GameActionType.APPLY_PASSIVE, position, card_index=card_index))
 
     def __move_to_clicked_destination(self, position, piece):
         """Wykonuje legalny ruch na wybrane puste pole lub zbija figurę przeciwnika."""
@@ -654,17 +697,18 @@ class GameLogicLoop(object):
             return
 
         color, index = self.selected_captured_piece
-        piece = self.capture_processor.release_captured_piece(color, index)
-        self.pieces_locations[position] = piece
-
+        king_position = self.__get_resurrection_king_position()
+        if king_position is None:
+            return
         card_color, card_index = self.selected_card
-        self.cards_processor.get_cards_for(card_color).pop(card_index)
-        self.selected_card = None
-        self.selected_captured_piece = None
-        self.resurrection_moves = []
-        self.selected_piece_position = 0
-        self.moves = []
-        self.__end_turn()
+        self.__apply_domain_action(GameAction(
+            GameActionType.RESURRECT,
+            king_position,
+            position,
+            card_index,
+            color,
+            index,
+        ))
 
     def __selected_card_allows_captured_piece_selection(self):
         """Sprawdza, czy wybrana karta bieżącego gracza wymaga wskazania zbitej figury."""
@@ -726,18 +770,6 @@ class GameLogicLoop(object):
 
     def capture_piece(self, destination):
         """Zbija figurę na polu docelowym i wykonuje ruch, uwzględniając rzut wieżą."""
-        if self.__is_rook_tower_throw_selected():
-            self.move_piece(destination, beats=True)
-            return
-
-        p: Piece = self.pieces_locations[destination]
-        self.capture_processor.capture_piece(p)
-        # add the captured piece to list
-        # if p.get_color() == COLOR.WHITE:
-        #     self.captured_black.append(p)
-        # else:
-        #     self.captured_white.append(p)
-        # move source piece to its destination
         self.move_piece(destination, beats=True)
 
     def __is_rook_tower_throw_selected(self):
@@ -757,37 +789,21 @@ class GameLogicLoop(object):
             return
 
         source_position = self.selected_piece_position
-        moving_color = self.current_turn
-        first_double_move = (
-            self.__selected_card_is_piece_double_move() and self.double_move_step == 0
+        card_index = (
+            self.selected_card[1]
+            if self.selected_card is not None
+            and self.selected_card[0] == self.current_turn
+            else -1
         )
-        if self.double_move_step == 0:
-            self.__advance_stun_effects(moving_color)
-
-        _, card_index, card_deck, used_card = self.__get_used_card(moving_color)
-        piece: Piece = self.pieces_locations[source_position]
-        if (
-            used_card is not None
-            and used_card.get_card_type() == EnchantmentCardType.ROOK_TOWER_THROW
-        ):
-            self.__capture_rook_throw_route(source_position, destination)
-
-        self.pieces_locations[source_position] = Piece()
-        self.pieces_locations[destination] = piece
-        collected_board_card = self.__collect_board_card(destination, moving_color)
-
-        if not first_double_move and used_card is not None and used_card.consume_use() == 0:
-            card_deck.pop(card_index)
-        self.__apply_move_stun(piece, used_card)
-
-        collected_board_card = collected_board_card or self.double_move_collected_board_card
-        if first_double_move and self.__continue_double_move(
-            piece, destination, used_card, card_deck, card_index, collected_board_card
-        ):
-            return
-
-        self.__finish_piece_move(
-            piece, source_position, destination, beats, collected_board_card)
+        piece_name = self.pieces_locations[source_position].full_name()
+        action = GameAction(
+            GameActionType.MOVE, source_position, destination, card_index)
+        self.__apply_domain_action(action)
+        debug_log(
+            "{} {} from {} to {}".format(
+                piece_name, "beats" if beats else "moves",
+                POS(source_position).name, POS(destination).name)
+        )
 
     def __get_used_card(self, moving_color):
         """Zwraca kartę bieżącego ruchu wraz z jej talią i indeksem, jeśli jest wybrana."""

@@ -4,6 +4,7 @@ import pygame
 from pygame._sdl2 import Window
 from pygame.locals import *
 
+from logic.chess_ai import ChessAI
 from logic.stage.game_logic_loop import GameLogicLoop
 from utils.gamecontext import GameContext
 from utils import utils
@@ -16,6 +17,7 @@ class Game:
         context = GameContext()
         # flag to know if game menu has been showed
         self.menu_showed = False
+        self.play_against_ai = False
         # flag to set game loop
         self.running = True
         self.winner = None
@@ -124,6 +126,13 @@ class Game:
         welcome_text = big_font.render("Chess NEXT", False, black_color)
         created_by = small_font.render("Created by jerne_official", True, black_color)
         start_btn_label = small_font.render("Graj", True, white_color)
+        ai_toggle_label = small_font.render(
+            "Bot czarnych: {}".format(
+                "włączony" if self.play_against_ai else "wyłączony"
+            ),
+            True,
+            white_color,
+        )
 
         # show welcome text
         self.screen.blit(welcome_text,
@@ -137,6 +146,20 @@ class Game:
         self.screen.blit(start_btn_label,
                          ((start_btn.x + (start_btn.width - start_btn_label.get_width()) // 2,
                            start_btn.y + (start_btn.height - start_btn_label.get_height()) // 2)))
+        ai_toggle_btn = pygame.Rect(
+            0, 0, ai_toggle_label.get_width() + 24, 36)
+        ai_toggle_btn.center = (
+            self.screen.get_rect().centerx,
+            start_btn.bottom + 45,
+        )
+        pygame.draw.rect(self.screen, black_color, ai_toggle_btn)
+        self.screen.blit(
+            ai_toggle_label,
+            (
+                ai_toggle_btn.x + (ai_toggle_btn.width - ai_toggle_label.get_width()) // 2,
+                ai_toggle_btn.y + (ai_toggle_btn.height - ai_toggle_label.get_height()) // 2,
+            ),
+        )
 
         # get pressed keys
         key_pressed = pygame.key.get_pressed()
@@ -146,8 +169,10 @@ class Game:
         if utils.left_click_event():
             # call function to get mouse event
             mouse_coords = utils.get_mouse_event()
-            # check if "Play" button was clicked
-            if start_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
+            if ai_toggle_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
+                self.play_against_ai = not self.play_against_ai
+                self.chess.black_ai = ChessAI() if self.play_against_ai else None
+            elif start_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
                 # change button behavior as it is hovered
                 pygame.draw.rect(self.screen, white_color, start_btn, 3)
 

@@ -1,3 +1,4 @@
+import builtins
 import random
 
 import pytest
@@ -232,8 +233,8 @@ def test_rejecting_unavailable_action_does_not_change_state(empty_state):
 @pytest.mark.parametrize(
     ("capture_list", "king_color", "winner"),
     [
-        ("captured_white", COLOR.BLACK, COLOR.WHITE),
         ("captured_black", COLOR.WHITE, COLOR.BLACK),
+        ("captured_white", COLOR.BLACK, COLOR.WHITE),
     ],
 )
 def test_state_detects_winner_from_captured_king(
@@ -243,3 +244,116 @@ def test_state_detects_winner_from_captured_king(
 
     assert empty_state.get_winner() == winner
     assert GameSimulation.available_actions(empty_state) == []
+
+
+def test_apply_does_not_import_game_logic_loop(empty_state, monkeypatch):
+    empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == 1 and action.destination == 2
+    )
+    original_import = builtins.__import__
+
+    def reject_game_logic_loop(name, *args, **kwargs):
+        if name == "logic.stage.game_logic_loop":
+            raise AssertionError("simulation attempted to import GameLogicLoop")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_game_logic_loop)
+
+    result = GameSimulation.apply(empty_state, action)
+
+    assert result.pieces_locations[2].get_type() == PIECE_TYPE.ROOK
+    assert empty_state.pieces_locations[1].get_type() == PIECE_TYPE.ROOK
+
+
+def test_rook_tower_throw_captures_every_piece_on_route(empty_state):
+    empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    empty_state.pieces_locations[3] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[5] = Piece(COLOR.BLACK, PIECE_TYPE.KNIGHT)
+    empty_state.white_cards.append(EnchantmentCardType.ROOK_TOWER_THROW.create())
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.MOVE
+        and action.source == 1
+        and action.destination == 8
+        and action.card_index == 0
+    )
+
+    result = GameSimulation.apply(empty_state, action)
+
+    assert result.pieces_locations[8].get_type() == PIECE_TYPE.ROOK
+    assert not result.pieces_locations[3].exists()
+    assert not result.pieces_locations[5].exists()
+    assert [piece.get_type() for piece in result.captured_black] == [PIECE_TYPE.PAWN]
+    assert [piece.get_type() for piece in result.captured_white] == [PIECE_TYPE.KNIGHT]
+    assert result.white_cards == []
+    assert empty_state.pieces_locations[3].get_type() == PIECE_TYPE.PAWN
+    assert empty_state.pieces_locations[5].get_type() == PIECE_TYPE.KNIGHT
+
+
+def test_delayed_passive_activates_at_players_next_turn(empty_state):
+    empty_state.pieces_locations[28] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[29] = Piece(COLOR.BLACK, PIECE_TYPE.KNIGHT)
+    empty_state.pieces_locations[1] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    empty_state.white_cards.append(
+        EnchantmentCardType.PAWN_DETONATION_DELAYED_1.create()
+    )
+    passive_action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.APPLY_PASSIVE and action.source == 28
+    )
+
+    after_apply = GameSimulation.apply(empty_state, passive_action)
+    black_move = next(
+        action for action in GameSimulation.available_actions(after_apply)
+        if action.source == 1 and action.destination == 2
+    )
+    after_black_move = GameSimulation.apply(after_apply, black_move)
+
+    assert after_black_move.current_turn == COLOR.WHITE
+    assert not after_black_move.pieces_locations[28].exists()
+    assert not after_black_move.pieces_locations[29].exists()
+    assert [piece.get_type() for piece in after_black_move.captured_white] == [
+        PIECE_TYPE.KNIGHT
+    ]
+    assert empty_state.pieces_locations[28].get_type() == PIECE_TYPE.PAWN
+    assert empty_state.pieces_locations[29].get_type() == PIECE_TYPE.KNIGHT
+
+
+def test_board_card_replacement_uses_state_rng_deterministically(empty_state, monkeypatch):
+    import logic.game_rules as game_rules
+    import models.enchantment_cards as enchantment_cards
+    from utils.run_config import RunMode
+
+    empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    empty_state.board_card_available = True
+    empty_state.board_card_position = 2
+    empty_state.board_enchantment = EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.create(
+        uses=2
+    )
+    empty_state.random_state = random.Random(2).getstate()
+    monkeypatch.setattr(game_rules, "RUN_MODE", RunMode.PROD)
+    monkeypatch.setattr(enchantment_cards, "RUN_MODE", RunMode.PROD)
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == 1 and action.destination == 2
+    )
+
+    first_result = GameSimulation.apply(empty_state, action)
+    second_result = GameSimulation.apply(empty_state, action)
+
+    assert first_result.random_state == second_result.random_state
+    assert first_result.board_card_position == second_result.board_card_position
+    assert (
+        first_result.board_enchantment.get_card_type()
+        == second_result.board_enchantment.get_card_type()
+    )
+    assert (
+        first_result.board_enchantment.get_remaining_uses()
+        == second_result.board_enchantment.get_remaining_uses()
+    )
+    assert first_result.random_state != empty_state.random_state
+    assert empty_state.board_card_available
+    assert empty_state.board_card_position == 2
+    assert empty_state.white_cards == []

@@ -1,5 +1,7 @@
 import random
+from itertools import product
 from enum import Enum
+from math import prod
 
 from constants.enchantment_type import EnchantmentType
 from constants.piece_type import PIECE_TYPE
@@ -280,6 +282,55 @@ class EnchantmentCardType(Enum):
                 selected[0].name, selected[1] if selected[1] is not None else 1)
         )
         return selected
+
+    @classmethod
+    def sample_with_uses(cls, rng=random):
+        """Losuje kartę i liczbę użyć zgodnie z mechaniką gry, bez logowania diagnostycznego."""
+        candidates = _sample_card_candidates(cls, rng)
+        if RUN_MODE is RunMode.DEBUG:
+            return rng.choice(candidates)
+
+        weights = _calculate_effective_weights(candidates)
+        if not any(weights):
+            raise ValueError("At least one enchantment must have a non-zero rarity")
+        return rng.choices(candidates, weights=weights, k=1)[0]
+
+    @classmethod
+    def draw_probability_distribution(cls):
+        """Zwraca dokładne prawdopodobieństwo wylosowania każdego typu karty."""
+        if RUN_MODE is RunMode.DEBUG:
+            probability = 1 / len(cls)
+            return {card_type: probability for card_type in cls}
+
+        reusable_cards = [
+            card_type for card_type in cls
+            if card_type.remaining_uses_range is not None
+        ]
+        use_values = [
+            range(minimum, maximum + 1)
+            for minimum, maximum in (
+                card_type.remaining_uses_range for card_type in reusable_cards
+            )
+        ]
+        probabilities = {card_type: 0.0 for card_type in cls}
+        configuration_probability = 1 / prod(len(values) for values in use_values)
+
+        for sampled_uses in product(*use_values):
+            uses_by_card = dict(zip(reusable_cards, sampled_uses))
+            weighted_candidates = [
+                (card_type, uses_by_card.get(card_type))
+                for card_type in cls
+            ]
+            weights = _calculate_effective_weights(weighted_candidates)
+            total_weight = sum(weights)
+            if total_weight == 0:
+                raise ValueError("At least one enchantment must have a non-zero rarity")
+            for (card_type, _), weight in zip(weighted_candidates, weights):
+                probabilities[card_type] += (
+                    configuration_probability * weight / total_weight
+                )
+
+        return probabilities
 
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":
