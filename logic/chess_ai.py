@@ -15,6 +15,7 @@ from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
 from utils.run_config import (
+    AI_SEARCH_CPU_PERCENT,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
     GAME_SEED,
@@ -103,11 +104,19 @@ class ChessAI:
         self,
         config: SearchConfig = SearchConfig(),
         max_workers: Optional[int] = None,
+        cpu_percent: int = AI_SEARCH_CPU_PERCENT,
     ):
         if max_workers is not None and max_workers < 1:
             raise ValueError("The worker count must be at least one")
+        if not 1 <= cpu_percent <= 100:
+            raise ValueError("The CPU usage percentage must be between 1 and 100")
         self.config = config
-        self.max_workers = max_workers or (os.cpu_count() or 1)
+        logical_cpu_count = os.cpu_count() or 1
+        self.max_workers = (
+            max_workers
+            if max_workers is not None
+            else max(1, logical_cpu_count * cpu_percent // 100)
+        )
         self._deadline = 0.0
         self._nodes = 0
 
@@ -145,8 +154,8 @@ class ChessAI:
         if progress_callback is not None:
             progress_callback(best_action, completed_depth)
 
-        worker_count = min(
-            self.max_workers, len(ordered_actions) * len(samples))
+        worker_count = self._worker_count_for_tasks(
+            len(ordered_actions) * len(samples))
         executor = (
             ProcessPoolExecutor(max_workers=worker_count)
             if worker_count > 1
@@ -233,6 +242,9 @@ class ChessAI:
                 executor.shutdown(wait=True, cancel_futures=True)
 
         return SearchResult(best_action, best_score, completed_depth, self._nodes)
+
+    def _worker_count_for_tasks(self, task_count):
+        return min(self.max_workers, task_count)
 
     def _search(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
         self._check_deadline()

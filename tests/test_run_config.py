@@ -38,6 +38,49 @@ def test_run_config_rejects_non_integer_game_seed(monkeypatch, tmp_path):
         run_config._load_run_config()
 
 
+def test_run_config_defaults_cpu_usage_percentage_to_full_capacity(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+    )
+
+    assert run_config._load_run_config()[-1] == 100
+
+
+@pytest.mark.parametrize("cpu_percent", ["1", "99", "100"])
+def test_run_config_accepts_cpu_usage_percentage(monkeypatch, tmp_path, cpu_percent):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.cpu_percent": cpu_percent},
+            tmp_path / "run.properties",
+        ),
+    )
+
+    assert run_config._load_run_config()[-1] == int(cpu_percent)
+
+
+@pytest.mark.parametrize("cpu_percent", ["0", "101", "-1", "50.5", "invalid"])
+def test_run_config_rejects_invalid_cpu_usage_percentage(
+    monkeypatch, tmp_path, cpu_percent
+):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.cpu_percent": cpu_percent},
+            tmp_path / "run.properties",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="ai.search.cpu_percent"):
+        run_config._load_run_config()
+
+
 def test_missing_game_seed_is_generated_when_requested(monkeypatch):
     calls = []
 

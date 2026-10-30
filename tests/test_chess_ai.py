@@ -1,3 +1,4 @@
+import os
 import random
 
 import pytest
@@ -10,7 +11,11 @@ from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
-from utils.run_config import AI_SEARCH_MAX_DEPTH, AI_SEARCH_TIME_LIMIT_SECONDS
+from utils.run_config import (
+    AI_SEARCH_CPU_PERCENT,
+    AI_SEARCH_MAX_DEPTH,
+    AI_SEARCH_TIME_LIMIT_SECONDS,
+)
 
 
 def make_black_to_move_state():
@@ -103,6 +108,40 @@ def test_ai_only_accepts_black_to_move_observations():
 def test_default_search_limits_match_run_properties():
     assert SearchConfig().time_limit_seconds == AI_SEARCH_TIME_LIMIT_SECONDS
     assert SearchConfig().max_depth == AI_SEARCH_MAX_DEPTH
+    assert ChessAI().max_workers >= 1
+
+
+@pytest.mark.parametrize(
+    ("cpu_percent", "expected_workers"),
+    [(1, 1), (12, 1), (50, 4), (99, 7), (100, 8)],
+)
+def test_cpu_percentage_limits_workers_with_floor_rounding(
+    monkeypatch, cpu_percent, expected_workers
+):
+    monkeypatch.setattr("logic.chess_ai.os.cpu_count", lambda: 8)
+
+    ai = ChessAI(cpu_percent=cpu_percent)
+
+    assert ai.max_workers == expected_workers
+
+
+def test_explicit_worker_count_overrides_cpu_percentage():
+    assert ChessAI(max_workers=3, cpu_percent=1).max_workers == 3
+
+
+def test_worker_count_is_capped_by_available_search_tasks():
+    assert ChessAI(max_workers=8)._worker_count_for_tasks(3) == 3
+
+
+@pytest.mark.parametrize("cpu_percent", [0, 101])
+def test_ai_rejects_cpu_percentage_outside_supported_range(cpu_percent):
+    with pytest.raises(ValueError, match="CPU usage percentage"):
+        ChessAI(cpu_percent=cpu_percent)
+
+
+def test_configured_cpu_percent_is_used_by_default():
+    assert ChessAI().max_workers == max(
+        1, (os.cpu_count() or 1) * AI_SEARCH_CPU_PERCENT // 100)
 
 
 def test_parallel_search_matches_serial_search_and_reports_completed_depths():

@@ -68,11 +68,23 @@ def _load_run_config():
                 properties_path)
         ) from None
 
+    try:
+        ai_search_cpu_percent = int(properties.get("ai.search.cpu_percent", "100"))
+    except ValueError:
+        raise ValueError(
+            "Invalid 'ai.search.cpu_percent' in {}; expected an integer from 1 to 100".format(
+                properties_path)
+        ) from None
+
     if ai_search_max_depth < 1:
         raise ValueError("'ai.search.max_depth' must be at least one in {}".format(properties_path))
     if not math.isfinite(ai_search_time_limit_seconds) or ai_search_time_limit_seconds <= 0:
         raise ValueError(
             "'ai.search.time_limit_seconds' must be a positive finite number in {}".format(
+                properties_path))
+    if not 1 <= ai_search_cpu_percent <= 100:
+        raise ValueError(
+            "'ai.search.cpu_percent' must be between 1 and 100 in {}".format(
                 properties_path))
 
     return (
@@ -81,6 +93,7 @@ def _load_run_config():
         game_seed,
         ai_search_max_depth,
         ai_search_time_limit_seconds,
+        ai_search_cpu_percent,
     )
 
 
@@ -90,6 +103,7 @@ def _load_run_config():
     GAME_SEED,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
+    AI_SEARCH_CPU_PERCENT,
 ) = _load_run_config()
 
 

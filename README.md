@@ -39,6 +39,13 @@ Ustawienia znajdują się w `run.properties`:
 | `game.seed` | Opcjonalny seed losowości. Jeśli klucza brakuje, nowy seed 64-bitowy jest losowany przy rozpoczęciu partii. |
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
 | `ai.search.time_limit_seconds` | Łączny budżet czasu AI na wybranie ruchu, w sekundach. |
+| `ai.search.cpu_percent` | Limit workerów AI jako procent logicznych CPU, liczba całkowita od 1 do 100; domyślnie `100`. |
+
+Liczba workerów to `max(1, floor(logiczne_CPU * cpu_percent / 100))`, dodatkowo
+ograniczona liczbą zadań wyszukiwania. Na przykład `99` przy 8 logicznych CPU
+uruchomi maksymalnie 7 workerów, a `100` — maksymalnie 8. To ogranicza liczbę
+procesów obliczeniowych, ale nie gwarantuje dokładnego procentu użycia mierzonego
+przez system operacyjny.
 
 Seed może być dowolną liczbą całkowitą, również ujemną lub bardzo dużą.
 Ustawienie stałej wartości, np. `game.seed=12345`, pozwala odtwarzać te same
