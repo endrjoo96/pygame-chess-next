@@ -73,6 +73,7 @@ class GameLogicLoop(object):
         self.board_card_position = POS.D5.value
         self.board_card_available = False
         self.board_enchantment = None
+        self.board_cards = []
         self.pending_board_card_delay = None
         card_image = pygame.image.load(self.context.card_on_board_src).convert_alpha()
         self.board_card_image = pygame.transform.scale(
@@ -96,6 +97,7 @@ class GameLogicLoop(object):
         self.board_card_available = False
         self.board_card_position = POS.D5.value
         self.board_enchantment = None
+        self.board_cards = []
         self.pending_board_card_delay = None
         if self._ai_future is not None:
             self._ai_future.cancel()
@@ -128,6 +130,21 @@ class GameLogicLoop(object):
         # show welcome text
         self.screen.blit(rendered_text, ((self.screen.get_width() - rendered_text.get_width()) // 2,
                                          self.context.board_offset_y - rendered_text.get_height() - 5))
+        countdown_text = self._board_card_countdown_text(
+            bool(getattr(self, "board_cards", [])) or self.board_card_available,
+            self.pending_board_card_delay,
+        )
+        if countdown_text is not None:
+            countdown_font = SysFont(self.context.comic_sans_font, 16)
+            rendered_countdown = countdown_font.render(
+                countdown_text, True, white_color)
+            self.screen.blit(
+                rendered_countdown,
+                (
+                    (self.screen.get_width() - rendered_countdown.get_width()) // 2,
+                    8,
+                ),
+            )
         self.print_annotations()
         winner = self.capture_processor.get_winner()
         if winner is None:
@@ -138,6 +155,21 @@ class GameLogicLoop(object):
             winner = self.capture_processor.get_winner()
 
         return winner
+
+    @staticmethod
+    def _board_card_countdown_text(card_available, delay):
+        if delay is None:
+            return None
+        if card_available and delay == 0:
+            return "Kolejna karta pojawi się po zakończeniu tury"
+        unit = "turę" if delay == 1 else (
+            "tury"
+            if delay % 10 in (2, 3, 4) and delay % 100 not in (12, 13, 14)
+            else "tur"
+        )
+        if card_available:
+            return "Kolejna karta pojawi się za {} {}".format(delay, unit)
+        return "Karta pojawi się na planszy za {} {}".format(delay, unit)
 
     def play_ai_turn(self):
         """Asynchronicznie wyszukuje ruch i zatwierdza go po zakończeniu obliczeń."""
@@ -310,6 +342,7 @@ class GameLogicLoop(object):
         self.board_card_available = result.board_card_available
         self.board_card_position = result.board_card_position
         self.board_enchantment = result.board_enchantment
+        self.board_cards = result.board_cards
         self.pending_board_card_delay = result.pending_board_card_delay
         self.selected_card = result.selected_card
         self.selected_piece_position = result.selected_piece_position
@@ -331,8 +364,13 @@ class GameLogicLoop(object):
     # method to draw pieces on the chess board
     def draw_pieces(self):
         """Rysuje karty planszowe, figury, ich efekty oraz panele kart i zbić."""
-        if self.board_card_available:
-            card_x, card_y = id_to_xy(self.board_card_position)
+        board_cards = getattr(self, "board_cards", []) or (
+            [(self.board_card_position, self.board_enchantment)]
+            if self.board_card_available and self.board_enchantment is not None
+            else []
+        )
+        for card_position, _ in board_cards:
+            card_x, card_y = id_to_xy(card_position)
             self.screen.blit(
                 self.board_card_image,
                 self.context.chessboard_coordinates[card_x][card_y],
@@ -406,16 +444,23 @@ class GameLogicLoop(object):
 
     def __draw_board_card_preview(self):
         """Wyświetla podgląd karty planszowej, gdy kursor znajduje się nad nią."""
-        if not self.board_card_available:
-            return
-
-        card_x, card_y = id_to_xy(self.board_card_position)
-        square = pygame.Rect(
-            self.context.chessboard_coordinates[card_x][card_y],
-            (self.context.square_length, self.context.square_length),
-        )
         mouse_x, mouse_y = pygame.mouse.get_pos()
-        if not square.collidepoint(mouse_x, mouse_y):
+        hovered_card = None
+        board_cards = getattr(self, "board_cards", []) or (
+            [(self.board_card_position, self.board_enchantment)]
+            if self.board_card_available and self.board_enchantment is not None
+            else []
+        )
+        for card_position, enchantment in board_cards:
+            card_x, card_y = id_to_xy(card_position)
+            square = pygame.Rect(
+                self.context.chessboard_coordinates[card_x][card_y],
+                (self.context.square_length, self.context.square_length),
+            )
+            if square.collidepoint(mouse_x, mouse_y):
+                hovered_card = enchantment
+                break
+        if hovered_card is None:
             return
 
         margin = 10
@@ -429,7 +474,7 @@ class GameLogicLoop(object):
             preview_y = mouse_y - card_height - margin
 
         self.cards_processor.render_preview(
-            self.screen, self.chess_pieces, self.board_enchantment, (preview_x, preview_y), self.current_turn)
+            self.screen, self.chess_pieces, hovered_card, (preview_x, preview_y), self.current_turn)
 
     def __draw_piece_effect_preview(self):
         """Pokazuje podgląd efektów figury wskazanej kursorem."""
@@ -995,11 +1040,30 @@ class GameLogicLoop(object):
 
     def __collect_board_card(self, destination, moving_color):
         """Dodaje kartę zebraną na polu docelowym i zwraca, czy została zebrana."""
-        collected = self.board_card_available and destination == self.board_card_position
-        if collected:
-            self.cards_processor.add_card_for(moving_color, self.board_enchantment)
-            self.board_card_available = False
-        return collected
+        board_cards = getattr(self, "board_cards", [])
+        card = next(
+            (card for card in board_cards if card[0] == destination),
+            None,
+        )
+        if card is None and self.board_card_available and destination == self.board_card_position:
+            card = (self.board_card_position, self.board_enchantment)
+            board_cards = [card]
+            self.board_cards = board_cards
+        if card is None:
+            return False
+        self.cards_processor.add_card_for(moving_color, card[1])
+        board_cards.remove(card)
+        self.board_cards = board_cards
+        self.__sync_board_card_fields()
+        return True
+
+    def __sync_board_card_fields(self):
+        """Synchronizuje starsze pola pojedynczej karty z kolekcją kart planszowych."""
+        self.board_card_available = bool(getattr(self, "board_cards", []))
+        if self.board_card_available:
+            self.board_card_position, self.board_enchantment = self.board_cards[0]
+        else:
+            self.board_enchantment = None
 
     def __apply_move_stun(self, piece, used_card):
         """Nakłada ogłuszenie po ruchu z karty lub po aktywnych efektach pasywnych."""
@@ -1047,21 +1111,7 @@ class GameLogicLoop(object):
         self.__end_turn()
         if collected_board_card and self.pending_board_card_delay is None:
             self.__schedule_next_board_card()
-        elif (
-            self.pending_board_card_delay is not None
-            and self.pending_board_card_delay > 0
-        ):
-            previous_delay = self.pending_board_card_delay
-            self.pending_board_card_delay -= 1
-            debug_log(
-                "Board card placement: countdown decreased from {} to {} turn(s)".format(
-                    previous_delay, self.pending_board_card_delay)
-            )
-        if (
-            self.pending_board_card_delay == 0
-            and not self.board_card_available
-        ):
-            self.__place_next_board_card()
+        self.__advance_board_card_clock()
 
         beats_or_moves = "beats" if beats else "moves"
         debug_log(
@@ -1084,31 +1134,58 @@ class GameLogicLoop(object):
 
     def __place_next_board_card(self):
         """Losuje wolne pole i kartę, po czym oznacza kartę planszową jako dostępną."""
+        existing_cards = getattr(self, "board_cards", []) or (
+            [(self.board_card_position, self.board_enchantment)]
+            if self.board_card_available and self.board_enchantment is not None
+            else []
+        )
+        occupied_card_positions = {position for position, _ in existing_cards}
         empty_positions = [
             position for position in range(1, 65)
             if not self.pieces_locations[position].exists()
+            and position not in occupied_card_positions
         ]
         debug_log(
             "Board card placement: found {} empty square(s)".format(len(empty_positions))
         )
+        if not empty_positions:
+            return
         rng = self.rng
-        self.board_card_position = rng.choice(empty_positions)
+        card_position = rng.choice(empty_positions)
         debug_log(
-            "Board card placement: selected square {}".format(POS(self.board_card_position).name)
+            "Board card placement: selected square {}".format(POS(card_position).name)
         )
-        self.board_enchantment = EnchantmentCardType.create_random(rng)
-        self.board_card_available = True
+        enchantment = EnchantmentCardType.create_random(rng)
+        existing_cards.append((card_position, enchantment))
+        self.board_cards = existing_cards
+        self.__sync_board_card_fields()
         self.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
         )
         debug_log(
-            "Board card placement: '{}' is now available on {}".format(
-                self.board_enchantment.get_title(), POS(self.board_card_position).name)
+            "Board card placement: '{}' is now available on {}; next-card countdown starts at {} turn(s)".format(
+                enchantment.get_title(),
+                POS(card_position).name,
+                self.pending_board_card_delay,
+            )
         )
+
+    def __advance_board_card_clock(self):
+        """Odlicza do następnego wyłożenia niezależnie od kart już leżących."""
+        if self.pending_board_card_delay is None:
+            return
+        previous_delay = self.pending_board_card_delay
+        if previous_delay > 0:
+            self.pending_board_card_delay -= 1
+            debug_log(
+                "Board card placement: countdown decreased from {} to {} turn(s)".format(
+                    previous_delay, self.pending_board_card_delay)
+            )
+        if self.pending_board_card_delay == 0:
+            self.__place_next_board_card()
 
     def __schedule_next_board_card(self):
         """Planuje pojawienie się następnej karty, z natychmiastowym losowaniem w debug."""
-        self.board_card_available = False
         self.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else self.rng.randint(1, 5)
         )

@@ -36,6 +36,7 @@ class GameState:
     double_move_collected_board_card: bool = False
     resurrection_moves: List[int] = field(default_factory=list)
     random_state: tuple = field(default_factory=_initial_random_state)
+    board_cards: List[Tuple[int, Enchantment]] = field(default_factory=list)
 
     @classmethod
     def from_game(cls, game) -> "GameState":
@@ -58,6 +59,15 @@ class GameState:
             double_move_step=game.double_move_step,
             double_move_collected_board_card=game.double_move_collected_board_card,
             resurrection_moves=game.resurrection_moves,
+            board_cards=(
+                game.board_cards
+                if getattr(game, "board_cards", None)
+                else (
+                    [(game.board_card_position, game.board_enchantment)]
+                    if game.board_card_available and game.board_enchantment is not None
+                    else []
+                )
+            ),
             random_state=(
                 game.rng.getstate()
                 if hasattr(game, "rng")

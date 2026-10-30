@@ -361,7 +361,7 @@ def test_board_card_replacement_uses_state_rng_deterministically(empty_state, mo
     assert empty_state.white_cards == []
 
 
-def test_board_card_countdown_runs_while_card_is_available(empty_state, monkeypatch):
+def test_board_card_countdown_places_cards_without_waiting_for_collection(empty_state, monkeypatch):
     import logic.game_rules as game_rules
     import models.enchantment_cards as enchantment_cards
     from utils.run_config import RunMode
@@ -382,7 +382,8 @@ def test_board_card_countdown_runs_while_card_is_available(empty_state, monkeypa
     after_white_move = GameSimulation.apply(empty_state, white_move)
 
     assert after_white_move.board_card_available
-    assert after_white_move.pending_board_card_delay == 0
+    assert after_white_move.pending_board_card_delay in range(1, 6)
+    assert len(after_white_move.board_cards) == 2
 
     black_move = next(
         action for action in GameSimulation.available_actions(after_white_move)
@@ -390,7 +391,7 @@ def test_board_card_countdown_runs_while_card_is_available(empty_state, monkeypa
     )
     after_black_move = GameSimulation.apply(after_white_move, black_move)
     assert after_black_move.board_card_available
-    assert after_black_move.pending_board_card_delay == 0
+    assert len(after_black_move.board_cards) >= 2
 
     collect_card = next(
         action for action in GameSimulation.available_actions(after_black_move)
@@ -399,5 +400,44 @@ def test_board_card_countdown_runs_while_card_is_available(empty_state, monkeypa
     after_collection = GameSimulation.apply(after_black_move, collect_card)
 
     assert after_collection.board_card_available
-    assert after_collection.board_card_position != 17
+    assert all(position != 17 for position, _ in after_collection.board_cards)
     assert 1 <= after_collection.pending_board_card_delay <= 5
+
+
+def test_board_card_placement_starts_next_card_countdown(empty_state, monkeypatch):
+    import logic.game_rules as game_rules
+    import models.enchantment_cards as enchantment_cards
+    from utils.run_config import RunMode
+
+    class FixedRng:
+        @staticmethod
+        def choice(values):
+            return values[0]
+
+        @staticmethod
+        def randint(minimum, maximum):
+            assert (minimum, maximum) == (1, 5)
+            return 3
+
+    monkeypatch.setattr(game_rules, "RUN_MODE", RunMode.PROD)
+    monkeypatch.setattr(enchantment_cards, "RUN_MODE", RunMode.PROD)
+    monkeypatch.setattr(
+        EnchantmentCardType,
+        "create_random",
+        staticmethod(lambda rng: EnchantmentCardType.PIECE_TELEPORT.create()),
+    )
+
+    game_rules.GameRules._place_next_board_card(empty_state, FixedRng())
+
+    assert empty_state.board_card_available
+    assert empty_state.pending_board_card_delay == 3
+
+    game_rules.GameRules._advance_board_card_clock(empty_state, FixedRng())
+    assert empty_state.board_card_available
+    assert empty_state.pending_board_card_delay == 2
+    game_rules.GameRules._advance_board_card_clock(empty_state, FixedRng())
+    game_rules.GameRules._advance_board_card_clock(empty_state, FixedRng())
+
+    assert empty_state.board_card_available
+    assert len(empty_state.board_cards) == 2
+    assert empty_state.pending_board_card_delay == 3

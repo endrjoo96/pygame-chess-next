@@ -424,29 +424,34 @@ class ChessAI:
 
     @staticmethod
     def _board_card_opportunity_score(state):
-        if not state.board_card_available or state.board_enchantment is None:
-            return 0.0
+        cards = state.board_cards or (
+            [(state.board_card_position, state.board_enchantment)]
+            if state.board_card_available and state.board_enchantment is not None
+            else []
+        )
+        score = 0.0
+        for card_position, enchantment in cards:
+            x, y = id_to_xy(card_position)
+            distances = {}
+            for color in (COLOR.BLACK, COLOR.WHITE):
+                eligible_distances = []
+                for position, piece in state.pieces_locations.items():
+                    if (
+                        not piece.exists()
+                        or piece.get_color() != color
+                        or not piece.can_receive_enchantment()
+                    ):
+                        continue
+                    piece_x, piece_y = id_to_xy(position)
+                    eligible_distances.append(
+                        max(abs(x - piece_x), abs(y - piece_y)))
+                distances[color] = min(eligible_distances, default=8)
 
-        x, y = id_to_xy(state.board_card_position)
-        distances = {}
-        for color in (COLOR.BLACK, COLOR.WHITE):
-            eligible_distances = []
-            for position, piece in state.pieces_locations.items():
-                if (
-                    not piece.exists()
-                    or piece.get_color() != color
-                    or not piece.can_receive_enchantment()
-                ):
-                    continue
-                piece_x, piece_y = id_to_xy(position)
-                eligible_distances.append(
-                    max(abs(x - piece_x), abs(y - piece_y)))
-            distances[color] = min(eligible_distances, default=8)
-
-        card_value = ChessAI._card_value(state.board_enchantment)
-        black_access = max(0.0, 1.0 - distances[COLOR.BLACK] / 8)
-        white_access = max(0.0, 1.0 - distances[COLOR.WHITE] / 8)
-        return 0.3 * card_value * (black_access - white_access)
+            card_value = ChessAI._card_value(enchantment)
+            black_access = max(0.0, 1.0 - distances[COLOR.BLACK] / 8)
+            white_access = max(0.0, 1.0 - distances[COLOR.WHITE] / 8)
+            score += 0.3 * card_value * (black_access - white_access)
+        return score
 
     def _order_actions(self, state, actions):
         return sorted(
@@ -479,12 +484,17 @@ class ChessAI:
 
         if target is not None and target.get_type() == PIECE_TYPE.KING:
             score += 100_000
-        if (
-            state.board_card_available
-            and state.board_enchantment is not None
-            and action.destination == state.board_card_position
-        ):
-            score += ChessAI._card_value(state.board_enchantment) * 2
+        board_cards = state.board_cards or (
+            [(state.board_card_position, state.board_enchantment)]
+            if state.board_card_available and state.board_enchantment is not None
+            else []
+        )
+        board_card = next(
+            (card for card in board_cards if card[0] == action.destination),
+            None,
+        )
+        if board_card is not None:
+            score += ChessAI._card_value(board_card[1]) * 2
         if action.destination and action.source != action.destination:
             score += abs(action.destination - action.source) * 0.001
         return score

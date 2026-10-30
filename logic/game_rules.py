@@ -240,15 +240,34 @@ class GameRules:
 
     @staticmethod
     def _collect_board_card(state, destination, moving_color):
-        collected = (
-            state.board_card_available
-            and destination == state.board_card_position
+        board_cards = GameRules._board_cards(state)
+        collected = next(
+            (card for card in board_cards if card[0] == destination),
+            None,
         )
-        if collected:
-            GameRules._add_card_for(
-                state, moving_color, state.board_enchantment)
-            state.board_card_available = False
-        return collected
+        if collected is None:
+            return False
+        GameRules._add_card_for(state, moving_color, collected[1])
+        board_cards.remove(collected)
+        GameRules._set_board_cards(state, board_cards)
+        return True
+
+    @staticmethod
+    def _board_cards(state):
+        if state.board_cards:
+            return state.board_cards
+        if state.board_card_available and state.board_enchantment is not None:
+            return [(state.board_card_position, state.board_enchantment)]
+        return []
+
+    @staticmethod
+    def _set_board_cards(state, board_cards):
+        state.board_cards = board_cards
+        state.board_card_available = bool(board_cards)
+        if board_cards:
+            state.board_card_position, state.board_enchantment = board_cards[0]
+        else:
+            state.board_enchantment = None
 
     @staticmethod
     def _add_card_for(state, color, card):
@@ -315,16 +334,7 @@ class GameRules:
         cls._end_turn(state)
         if collected_board_card and state.pending_board_card_delay is None:
             cls._schedule_next_board_card(state, rng)
-        elif (
-            state.pending_board_card_delay is not None
-            and state.pending_board_card_delay > 0
-        ):
-            state.pending_board_card_delay -= 1
-        if (
-            state.pending_board_card_delay == 0
-            and not state.board_card_available
-        ):
-            cls._place_next_board_card(state, rng)
+        cls._advance_board_card_clock(state, rng)
 
         state.selected_piece_position = 0
         state.selected_card = None
@@ -334,22 +344,38 @@ class GameRules:
 
     @classmethod
     def _schedule_next_board_card(cls, state, rng):
-        state.board_card_available = False
         state.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
         )
         if state.pending_board_card_delay == 0:
             cls._place_next_board_card(state, rng)
 
+    @classmethod
+    def _advance_board_card_clock(cls, state, rng):
+        """Zmniejsza licznik od chwili wyłożenia karty i wykłada kolejną po zebraniu."""
+        if state.pending_board_card_delay is None:
+            return
+        if state.pending_board_card_delay > 0:
+            state.pending_board_card_delay -= 1
+        if state.pending_board_card_delay == 0:
+            cls._place_next_board_card(state, rng)
+
     @staticmethod
     def _place_next_board_card(state, rng):
+        existing_cards = GameRules._board_cards(state)
+        occupied_card_positions = {position for position, _ in existing_cards}
         empty_positions = [
             position for position in range(1, 65)
             if not state.pieces_locations[position].exists()
+            and position not in occupied_card_positions
         ]
-        state.board_card_position = rng.choice(empty_positions)
-        state.board_enchantment = EnchantmentCardType.create_random(rng)
-        state.board_card_available = True
+        if not empty_positions:
+            return
+        existing_cards.append((
+            rng.choice(empty_positions),
+            EnchantmentCardType.create_random(rng),
+        ))
+        GameRules._set_board_cards(state, existing_cards)
         state.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
         )

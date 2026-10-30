@@ -300,25 +300,47 @@ def test_ai_move_notation_uses_polish_piece_symbol_and_capture_marker():
     assert GameLogicLoop._format_ai_action_notation(state, action) == "Wxa2"
 
 
-def test_board_card_countdown_runs_while_card_is_available(monkeypatch):
+def test_board_card_countdown_places_another_card_while_one_is_available(monkeypatch):
     from utils.run_config import RunMode
     import logic.stage.game_logic_loop as game_logic_loop
 
     monkeypatch.setattr(game_logic_loop, "RUN_MODE", RunMode.PROD)
     game = make_game()
-    game.board_card_available = True
-    game.pending_board_card_delay = 1
+    game.rng = SimpleNamespace(
+        choice=lambda positions: positions[0],
+        randint=lambda minimum, maximum: 3,
+    )
+    monkeypatch.setattr(
+        game_logic_loop.EnchantmentCardType,
+        "create_random",
+        staticmethod(lambda rng: EnchantmentCardType.PIECE_TELEPORT.create()),
+    )
     game.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    game._GameLogicLoop__place_next_board_card()
+    assert game.pending_board_card_delay == 3
 
     game._GameLogicLoop__finish_piece_move(
         game.pieces_locations[1], 1, 2, False, False)
 
     assert game.board_card_available
-    assert game.pending_board_card_delay == 0
+    assert game.pending_board_card_delay == 2
 
-    game.board_card_available = False
     game._GameLogicLoop__finish_piece_move(
-        game.pieces_locations[1], 1, 2, False, True)
+        game.pieces_locations[1], 1, 2, False, False)
+    game._GameLogicLoop__finish_piece_move(
+        game.pieces_locations[1], 1, 2, False, False)
 
     assert game.board_card_available
-    assert 1 <= game.pending_board_card_delay <= 5
+    assert game.pending_board_card_delay == 3
+    assert len(game.board_cards) == 2
+
+
+def test_board_card_countdown_text_shows_clock_started_at_placement():
+    assert GameLogicLoop._board_card_countdown_text(True, 3) == (
+        "Kolejna karta pojawi się za 3 tury")
+    assert GameLogicLoop._board_card_countdown_text(True, 1) == (
+        "Kolejna karta pojawi się za 1 turę")
+    assert GameLogicLoop._board_card_countdown_text(True, 0) == (
+        "Kolejna karta pojawi się po zakończeniu tury")
+    assert GameLogicLoop._board_card_countdown_text(False, 2) == (
+        "Karta pojawi się na planszy za 2 tury")

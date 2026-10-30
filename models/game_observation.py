@@ -1,6 +1,6 @@
 import copy
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from constants.piece_color import COLOR
@@ -33,6 +33,7 @@ class GameObservation:
     double_move_collected_board_card: bool
     resurrection_moves: List[int]
     random_state: tuple
+    board_cards: List[Tuple[int, Enchantment]] = field(default_factory=list)
 
     @classmethod
     def from_state(cls, state: GameState, own_color: COLOR):
@@ -58,6 +59,7 @@ class GameObservation:
             double_move_collected_board_card=state.double_move_collected_board_card,
             resurrection_moves=state.resurrection_moves,
             random_state=state.random_state,
+            board_cards=state.board_cards,
         )
         return copy.deepcopy(observation)
 
@@ -93,6 +95,7 @@ class GameObservation:
             double_move_collected_board_card=self.double_move_collected_board_card,
             resurrection_moves=copy.deepcopy(self.resurrection_moves),
             random_state=rng.getstate(),
+            board_cards=copy.deepcopy(self.board_cards),
         )
 
     @staticmethod

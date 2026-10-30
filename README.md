@@ -18,7 +18,10 @@ gracz. W trakcie gry `Esc` zamyka okno, a `Spacja` rozpoczyna partię od nowa.
 
 Na początku każdej partii obaj gracze otrzymują po dwie losowe karty. Ich typ
 i liczba użyć są takie same dla obu stron, ale karty są osobnymi instancjami.
-Na planszy pojawiają się również karty do zebrania przez figury.
+Na planszy pojawiają się również karty do zebrania przez figury. Odliczanie do
+następnej karty rozpoczyna się w chwili wyłożenia poprzedniej; gdy dojdzie do
+zera, nowa karta pojawi się niezależnie od tego, czy inne nadal leżą na planszy.
+Licznik tur jest widoczny nad planszą, a zebranie karty nie wpływa na odliczanie.
 
 ## Bot
 
