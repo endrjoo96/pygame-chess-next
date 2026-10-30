@@ -7,6 +7,7 @@ from pygame.font import SysFont
 from constants.pos import id_to_xy, xy_to_id, POS
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
+from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece, COLOR
 from models.enchantment_cards import EnchantmentCardType
 from models.starting_positions import pieces_starting_positions_map
@@ -392,8 +393,8 @@ class GameLogicLoop(object):
                 return
 
         self.selected_piece_position = position
-        self.moves = process_possible_basic_moves(
-            piece, id_to_xy(position), self.pieces_locations,
+        self.moves = GameSimulation.destinations_for(
+            piece, position, self.pieces_locations,
             None if self.__selected_card_is_piece_double_move() else active_enchantment)
 
     def __get_selected_enchantment(self):
@@ -910,11 +911,12 @@ class GameLogicLoop(object):
         debug_log(
             "Board card placement: found {} empty square(s)".format(len(empty_positions))
         )
-        self.board_card_position = random.choice(empty_positions)
+        rng = getattr(self, "rng", random)
+        self.board_card_position = rng.choice(empty_positions)
         debug_log(
             "Board card placement: selected square {}".format(POS(self.board_card_position).name)
         )
-        self.board_enchantment = EnchantmentCardType.create_random()
+        self.board_enchantment = EnchantmentCardType.create_random(rng)
         self.board_card_available = True
         self.pending_board_card_delay = None
         debug_log(
@@ -926,7 +928,7 @@ class GameLogicLoop(object):
         """Planuje pojawienie się następnej karty, z natychmiastowym losowaniem w debug."""
         self.board_card_available = False
         self.pending_board_card_delay = (
-            0 if RUN_MODE is RunMode.DEBUG else random.randint(0, 4)
+            0 if RUN_MODE is RunMode.DEBUG else getattr(self, "rng", random).randint(0, 4)
         )
         debug_log(
             "Board card placement: scheduled; delay={} turn(s) (run mode={})".format(

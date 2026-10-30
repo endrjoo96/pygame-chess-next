@@ -38,12 +38,12 @@ def _resolve_rarity(rarity):
     return float(rarity)
 
 
-def _sample_card_candidates(card_types):
+def _sample_card_candidates(card_types, rng=random):
     """Tworzy kandydatów losowania, próbkując liczbę użyć kart wielokrotnych."""
     return [
         (
             card_type,
-            random.randint(*card_type.remaining_uses_range)
+            rng.randint(*card_type.remaining_uses_range)
             if card_type.remaining_uses_range is not None
             else None,
         )
@@ -257,13 +257,13 @@ class EnchantmentCardType(Enum):
         return ConfiguredEnchantmentCard(self, uses)
 
     @classmethod
-    def _random_choice_with_uses(cls):
+    def _random_choice_with_uses(cls, rng=random):
         """Losuje kartę i liczbę użyć, delegując obliczanie wag i logowanie."""
-        card_types_with_uses = _sample_card_candidates(cls)
+        card_types_with_uses = _sample_card_candidates(cls, rng)
         _log_candidate_uses(card_types_with_uses)
 
         if RUN_MODE is RunMode.DEBUG:
-            selected = random.choice(card_types_with_uses)
+            selected = rng.choice(card_types_with_uses)
             debug_log(
                 "Board card draw: DEBUG mode selected {} uniformly (rarity weights ignored)".format(
                     selected[0].name)
@@ -274,7 +274,7 @@ class EnchantmentCardType(Enum):
         _log_effective_weights(card_types_with_uses, weights)
         if not any(weights):
             raise ValueError("At least one enchantment must have a non-zero rarity")
-        selected = random.choices(card_types_with_uses, weights=weights, k=1)[0]
+        selected = rng.choices(card_types_with_uses, weights=weights, k=1)[0]
         debug_log(
             "Board card draw: selected {} with {} use(s)".format(
                 selected[0].name, selected[1] if selected[1] is not None else 1)
@@ -287,9 +287,9 @@ class EnchantmentCardType(Enum):
         return cls._random_choice_with_uses()[0]
 
     @classmethod
-    def create_random(cls) -> Enchantment:
+    def create_random(cls, rng=random) -> Enchantment:
         """Losuje kartę i tworzy jej zaklęcie z wybraną liczbą użyć."""
-        card_type, uses = cls._random_choice_with_uses()
+        card_type, uses = cls._random_choice_with_uses(rng)
         enchantment = card_type.create(uses=uses)
         debug_log(
             "Board card draw: created '{}' with {} use(s)".format(
