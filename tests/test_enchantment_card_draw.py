@@ -1,5 +1,4 @@
-import unittest
-from unittest.mock import patch
+import pytest
 
 from models.enchantment_cards import (
     EnchantmentCardType,
@@ -9,85 +8,91 @@ from models.enchantment_cards import (
 from utils.run_config import RunMode
 
 
-class EnchantmentCardDrawTests(unittest.TestCase):
-    def test_effective_weights_scale_by_sampled_reusable_uses(self):
-        """Weryfikuje wpływ próbkowanej liczby użyć na wagę karty."""
-        candidates = [
-            (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 2),
-            (EnchantmentCardType.KING_QUEEN_RESURRECTION, None),
-        ]
+def test_effective_weights_scale_by_sampled_reusable_uses():
+    """Weryfikuje wpływ próbkowanej liczby użyć na wagę karty."""
+    candidates = [
+        (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 2),
+        (EnchantmentCardType.KING_QUEEN_RESURRECTION, None),
+    ]
 
-        weights = _calculate_effective_weights(candidates)
+    weights = _calculate_effective_weights(candidates)
 
-        self.assertAlmostEqual(0.4 * 2 / 3, weights[0])
-        self.assertEqual(0.05, weights[1])
-
-    def test_effective_weight_log_is_descending_without_reordering_candidates(self):
-        """Sprawdza malejący porządek logu i niezmieniony porządek kandydatów."""
-        candidates = [
-            (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 2),
-            (EnchantmentCardType.KING_QUEEN_RESURRECTION, None),
-            (EnchantmentCardType.ROOK_TOWER_THROW, None),
-        ]
-        weights = _calculate_effective_weights(candidates)
-
-        with patch("models.enchantment_cards.debug_log") as log:
-            _log_effective_weights(candidates, weights)
-
-        logged_cards = [call.args[0].split(":")[0].strip() for call in log.call_args_list[1:]]
-        self.assertEqual(
-            [
-                EnchantmentCardType.ROOK_TOWER_THROW.name,
-                EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.name,
-                EnchantmentCardType.KING_QUEEN_RESURRECTION.name,
-            ],
-            logged_cards,
-        )
-        self.assertEqual(
-            [EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD,
-             EnchantmentCardType.KING_QUEEN_RESURRECTION,
-             EnchantmentCardType.ROOK_TOWER_THROW],
-            [card_type for card_type, _ in candidates],
-        )
-
-    def test_prod_draw_uses_weights_in_original_candidate_order(self):
-        """Potwierdza ważone losowanie PROD oraz kolejność jego kandydatów."""
-        selected_candidate = (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 3)
-        with patch("models.enchantment_cards.RUN_MODE", RunMode.PROD), patch(
-            "models.enchantment_cards.random.randint", return_value=3
-        ), patch(
-            "models.enchantment_cards.random.choices",
-            return_value=[selected_candidate],
-        ) as choices, patch("models.enchantment_cards.debug_log"):
-            result = EnchantmentCardType._random_choice_with_uses()
-
-        self.assertEqual(selected_candidate, result)
-        sampled_candidates = choices.call_args.args[0]
-        self.assertEqual(
-            list(EnchantmentCardType),
-            [candidate[0] for candidate in sampled_candidates],
-        )
-        self.assertEqual(
-            _calculate_effective_weights(sampled_candidates),
-            choices.call_args.kwargs["weights"],
-        )
-
-    def test_debug_draw_uses_uniform_choice_without_weighted_sampler(self):
-        """Potwierdza równomierne losowanie DEBUG bez wywołania samplera wag."""
-        selected_candidate = (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 3)
-        with patch("models.enchantment_cards.RUN_MODE", RunMode.DEBUG), patch(
-            "models.enchantment_cards.random.randint", return_value=3
-        ), patch(
-            "models.enchantment_cards.random.choice",
-            return_value=selected_candidate,
-        ), patch("models.enchantment_cards.random.choices") as weighted_choice, patch(
-            "models.enchantment_cards.debug_log"
-        ):
-            result = EnchantmentCardType._random_choice_with_uses()
-
-        self.assertEqual(selected_candidate, result)
-        weighted_choice.assert_not_called()
+    assert weights[0] == pytest.approx(0.4 * 2 / 3)
+    assert weights[1] == 0.05
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_effective_weight_log_is_descending_without_reordering_candidates(monkeypatch):
+    """Sprawdza malejący porządek logu i niezmieniony porządek kandydatów."""
+    candidates = [
+        (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 2),
+        (EnchantmentCardType.KING_QUEEN_RESURRECTION, None),
+        (EnchantmentCardType.ROOK_TOWER_THROW, None),
+    ]
+    weights = _calculate_effective_weights(candidates)
+    messages = []
+    monkeypatch.setattr("models.enchantment_cards.debug_log", messages.append)
+
+    _log_effective_weights(candidates, weights)
+
+    logged_cards = [message.split(":")[0].strip() for message in messages[1:]]
+    assert logged_cards == [
+        EnchantmentCardType.ROOK_TOWER_THROW.name,
+        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.name,
+        EnchantmentCardType.KING_QUEEN_RESURRECTION.name,
+    ]
+    assert [card_type for card_type, _ in candidates] == [
+        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD,
+        EnchantmentCardType.KING_QUEEN_RESURRECTION,
+        EnchantmentCardType.ROOK_TOWER_THROW,
+    ]
+
+
+def test_prod_draw_uses_weights_in_original_candidate_order(monkeypatch):
+    """Potwierdza ważone losowanie PROD oraz kolejność jego kandydatów."""
+    selected_candidate = (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 3)
+    captured = {}
+
+    def fake_choices(candidates, weights, k):
+        captured["candidates"] = candidates
+        captured["weights"] = weights
+        captured["k"] = k
+        return [selected_candidate]
+
+    monkeypatch.setattr("models.enchantment_cards.RUN_MODE", RunMode.PROD)
+    monkeypatch.setattr("models.enchantment_cards.random.randint", lambda minimum, maximum: 3)
+    monkeypatch.setattr("models.enchantment_cards.random.choices", fake_choices)
+    monkeypatch.setattr("models.enchantment_cards.debug_log", lambda message: None)
+
+    result = EnchantmentCardType._random_choice_with_uses()
+
+    assert result == selected_candidate
+    assert [candidate[0] for candidate in captured["candidates"]] == list(EnchantmentCardType)
+    assert captured["weights"] == _calculate_effective_weights(captured["candidates"])
+    assert captured["k"] == 1
+
+
+def test_debug_draw_uses_uniform_choice_without_weighted_sampler(monkeypatch):
+    """Potwierdza równomierne losowanie DEBUG bez wywołania samplera wag."""
+    selected_candidate = (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 3)
+    choice_calls = []
+    choices_calls = []
+    monkeypatch.setattr("models.enchantment_cards.RUN_MODE", RunMode.DEBUG)
+    monkeypatch.setattr("models.enchantment_cards.random.randint", lambda minimum, maximum: 3)
+
+    def fake_choice(candidates):
+        choice_calls.append(candidates)
+        return selected_candidate
+
+    def fake_choices(*args, **kwargs):
+        choices_calls.append((args, kwargs))
+        return [selected_candidate]
+
+    monkeypatch.setattr("models.enchantment_cards.random.choice", fake_choice)
+    monkeypatch.setattr("models.enchantment_cards.random.choices", fake_choices)
+    monkeypatch.setattr("models.enchantment_cards.debug_log", lambda message: None)
+
+    result = EnchantmentCardType._random_choice_with_uses()
+
+    assert result == selected_candidate
+    assert len(choice_calls) == 1
+    assert choices_calls == []

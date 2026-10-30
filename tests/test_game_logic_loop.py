@@ -1,11 +1,8 @@
-import unittest
-from unittest.mock import Mock, patch
-
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
+from logic.stage.game_logic_loop import GameLogicLoop
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
-from logic.stage.game_logic_loop import GameLogicLoop
 
 
 class FakeCardsProcessor:
@@ -71,160 +68,162 @@ def make_game(card_type=None, uses=None):
     game.board_card_position = 36
     game.board_enchantment = None
     game.pending_board_card_delay = None
-    game._GameLogicLoop__end_turn = Mock()
+    game.end_turn_calls = []
+    game._GameLogicLoop__end_turn = lambda: game.end_turn_calls.append(())
     return game
 
 
-class GameLogicLoopTests(unittest.TestCase):
-    def click_board(self, game, position):
-        """Uruchamia przetwarzanie tury z jednym kliknięciem danego pola."""
-        with patch(
-            "logic.stage.game_logic_loop.input_processor.get_clicked_chessboard_field_id",
-            return_value=position,
-        ):
-            game.process_player_turn()
-
-    def test_upgrade_uses_selected_target_and_applies_card_stun(self):
-        """Sprawdza awans do celu wskazanego kartą i nałożenie ogłuszenia."""
-        game = make_game(EnchantmentCardType.PAWN_UPGRADE_TO_QUEEN)
-        pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
-        game.pieces_locations[1] = pawn
-
-        self.click_board(game, 1)
-
-        self.assertEqual(PIECE_TYPE.QUEEN, pawn.get_type())
-        self.assertTrue(pawn.is_stunned())
-        self.assertEqual([], game.cards_processor.get_cards_for(COLOR.WHITE))
-        game._GameLogicLoop__end_turn.assert_called_once_with()
-
-    def test_teleport_swaps_selected_piece_with_occupied_square(self):
-        """Sprawdza zamianę dwóch figur i zużycie karty teleportacji."""
-        game = make_game(EnchantmentCardType.PIECE_TELEPORT)
-        first = Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT)
-        second = Piece(COLOR.BLACK, PIECE_TYPE.BISHOP)
-        game.pieces_locations[1] = first
-        game.pieces_locations[2] = second
-
-        self.click_board(game, 1)
-        self.click_board(game, 2)
-
-        self.assertIs(second, game.pieces_locations[1])
-        self.assertIs(first, game.pieces_locations[2])
-        self.assertEqual([], game.cards_processor.get_cards_for(COLOR.WHITE))
-        game._GameLogicLoop__end_turn.assert_called_once_with()
-
-    def test_return_to_start_moves_piece_to_an_empty_original_square(self):
-        """Sprawdza powrót figury na wolne pole startowe."""
-        game = make_game(EnchantmentCardType.RETURN_TO_START, uses=1)
-        rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK, starting_position=1)
-        game.pieces_locations[20] = rook
-
-        self.click_board(game, 20)
-        self.click_board(game, 1)
-
-        self.assertIs(rook, game.pieces_locations[1])
-        self.assertFalse(game.pieces_locations[20].exists())
-        game._GameLogicLoop__end_turn.assert_called_once_with()
-
-    def test_delayed_passive_card_is_scheduled_and_consumed(self):
-        """Sprawdza zaplanowanie pasywnego efektu i zużycie jego karty."""
-        game = make_game(EnchantmentCardType.PAWN_DETONATION_DELAYED_1)
-        pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
-        game.pieces_locations[9] = pawn
-
-        self.click_board(game, 9)
-
-        self.assertEqual([], pawn.get_delayed_enchantments_ready_at(1))
-        due_effects = pawn.get_delayed_enchantments_ready_at(2)
-        self.assertEqual(1, len(due_effects))
-        self.assertEqual(
-            EnchantmentCardType.PAWN_DETONATION_DELAYED_1,
-            due_effects[0].get_card_type(),
-        )
-        self.assertEqual([], game.cards_processor.get_cards_for(COLOR.WHITE))
-        game._GameLogicLoop__end_turn.assert_called_once_with()
-
-    def test_resurrection_places_captured_piece_next_to_king(self):
-        """Sprawdza wybór zbitej figury i jej wskrzeszenie przy królu."""
-        game = make_game(EnchantmentCardType.KING_PAWN_RESURRECTION)
-        game.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
-        pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
-        game.capture_processor.captured_black.append(pawn)
-
-        with patch(
-            "logic.stage.game_logic_loop.input_processor.get_clicked_chessboard_field_id",
-            return_value=None,
-        ), patch(
-            "logic.stage.game_logic_loop.input_processor.get_clicked_captured_piece_index",
-            return_value=(COLOR.BLACK, 0),
-        ):
-            game.process_player_turn()
-
-        self.assertEqual((COLOR.BLACK, 0), game.selected_captured_piece)
-        self.assertIn(2, game.resurrection_moves)
-        self.click_board(game, 2)
-
-        self.assertIs(pawn, game.pieces_locations[2])
-        self.assertEqual([], game.capture_processor.captured_black)
-        self.assertEqual([], game.cards_processor.get_cards_for(COLOR.WHITE))
-        game._GameLogicLoop__end_turn.assert_called_once_with()
-
-    def test_double_move_keeps_turn_open_between_moves(self):
-        """Sprawdza, że pierwszy ruch karty podwójnego ruchu nie kończy tury."""
-        game = make_game(EnchantmentCardType.PIECE_DOUBLE_MOVE, uses=2)
-        rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
-        game.pieces_locations[1] = rook
-        self.click_board(game, 1)
-        self.click_board(game, 9)
-
-        self.assertEqual(1, game.double_move_step)
-        self.assertEqual(9, game.selected_piece_position)
-        game._GameLogicLoop__end_turn.assert_not_called()
-
-        self.click_board(game, 10)
-
-        self.assertIs(rook, game.pieces_locations[10])
-        game._GameLogicLoop__end_turn.assert_called_once_with()
-
-    def test_rook_throw_captures_every_piece_on_route(self):
-        """Sprawdza zbijanie własnych i przeciwnych figur na trasie rzutu wieżą."""
-        game = make_game(EnchantmentCardType.ROOK_TOWER_THROW)
-        rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
-        allied = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
-        enemy = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
-        game.pieces_locations[1] = rook
-        game.pieces_locations[3] = allied
-        game.pieces_locations[5] = enemy
-        game.selected_piece_position = 1
-
-        game.move_piece(8, beats=True)
-
-        self.assertIs(rook, game.pieces_locations[8])
-        self.assertFalse(game.pieces_locations[1].exists())
-        self.assertFalse(game.pieces_locations[3].exists())
-        self.assertFalse(game.pieces_locations[5].exists())
-        self.assertEqual([allied, enemy], game.capture_processor.captured)
-
-    def test_move_collects_board_card_and_schedules_the_next_one(self):
-        """Sprawdza dodanie karty z pola docelowego i zaplanowanie kolejnej."""
-        game = make_game()
-        game._GameLogicLoop__schedule_next_board_card = Mock()
-        game.board_card_available = True
-        game.board_card_position = 2
-        game.board_enchantment = EnchantmentCardType.PIECE_TELEPORT.create()
-        rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
-        game.pieces_locations[1] = rook
-        game.selected_piece_position = 1
-
-        game.move_piece(2)
-
-        self.assertIn(
-            game.board_enchantment,
-            game.cards_processor.get_cards_for(COLOR.WHITE),
-        )
-        self.assertFalse(game.board_card_available)
-        game._GameLogicLoop__schedule_next_board_card.assert_called_once_with()
+def click_board(game, position, monkeypatch):
+    """Przetwarza kliknięcie wskazanego pola planszy."""
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.input_processor.get_clicked_chessboard_field_id",
+        lambda: position,
+    )
+    game.process_player_turn()
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_upgrade_uses_selected_target_and_applies_card_stun(monkeypatch):
+    """Sprawdza awans do celu wskazanego kartą i nałożenie ogłuszenia."""
+    game = make_game(EnchantmentCardType.PAWN_UPGRADE_TO_QUEEN)
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    game.pieces_locations[1] = pawn
+
+    click_board(game, 1, monkeypatch)
+
+    assert pawn.get_type() == PIECE_TYPE.QUEEN
+    assert pawn.is_stunned()
+    assert game.cards_processor.get_cards_for(COLOR.WHITE) == []
+    assert game.end_turn_calls == [()]
+
+
+def test_teleport_swaps_selected_piece_with_occupied_square(monkeypatch):
+    """Sprawdza zamianę dwóch figur i zużycie karty teleportacji."""
+    game = make_game(EnchantmentCardType.PIECE_TELEPORT)
+    first = Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT)
+    second = Piece(COLOR.BLACK, PIECE_TYPE.BISHOP)
+    game.pieces_locations[1] = first
+    game.pieces_locations[2] = second
+
+    click_board(game, 1, monkeypatch)
+    click_board(game, 2, monkeypatch)
+
+    assert game.pieces_locations[1] is second
+    assert game.pieces_locations[2] is first
+    assert game.cards_processor.get_cards_for(COLOR.WHITE) == []
+    assert game.end_turn_calls == [()]
+
+
+def test_return_to_start_moves_piece_to_an_empty_original_square(monkeypatch):
+    """Sprawdza powrót figury na wolne pole startowe."""
+    game = make_game(EnchantmentCardType.RETURN_TO_START, uses=1)
+    rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK, starting_position=1)
+    game.pieces_locations[20] = rook
+
+    click_board(game, 20, monkeypatch)
+    click_board(game, 1, monkeypatch)
+
+    assert game.pieces_locations[1] is rook
+    assert not game.pieces_locations[20].exists()
+    assert game.end_turn_calls == [()]
+
+
+def test_delayed_passive_card_is_scheduled_and_consumed(monkeypatch):
+    """Sprawdza zaplanowanie pasywnego efektu i zużycie jego karty."""
+    game = make_game(EnchantmentCardType.PAWN_DETONATION_DELAYED_1)
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    game.pieces_locations[9] = pawn
+
+    click_board(game, 9, monkeypatch)
+
+    assert pawn.get_delayed_enchantments_ready_at(1) == []
+    due_effects = pawn.get_delayed_enchantments_ready_at(2)
+    assert len(due_effects) == 1
+    assert due_effects[0].get_card_type() == EnchantmentCardType.PAWN_DETONATION_DELAYED_1
+    assert game.cards_processor.get_cards_for(COLOR.WHITE) == []
+    assert game.end_turn_calls == [()]
+
+
+def test_resurrection_places_captured_piece_next_to_king(monkeypatch):
+    """Sprawdza wybór zbitej figury i jej wskrzeszenie przy królu."""
+    game = make_game(EnchantmentCardType.KING_PAWN_RESURRECTION)
+    game.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    game.capture_processor.captured_black.append(pawn)
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.input_processor.get_clicked_chessboard_field_id",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.input_processor.get_clicked_captured_piece_index",
+        lambda: (COLOR.BLACK, 0),
+    )
+
+    game.process_player_turn()
+
+    assert game.selected_captured_piece == (COLOR.BLACK, 0)
+    assert 2 in game.resurrection_moves
+    click_board(game, 2, monkeypatch)
+
+    assert game.pieces_locations[2] is pawn
+    assert game.capture_processor.captured_black == []
+    assert game.cards_processor.get_cards_for(COLOR.WHITE) == []
+    assert game.end_turn_calls == [()]
+
+
+def test_double_move_keeps_turn_open_between_moves(monkeypatch):
+    """Sprawdza, że pierwszy ruch karty podwójnego ruchu nie kończy tury."""
+    game = make_game(EnchantmentCardType.PIECE_DOUBLE_MOVE, uses=2)
+    rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    game.pieces_locations[1] = rook
+    click_board(game, 1, monkeypatch)
+    click_board(game, 9, monkeypatch)
+
+    assert game.double_move_step == 1
+    assert game.selected_piece_position == 9
+    assert game.end_turn_calls == []
+
+    click_board(game, 10, monkeypatch)
+
+    assert game.pieces_locations[10] is rook
+    assert game.end_turn_calls == [()]
+
+
+def test_rook_throw_captures_every_piece_on_route():
+    """Sprawdza zbijanie własnych i przeciwnych figur na trasie rzutu wieżą."""
+    game = make_game(EnchantmentCardType.ROOK_TOWER_THROW)
+    rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    allied = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    enemy = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+    game.pieces_locations[1] = rook
+    game.pieces_locations[3] = allied
+    game.pieces_locations[5] = enemy
+    game.selected_piece_position = 1
+
+    game.move_piece(8, beats=True)
+
+    assert game.pieces_locations[8] is rook
+    assert not game.pieces_locations[1].exists()
+    assert not game.pieces_locations[3].exists()
+    assert not game.pieces_locations[5].exists()
+    assert game.capture_processor.captured == [allied, enemy]
+
+
+def test_move_collects_board_card_and_schedules_the_next_one():
+    """Sprawdza dodanie karty z pola docelowego i zaplanowanie kolejnej."""
+    game = make_game()
+    schedule_next_calls = []
+    game._GameLogicLoop__schedule_next_board_card = (
+        lambda: schedule_next_calls.append(())
+    )
+    game.board_card_available = True
+    game.board_card_position = 2
+    game.board_enchantment = EnchantmentCardType.PIECE_TELEPORT.create()
+    rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    game.pieces_locations[1] = rook
+    game.selected_piece_position = 1
+
+    game.move_piece(2)
+
+    assert game.board_enchantment in game.cards_processor.get_cards_for(COLOR.WHITE)
+    assert not game.board_card_available
+    assert schedule_next_calls == [()]
