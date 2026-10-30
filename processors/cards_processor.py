@@ -114,7 +114,7 @@ class CardsProcessor:
         context = GameContext()
         self.__render_card(
             screen, coords, chess_pieces, card, (context.card_width, context.card_height),
-            PREDEFINED_COLOR.transparent_brown, card_color=color.value)
+            PREDEFINED_COLOR.card_preview_brown, card_color=color.value)
 
     def render_effects_preview(self, screen: Surface, chess_pieces: PieceSprite, effects, coords, color: COLOR):
         """Układa podgląd efektów figury w siatce, dopasowując go do granic ekranu."""
@@ -143,7 +143,7 @@ class CardsProcessor:
             )
             self.__render_card(
                 screen, card_coords, chess_pieces, effect, (card_width, card_height),
-                PREDEFINED_COLOR.transparent_red, card_color=color.value,
+                PREDEFINED_COLOR.card_preview_red, card_color=color.value,
                 delay_remaining=delay_remaining, stun_remaining=stun_remaining)
 
     def __wrap_text(self, text, font, max_width):
