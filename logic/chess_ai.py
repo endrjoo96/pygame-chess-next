@@ -43,13 +43,14 @@ CARD_VALUES = {
     EnchantmentCardType.PIECE_TELEPORT: 1.5,
     EnchantmentCardType.PIECE_DOUBLE_MOVE: 2.0,
 }
+CARD_MOVEMENT_TYPES = GameSimulation.MOVEMENT_CARDS
 
 
 @dataclass(frozen=True)
 class SearchConfig:
     """Limity obliczeń i próbkowania ukrytej ręki dla jednego wyboru ruchu."""
 
-    time_limit_seconds: float = 0.75
+    time_limit_seconds: float = 2.0
     max_depth: int = 4
     hidden_hand_samples: int = 4
 
@@ -189,22 +190,151 @@ class ChessAI:
                     state.turns_started[piece.get_color()])
             )
             score += sign * value
+            score += sign * ChessAI._development_value(piece, position)
 
             if piece.can_receive_enchantment():
                 mobility = len(GameSimulation.destinations_for(
                     piece, position, state.pieces_locations))
                 score += sign * min(mobility, 12) * 0.025
 
+        score += ChessAI._threat_score(state)
+
         for color in (COLOR.BLACK, COLOR.WHITE):
             sign = 1 if color == COLOR.BLACK else -1
             for card in state.get_cards_for(color):
-                card_type = card.get_card_type()
-                card_value = CARD_VALUES.get(card_type, 0.75)
+                card_value = ChessAI._card_value(card)
                 if card.is_reusable():
                     card_value *= min(1.0, card.get_remaining_uses() / 2)
                 score += sign * card_value
 
+        score += ChessAI._board_card_opportunity_score(state)
         return score
+
+    @staticmethod
+    def _card_value(card):
+        card_type = card.get_card_type()
+        if card_type.promoted_piece_type is not None:
+            piece_value = PIECE_VALUES.get(card_type.piece_type, 0.0)
+            upgrade_value = (
+                PIECE_VALUES[card_type.promoted_piece_type] - piece_value
+            )
+            return max(0.0, upgrade_value * 0.45)
+        return CARD_VALUES.get(card_type, 0.75)
+
+    @staticmethod
+    def _development_value(piece, position):
+        piece_type = piece.get_type()
+        x, y = id_to_xy(position)
+        if piece_type in (PIECE_TYPE.KNIGHT, PIECE_TYPE.BISHOP):
+            back_rank = 0 if piece.get_color() == COLOR.WHITE else 7
+            progress = abs(y - back_rank)
+            centrality = 3.5 - abs(x - 3.5)
+            return min(progress, 3) * 0.07 + centrality * 0.035
+        if piece_type == PIECE_TYPE.PAWN:
+            progress = y if piece.get_color() == COLOR.WHITE else 7 - y
+            return min(progress, 5) * 0.025
+        return 0.0
+
+    @staticmethod
+    def _threat_score(state):
+        """Penalizes valuable pieces that the opponent can capture next."""
+        score = 0.0
+        attack_map = ChessAI._attack_map(state)
+        for target_position, target in state.pieces_locations.items():
+            if not target.exists():
+                continue
+            attacker_color = (
+                COLOR.BLACK if target.get_color() == COLOR.WHITE else COLOR.WHITE
+            )
+            attackers = attack_map[attacker_color].get(target_position, set())
+            if not attackers:
+                continue
+
+            target_value = (
+                80.0 if target.get_type() == PIECE_TYPE.KING
+                else PIECE_VALUES[target.get_type()]
+            )
+            urgency = 0.75 if attacker_color == state.current_turn else 0.4
+            exposure = min(1.0, 0.55 + 0.15 * (len(attackers) - 1))
+            target_sign = 1 if target.get_color() == COLOR.BLACK else -1
+            score -= target_sign * target_value * urgency * exposure
+        return score
+
+    @staticmethod
+    def _attack_map(state):
+        attack_map = {COLOR.BLACK: {}, COLOR.WHITE: {}}
+        for source, piece in state.pieces_locations.items():
+            if not piece.exists() or not piece.can_receive_enchantment():
+                continue
+            color = piece.get_color()
+            destinations = GameSimulation.destinations_for(
+                piece, source, state.pieces_locations)
+            ChessAI._record_attacks(attack_map[color], source, destinations)
+
+            for card in state.get_cards_for(color):
+                card_type = card.get_card_type()
+                if (
+                    card_type not in CARD_MOVEMENT_TYPES
+                    or card_type.piece_type not in (PIECE_TYPE.EMPTY, piece.get_type())
+                ):
+                    continue
+                card_destinations = GameSimulation.destinations_for(
+                    piece, source, state.pieces_locations, card)
+                ChessAI._record_attacks(
+                    attack_map[color],
+                    source,
+                    card_destinations,
+                    rook_throw=(
+                        card_type == EnchantmentCardType.ROOK_TOWER_THROW
+                    ),
+                )
+        return attack_map
+
+    @staticmethod
+    def _record_attacks(attack_map, source, destinations, rook_throw=False):
+        source_x, source_y = id_to_xy(source)
+        for destination in destinations:
+            target_x, target_y = destination
+            if rook_throw:
+                step_x = (target_x > source_x) - (target_x < source_x)
+                step_y = (target_y > source_y) - (target_y < source_y)
+                x, y = source_x + step_x, source_y + step_y
+                while True:
+                    position = xy_to_id(x, y)
+                    attack_map.setdefault(position, set()).add(source)
+                    if (x, y) == (target_x, target_y):
+                        break
+                    x += step_x
+                    y += step_y
+            else:
+                position = xy_to_id(target_x, target_y)
+                attack_map.setdefault(position, set()).add(source)
+
+    @staticmethod
+    def _board_card_opportunity_score(state):
+        if not state.board_card_available or state.board_enchantment is None:
+            return 0.0
+
+        x, y = id_to_xy(state.board_card_position)
+        distances = {}
+        for color in (COLOR.BLACK, COLOR.WHITE):
+            eligible_distances = []
+            for position, piece in state.pieces_locations.items():
+                if (
+                    not piece.exists()
+                    or piece.get_color() != color
+                    or not piece.can_receive_enchantment()
+                ):
+                    continue
+                piece_x, piece_y = id_to_xy(position)
+                eligible_distances.append(
+                    max(abs(x - piece_x), abs(y - piece_y)))
+            distances[color] = min(eligible_distances, default=8)
+
+        card_value = ChessAI._card_value(state.board_enchantment)
+        black_access = max(0.0, 1.0 - distances[COLOR.BLACK] / 8)
+        white_access = max(0.0, 1.0 - distances[COLOR.WHITE] / 8)
+        return 0.3 * card_value * (black_access - white_access)
 
     def _order_actions(self, state, actions):
         return sorted(
@@ -218,25 +348,31 @@ class ChessAI:
         score = 0.0
         target = state.pieces_locations.get(action.destination)
         if target is not None and target.exists():
-            score += PIECE_VALUES[target.get_type()] * 10
+            score += PIECE_VALUES[target.get_type()] * 1.5
         if action.action_type == GameActionType.PROMOTE:
-            score += 60
+            score += 3
         elif action.action_type == GameActionType.RESURRECT:
-            score += 35
+            score += 2
         elif action.action_type == GameActionType.TELEPORT:
-            score += 20
+            score += 1
         elif action.action_type == GameActionType.APPLY_PASSIVE:
-            score += 5
+            score += 0.5
 
         if (
             action.card_index >= 0
             and action.card_index < len(state.get_cards_for(state.current_turn))
         ):
             card = state.get_cards_for(state.current_turn)[action.card_index]
-            score += CARD_VALUES.get(card.get_card_type(), 0.75)
+            score += ChessAI._card_value(card)
 
         if target is not None and target.get_type() == PIECE_TYPE.KING:
             score += 100_000
+        if (
+            state.board_card_available
+            and state.board_enchantment is not None
+            and action.destination == state.board_card_position
+        ):
+            score += ChessAI._card_value(state.board_enchantment) * 2
         if action.destination and action.source != action.destination:
             score += abs(action.destination - action.source) * 0.001
         return score
