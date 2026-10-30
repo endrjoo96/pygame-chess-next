@@ -22,6 +22,7 @@ from utils.run_config import RUN_MODE, RunMode
 
 class GameLogicLoop(object):
     def __init__(self, screen: Surface):
+        """Tworzy stan rozgrywki, procesory i zasoby wizualne dla powierzchni ekranu."""
         self.context = GameContext()
         # display surface
         self.screen = screen
@@ -63,6 +64,7 @@ class GameLogicLoop(object):
         self.reset()
 
     def reset(self):
+        """Przywraca planszę, talie i liczniki do stanu początkowego nowej partii."""
         # clear moves lists
         self.current_turn = COLOR.WHITE
         self.turns_started = {COLOR.WHITE: 1, COLOR.BLACK: 0}
@@ -92,6 +94,7 @@ class GameLogicLoop(object):
         self.__schedule_next_board_card()
 
     def play_turn(self):
+        """Rysuje informacje o turze, obsługuje jej wejście i zwraca zwycięzcę, jeśli jest."""
         # white color
         white_color = (255, 255, 255)
         # create fonts for texts
@@ -111,6 +114,7 @@ class GameLogicLoop(object):
 
     # method to draw pieces on the chess board
     def draw_pieces(self):
+        """Rysuje karty planszowe, figury, ich efekty oraz panele kart i zbić."""
         if self.board_card_available:
             card_x, card_y = id_to_xy(self.board_card_position)
             self.screen.blit(
@@ -155,6 +159,7 @@ class GameLogicLoop(object):
         self.__draw_piece_effect_preview()
 
     def __draw_promotion_targets(self):
+        """Podświetla własne figury możliwe do ulepszenia wybraną kartą."""
         if not self.__selected_card_is_piece_upgrade():
             return
 
@@ -173,6 +178,7 @@ class GameLogicLoop(object):
                 self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
 
     def __draw_return_to_start_targets(self):
+        """Podświetla wolne pola startowe dostępne dla wybranej figury."""
         if not self.__selected_card_is_return_to_start():
             return
 
@@ -183,6 +189,7 @@ class GameLogicLoop(object):
             self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
 
     def __draw_board_card_preview(self):
+        """Wyświetla podgląd karty planszowej, gdy kursor znajduje się nad nią."""
         if not self.board_card_available:
             return
 
@@ -209,6 +216,7 @@ class GameLogicLoop(object):
             self.screen, self.chess_pieces, self.board_enchantment, (preview_x, preview_y), self.current_turn)
 
     def __draw_piece_effect_preview(self):
+        """Pokazuje podgląd efektów figury wskazanej kursorem."""
         mouse_x, mouse_y = pygame.mouse.get_pos()
         for position, piece in self.pieces_locations.items():
             if not piece.exists():
@@ -228,6 +236,7 @@ class GameLogicLoop(object):
                 return
 
     def __change_background_to_selection(self, pos):
+        """Podświetla wybraną figurę oraz jej wyznaczone pola ruchu."""
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
         surface.fill(PREDEFINED_COLOR.transparent_blue)
 
@@ -241,12 +250,14 @@ class GameLogicLoop(object):
                     self.screen.blit(surface, self.context.chessboard_coordinates[x_coord][y_coord])
 
     def __change_background_to_stunned(self, pos):
+        """Nakłada czerwone podświetlenie na pole ogłuszonej figury."""
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
         surface.fill(PREDEFINED_COLOR.transparent_red)
         piece_coord_x, piece_coord_y = id_to_xy(pos)
         self.screen.blit(surface, self.context.chessboard_coordinates[piece_coord_x][piece_coord_y])
 
     def __draw_resurrection_moves(self):
+        """Podświetla pola, na których można umieścić wybraną zmartwychwstającą figurę."""
         surface = pygame.Surface((self.context.square_length, self.context.square_length), pygame.SRCALPHA)
         surface.fill(PREDEFINED_COLOR.transparent_green)
         for position in self.resurrection_moves:
@@ -254,6 +265,7 @@ class GameLogicLoop(object):
             self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
 
     def process_player_turn(self):
+        """Obsługuje kliknięcia planszy, zbitych figur i kart w ramach bieżącej tury."""
         if not self.__selected_card_allows_captured_piece_selection():
             self.selected_captured_piece = None
             self.resurrection_moves = []
@@ -445,6 +457,7 @@ class GameLogicLoop(object):
                         self.moves = []
 
     def __is_valid_captured_piece_for_selected_card(self, piece):
+        """Sprawdza, czy zbita figura spełnia ograniczenia wybranej karty."""
         if self.__selected_card_is_resurrection():
             return (
                 piece.get_color() == self.current_turn
@@ -454,11 +467,13 @@ class GameLogicLoop(object):
         return True
 
     def __is_valid_captured_piece_list_for_selected_card(self, color):
+        """Sprawdza, czy można wybierać zbitą figurę z panelu podanego koloru."""
         if self.__selected_card_is_resurrection():
             return color != self.current_turn
         return True
 
     def __selected_card_is_resurrection(self):
+        """Rozpoznaje, czy wybrana karta bieżącego gracza wskrzesza figurę."""
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
 
@@ -467,6 +482,7 @@ class GameLogicLoop(object):
         return 0 <= card_index < len(card_deck) and self.__selected_resurrection_piece_type() is not None
 
     def __selected_card_is_piece_upgrade(self):
+        """Rozpoznaje kartę awansu wskazującą docelowy typ figury."""
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
 
@@ -478,6 +494,7 @@ class GameLogicLoop(object):
         )
 
     def __selected_card_is_return_to_start(self):
+        """Sprawdza, czy wybrana karta przenosi figurę na wolne pole startowe."""
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
 
@@ -489,6 +506,7 @@ class GameLogicLoop(object):
         )
 
     def __selected_card_is_piece_teleport(self):
+        """Sprawdza, czy wybrana karta pozwala zamienić miejscami dwie figury."""
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
 
@@ -500,6 +518,7 @@ class GameLogicLoop(object):
         )
 
     def __selected_card_is_piece_double_move(self):
+        """Sprawdza, czy bieżąca karta umożliwia wykonanie dwóch ruchów jedną figurą."""
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
 
@@ -511,6 +530,7 @@ class GameLogicLoop(object):
         )
 
     def __get_return_to_start_targets(self):
+        """Zwraca wolne pola startowe tej samej barwy i typu co wybrana figura."""
         if self.selected_piece_position == 0:
             return []
 
@@ -539,6 +559,7 @@ class GameLogicLoop(object):
         ]
 
     def __selected_resurrection_piece_type(self):
+        """Zwraca typ figury wymagany do wskrzeszenia albo None dla innej karty."""
         if self.selected_card is None:
             return None
 
@@ -549,6 +570,7 @@ class GameLogicLoop(object):
         return card_deck[card_index].get_card_type().resurrected_piece_type
 
     def __get_resurrection_moves(self):
+        """Zwraca wolne pola sąsiadujące z królem dla wybranej, kwalifikującej się figury."""
         if self.selected_captured_piece is None:
             return []
 
@@ -580,6 +602,7 @@ class GameLogicLoop(object):
         ]
 
     def __get_resurrection_king_position(self):
+        """Wyszukuje pozycję nieogłuszonego króla bieżącego gracza lub zwraca None."""
         return next(
             (
                 position for position, piece in self.pieces_locations.items()
@@ -590,6 +613,7 @@ class GameLogicLoop(object):
         )
 
     def __resurrect_selected_piece(self, position):
+        """Przywraca wybraną zbitą figurę na dozwolone pole i kończy turę."""
         if self.selected_captured_piece is None or position not in self.resurrection_moves:
             return
 
@@ -607,6 +631,7 @@ class GameLogicLoop(object):
         self.__end_turn()
 
     def __selected_card_allows_captured_piece_selection(self):
+        """Sprawdza, czy wybrana karta bieżącego gracza wymaga wskazania zbitej figury."""
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
 
@@ -618,6 +643,7 @@ class GameLogicLoop(object):
         )
 
     def __detonate_pawn(self, position):
+        """Zbija figury w sąsiedztwie pionka, usuwa pionka i czyści wybór ruchu."""
         x, y = id_to_xy(position)
         for target_y in range(max(0, y - 1), min(7, y + 1) + 1):
             for target_x in range(max(0, x - 1), min(7, x + 1) + 1):
@@ -635,6 +661,7 @@ class GameLogicLoop(object):
         self.moves = []
 
     def __apply_passive_enchantment(self, position, enchantment):
+        """Uruchamia specjalną detonację lub przypisuje efekt pasywny do figury."""
         if enchantment.get_card_type() in (
             EnchantmentCardType.PAWN_DETONATION,
             EnchantmentCardType.PAWN_DETONATION_DELAYED_1,
@@ -645,6 +672,7 @@ class GameLogicLoop(object):
             self.pieces_locations[position].set_enchantment(enchantment)
 
     def __apply_ready_passive_enchantments(self, color):
+        """Aktywuje efekty oczekujące dla figur danego koloru na rozpoczętej turze."""
         turn = self.turns_started[color]
         for position, piece in self.pieces_locations.items():
             if not piece.exists() or piece.get_color() != color:
@@ -655,11 +683,13 @@ class GameLogicLoop(object):
                 self.__apply_passive_enchantment(position, enchantment)
 
     def __end_turn(self):
+        """Przełącza gracza, zwiększa jego licznik tur i uruchamia gotowe efekty."""
         self.current_turn = COLOR.BLACK if self.current_turn == COLOR.WHITE else COLOR.WHITE
         self.turns_started[self.current_turn] += 1
         self.__apply_ready_passive_enchantments(self.current_turn)
 
     def capture_piece(self, destination):
+        """Zbija figurę na polu docelowym i wykonuje ruch, uwzględniając rzut wieżą."""
         if self.__is_rook_tower_throw_selected():
             self.move_piece(destination, beats=True)
             return
@@ -675,6 +705,7 @@ class GameLogicLoop(object):
         self.move_piece(destination, beats=True)
 
     def __is_rook_tower_throw_selected(self):
+        """Sprawdza, czy wybrano kartę specjalnego ruchu wieży."""
         if self.selected_card is None or self.selected_card[0] != self.current_turn:
             return False
         card_deck = self.cards_processor.get_cards_for(self.current_turn)
@@ -685,6 +716,7 @@ class GameLogicLoop(object):
         )
 
     def move_piece(self, destination, beats=False):
+        """Przenosi wybraną figurę, rozlicza kartę, efekty, zbiórkę karty i koniec tury."""
         if self.selected_piece_position > 0:
             collected_board_card = self.board_card_available and destination == self.board_card_position
             moving_color = self.current_turn
@@ -792,11 +824,13 @@ class GameLogicLoop(object):
             self.double_move_collected_board_card = False
 
     def __advance_stun_effects(self, color):
+        """Zmniejsza liczniki ogłuszenia wszystkich istniejących figur wskazanego koloru."""
         for piece in self.pieces_locations.values():
             if piece.exists() and piece.get_color() == color:
                 piece.advance_stun_effects()
 
     def __place_next_board_card(self):
+        """Losuje wolne pole i kartę, po czym oznacza kartę planszową jako dostępną."""
         empty_positions = [
             position for position in range(1, 65)
             if not self.pieces_locations[position].exists()
@@ -817,6 +851,7 @@ class GameLogicLoop(object):
         )
 
     def __schedule_next_board_card(self):
+        """Planuje pojawienie się następnej karty, z natychmiastowym losowaniem w debug."""
         self.board_card_available = False
         self.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else random.randint(0, 4)
@@ -829,6 +864,7 @@ class GameLogicLoop(object):
             self.__place_next_board_card()
 
     def print_annotations(self):
+        """Rysuje oznaczenia rzędów i kolumn wokół planszy."""
         font_size = int(self.context.square_length / 3)
         font = pygame.font.SysFont(self.context.comic_sans_font, font_size)
         color = (120, 120, 120)
@@ -851,6 +887,7 @@ class GameLogicLoop(object):
                               int(self.context.board_offset_y + (self.context.square_length * 8) + 5)))
 
     def draw_captured_pieces(self):
+        """Ustala położenie paneli zbitych figur i rysuje obie grupy."""
         if not (self.context.captured_white_starting_point and self.context.captured_black_starting_point):
             self.context.captured_white_starting_point = (self.context.board_offset_x,
                                                           self.context.board_offset_y * 2 + (
@@ -870,6 +907,7 @@ class GameLogicLoop(object):
         )
 
     def __draw_captured_group(self, pieces, color, starting_point):
+        """Rysuje miniatury zbitych figur w panelu i obramowuje aktualny wybór."""
         width = self.context.piece_cell_thumbnail_width
         height = self.context.piece_cell_thumbnail_height
         for index, piece in enumerate(pieces):

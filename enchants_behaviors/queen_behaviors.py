@@ -3,6 +3,7 @@ from constants.pos import xy_to_id
 
 def move_up_to_four_fields_through_allies_without_capturing(
         possible_positions_to_move, xy_coord, color, pieces_locations):
+    """Dodaje ruchy hetmana do czterech pól, przechodząc przez sojuszników bez zbić."""
     x, y = xy_coord
 
     for x_offset, y_offset in (

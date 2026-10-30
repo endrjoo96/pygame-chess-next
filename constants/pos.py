@@ -69,18 +69,22 @@ class POS(Enum):
 
 
 def notation_to_xy(pos: POS):
+    """Konwertuje pole zapisane w notacji szachowej na współrzędne planszy od zera."""
     x_coord = ((pos.value - 1) % 8)
     y_coord = int((pos.value - x_coord) / 8)
     return [x_coord, y_coord]
 
 def id_to_xy(pos: int):
+    """Zamienia numer pola 1–64 na współrzędne planszy indeksowane od zera."""
     x_coord = ((pos - 1) % 8)
     y_coord = int((pos - x_coord) / 8)
     return [x_coord, y_coord]
 
 
 def xy_to_id(x_coord, y_coord):
+    """Zwraca numer pola 1–64 odpowiadający współrzędnym planszy."""
     return (y_coord * 8) + x_coord + 1
 
 def xy_to_notation(x_coord, y_coord):
+    """Zwraca element POS dla podanych współrzędnych planszy."""
     return POS(xy_to_id(x_coord, y_coord))

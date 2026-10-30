@@ -7,6 +7,7 @@ from utils import utils
 
 
 def get_clicked_chessboard_field_id():
+    """Zwraca numer klikniętego pola planszy albo None poza planszą lub bez kliknięcia."""
     context = GameContext()
     # get mouse event
     mouse_event = utils.get_mouse_event()
@@ -27,6 +28,7 @@ def get_clicked_chessboard_field_id():
         return None
 
 def get_clicked_captured_piece_index() -> tuple:
+    """Zwraca kolor i indeks klikniętej zbitej figury albo parę None, None."""
     context = GameContext()
     # get mouse event
     mouse_event = utils.get_mouse_event()
@@ -44,6 +46,7 @@ def get_clicked_captured_piece_index() -> tuple:
     return None, None
 
 def get_clicked_card_index():
+    """Zwraca kolor i indeks klikniętej karty albo parę None, None."""
     context = GameContext()
     # get mouse event
     mouse_event = utils.get_mouse_event()
@@ -61,6 +64,7 @@ def get_clicked_card_index():
     return None, None
 
 def __calculate_clicked_object_for(coordinates_array, mouse_event, context, object_size):
+    """Wyszukuje prostokąt zawierający pozycję myszy i zwraca jego indeksy w siatce."""
     for i in range(len(coordinates_array)):
         for j in range(len(coordinates_array[i])):
             rect = pygame.Rect(coordinates_array[i][j][0], coordinates_array[i][j][1],

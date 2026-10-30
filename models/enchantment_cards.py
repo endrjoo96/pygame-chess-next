@@ -14,6 +14,7 @@ from utils.run_config import RUN_MODE, RunMode
 
 
 def _resolve_remaining_uses_range(enchantment_types, remaining_uses):
+    """Waliduje zakres użyć karty i zwraca go dla kart wielokrotnego użytku."""
     if EnchantmentType.REUSABLE not in enchantment_types:
         _resolve_remaining_uses(enchantment_types, remaining_uses)
         return None
@@ -31,6 +32,7 @@ def _resolve_remaining_uses_range(enchantment_types, remaining_uses):
 
 
 def _resolve_rarity(rarity):
+    """Sprawdza, czy rzadkość mieści się w przedziale od 0 do 1, i zwraca float."""
     if isinstance(rarity, bool) or not isinstance(rarity, (int, float)) or not 0 <= rarity <= 1:
         raise ValueError("An enchantment rarity must be a number between 0 and 1")
     return float(rarity)
@@ -162,6 +164,7 @@ class EnchantmentCardType(Enum):
         remaining_uses=None, delay_before_use=None, allows_captured_piece_selection=False,
         resurrected_piece_type=None, promoted_piece_type=None,
     ):
+        """Opisuje wariant karty i waliduje jej parametry użycia oraz losowania."""
         self.enchantment_types = enchantment_types
         self.rarity = _resolve_rarity(rarity)
         self.title = title
@@ -175,6 +178,7 @@ class EnchantmentCardType(Enum):
         self.promoted_piece_type = promoted_piece_type
 
     def create(self, uses=None) -> Enchantment:
+        """Tworzy instancję zaklęcia; dla kart z zakresem losuje lub waliduje liczbę użyć."""
         if self.remaining_uses_range is None:
             if uses is not None:
                 _resolve_remaining_uses(self.enchantment_types, uses)
@@ -195,6 +199,7 @@ class EnchantmentCardType(Enum):
             self.allows_captured_piece_selection)
 
     def with_uses(self, uses: int):
+        """Zwraca konfigurację karty z podaną, zweryfikowaną liczbą użyć."""
         _resolve_remaining_uses(self.enchantment_types, uses)
         if self.remaining_uses_range is not None:
             minimum, maximum = self.remaining_uses_range
@@ -204,6 +209,7 @@ class EnchantmentCardType(Enum):
 
     @classmethod
     def _random_choice_with_uses(cls):
+        """Losuje typ karty i liczbę użyć, stosując wagi rzadkości poza trybem debug."""
         card_types_with_uses = [
             (
                 card_type,
@@ -256,10 +262,12 @@ class EnchantmentCardType(Enum):
 
     @classmethod
     def random_choice(cls) -> "EnchantmentCardType":
+        """Losuje i zwraca typ karty, nie tworząc jeszcze zaklęcia."""
         return cls._random_choice_with_uses()[0]
 
     @classmethod
     def create_random(cls) -> Enchantment:
+        """Losuje kartę i tworzy jej zaklęcie z wybraną liczbą użyć."""
         card_type, uses = cls._random_choice_with_uses()
         enchantment = card_type.create(uses=uses)
         debug_log(
@@ -271,10 +279,12 @@ class EnchantmentCardType(Enum):
 
 class ConfiguredEnchantmentCard:
     def __init__(self, card_type: EnchantmentCardType, uses: int):
+        """Zapamiętuje typ karty i ustaloną liczbę użyć do późniejszego utworzenia."""
         self.card_type = card_type
         self.uses = uses
 
     def create(self) -> Enchantment:
+        """Tworzy zaklęcie skonfigurowane z zapisaną liczbą użyć."""
         return self.card_type.create(uses=self.uses)
 
 

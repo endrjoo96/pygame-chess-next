@@ -5,6 +5,7 @@ from constants.piece_type import PIECE_TYPE
 
 
 def _resolve_remaining_uses(enchantment_types, remaining_uses):
+    """Waliduje liczbę użyć względem wielokrotnego użytku i zwraca jej wartość domyślną."""
     is_reusable = EnchantmentType.REUSABLE in enchantment_types
     if is_reusable and remaining_uses is None:
         raise ValueError("Reusable enchantments must define their number of uses")
@@ -20,6 +21,7 @@ def _resolve_remaining_uses(enchantment_types, remaining_uses):
 
 
 def _resolve_delay_before_use(enchantment_types, delay_before_use):
+    """Sprawdza zgodność opóźnienia z typami zaklęcia i zwraca opóźnienie domyślne."""
     has_delay = EnchantmentType.DELAY_BEFORE_USE in enchantment_types
     if has_delay and delay_before_use is None:
         raise ValueError("Delayed enchantments must define their delay")
@@ -39,6 +41,7 @@ class Enchantment:
         remaining_uses: Optional[int] = None, delay_before_use: Optional[int] = None,
         allows_captured_piece_selection: bool = False,
     ):
+        """Tworzy zaklęcie, walidując użycia i opóźnienie oraz zapamiętując jego reguły."""
         self.__remaining_uses = _resolve_remaining_uses(enchantment_types, remaining_uses)
         self.__delay_before_use = _resolve_delay_before_use(enchantment_types, delay_before_use)
         self.__enchantment_types = enchantment_types
@@ -50,47 +53,62 @@ class Enchantment:
         self.__allows_captured_piece_selection = allows_captured_piece_selection
 
     def get_behavior_to_inject(self):
+        """Zwraca funkcję rozszerzającą ruch figury."""
         return self.__behavior_to_inject
 
     def is_reusable(self) -> bool:
+        """Sprawdza, czy zaklęcie może być używane więcej niż raz."""
         return EnchantmentType.REUSABLE in self.__enchantment_types
 
     def is_passive(self) -> bool:
+        """Sprawdza, czy zaklęcie działa jako efekt pasywny."""
         return EnchantmentType.PASSIVE in self.__enchantment_types
 
     def get_remaining_uses(self) -> int:
+        """Zwraca liczbę pozostałych użyć."""
         return self.__remaining_uses
 
     def consume_use(self) -> int:
+        """Zużywa jedno użycie i zwraca liczbę pozostałych."""
         self.__remaining_uses -= 1
         return self.__remaining_uses
 
     def add_uses(self, count: int):
+        """Dodaje podaną liczbę użyć do zaklęcia wielokrotnego użytku."""
         self.__remaining_uses += count
 
     def get_card_type(self):
+        """Zwraca typ karty, z którego utworzono zaklęcie."""
         return self.__card_type
 
     def allows_captured_piece_selection(self) -> bool:
+        """Określa, czy karta pozwala wybrać figurę z listy zbitych."""
         return self.__allows_captured_piece_selection
 
     def get_enchantment_types(self) -> List[EnchantmentType]:
+        """Zwraca kopię znaczników określających zachowanie zaklęcia."""
         return self.__enchantment_types.copy()
 
     def is_mandatory(self) -> bool:
+        """Sprawdza, czy efekt jest obowiązkowy dla figury."""
         return self.__enchantment_types.__contains__(EnchantmentType.MANDATORY)
 
     def get_description(self) -> str:
+        """Zwraca opis zaklęcia wyświetlany na karcie."""
         return self.__description
 
     def get_title(self) -> str:
+        """Zwraca tytuł zaklęcia wyświetlany na karcie."""
         return self.__title
 
     def get_rate_delay_before_use(self) -> int:
+        """Zwraca liczbę tur opóźnienia przed aktywacją."""
         return self.__delay_before_use
 
     def get_rate_stun_after_use(self) -> int:
+        """Zwraca liczbę tur ogłuszenia przypisaną do zaklęcia."""
         return self.__enchantment_types.count(EnchantmentType.STUN_AFTER_USE)
 
     def get_required_piece_type(self) -> PIECE_TYPE:
+        """Zwraca wymagany typ figury; EMPTY oznacza brak ograniczenia."""
         return self.__piece_type_restriction

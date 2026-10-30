@@ -12,6 +12,7 @@ from utils import utils
 class Game:
 
     def __init__(self):
+        """Przygotowuje okno gry, zasoby graficzne, zegar i stan menu."""
         context = GameContext()
         # flag to know if game menu has been showed
         self.menu_showed = False
@@ -51,6 +52,7 @@ class Game:
         self.clock = pygame.time.Clock()
 
     def start_game(self):
+        """Inicjalizuje geometrię planszy i prowadzi główną pętlę zdarzeń gry."""
         context = GameContext()
 
         """Function containing logic game loop"""
@@ -102,6 +104,7 @@ class Game:
         pygame.quit()
 
     def menu(self):
+        """Rysuje menu startowe i przełącza do gry po kliknięciu lub Enterze."""
         context = GameContext()
         """method to show game menu"""
         # black color
@@ -118,7 +121,7 @@ class Game:
         big_font = pygame.font.SysFont(context.comic_sans_font, 50)
         small_font = pygame.font.SysFont(context.comic_sans_font, 20)
         # create text to be shown on the game menu
-        welcome_text = big_font.render("Szachy karciane", False, black_color)
+        welcome_text = big_font.render("Chess NEXT", False, black_color)
         created_by = small_font.render("Created by jerne_official", True, black_color)
         start_btn_label = small_font.render("Graj", True, white_color)
 
@@ -155,6 +158,7 @@ class Game:
             self.menu_showed = True
 
     def game(self):
+        """Rysuje planszę, wykonuje turę i wyświetla ekran zwycięzcy po zakończeniu."""
         if self.winner is not None:
             self.declare_winner(self.winner)
             return
@@ -178,6 +182,7 @@ class Game:
             self.declare_winner(winner)
 
     def declare_winner(self, winner):
+        """Wyświetla zwycięzcę i obsługuje rozpoczęcie nowej partii."""
         context = GameContext()
         # background color
         bg_color = (255, 255, 255)

@@ -3,6 +3,7 @@ from constants.pos import xy_to_id
 
 
 def two_field_forward_move(possible_positions_to_move, xy_coord, color, pieces_locations):
+    """Dodaje ruch piona o dwa pola naprzód, gdy oba pola są wolne i leżą na planszy."""
     x, y = xy_coord
     color_var = 1
     if color == COLOR.BLACK:
@@ -14,6 +15,7 @@ def two_field_forward_move(possible_positions_to_move, xy_coord, color, pieces_l
 
 
 def one_field_backwards_move(possible_positions_to_move, xy_coord, color, pieces_locations):
+    """Dodaje wolny ruch piona wstecz oraz diagonalne zbicia figur przeciwnika."""
     x, y = xy_coord
     target_y = y - 1 if color == COLOR.WHITE else y + 1
     if not 0 <= target_y < 8:
@@ -31,6 +33,7 @@ def one_field_backwards_move(possible_positions_to_move, xy_coord, color, pieces
 
 
 def move_one_field_horizontally(possible_positions_to_move, xy_coord, color, pieces_locations):
+    """Dodaje poziome ruchy piona na sąsiednie, niezajęte pola."""
     x, y = xy_coord
     for target_x in (x - 1, x + 1):
         if 0 <= target_x < 8 and not pieces_locations[xy_to_id(target_x, y)].exists():

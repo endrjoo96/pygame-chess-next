@@ -5,6 +5,7 @@ from utils.gamecontext import GameContext
 
 class PieceSprite(pygame.sprite.Sprite):
     def __init__(self, filename, cols, rows):
+        """Wczytuje arkusz figur i przygotowuje prostokąty klatek oraz miniaturek."""
         context = GameContext()
 
         pygame.sprite.Sprite.__init__(self)
@@ -46,6 +47,7 @@ class PieceSprite(pygame.sprite.Sprite):
              range(self.cell_count)])
 
     def draw(self, surface, piece_name, coords, thumbnail=False):
+        """Rysuje wskazaną figurę na powierzchni, opcjonalnie jako podświetloną miniaturę."""
         context = GameContext()
         piece_index = self.pieces[piece_name]
         if thumbnail:

@@ -20,6 +20,7 @@ class CardsProcessor:
     STARTING_CARD_TYPES = ()
 
     def __init__(self, screen: Surface):
+        """Inicjalizuje talie, ikony kart i siatki ich położenia dla podanego ekranu."""
         context = GameContext()
 
         self.title_font = pygame.font.SysFont("Arial", 16, bold=True)
@@ -64,16 +65,19 @@ class CardsProcessor:
                     ])
 
     def reset_decks(self):
+        """Odtwarza początkowe talie obu graczy z typów kart startowych."""
         deck = [card_type.create() for card_type in self.STARTING_CARD_TYPES]
         self.white_cards[:] = deck
         self.black_cards[:] = [card_type.create() for card_type in self.STARTING_CARD_TYPES]
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
+        """Zwraca listę kart przypisaną do wskazanego koloru."""
         if color == COLOR.WHITE:
             return self.white_cards
         return self.black_cards
 
     def add_card_for(self, color: COLOR, card: Enchantment) -> bool:
+        """Dodaje kartę do talii lub scala użycia karty wielokrotnej; zwraca powodzenie."""
         card_deck = self.get_cards_for(color)
         if card.is_reusable():
             matching_card = next(
@@ -95,6 +99,7 @@ class CardsProcessor:
         return True
 
     def render(self, screen: Surface, chess_pieces: PieceSprite, selected_card=None):
+        """Rysuje talie obu graczy, wyróżniając opcjonalnie aktualnie wybraną kartę."""
         context = GameContext()
         card_size = (context.card_width, context.card_height)
         self.__render_cards(
@@ -105,12 +110,14 @@ class CardsProcessor:
             card_size, PREDEFINED_COLOR.transparent_blue, COLOR.BLACK.value, COLOR.BLACK, selected_card)
 
     def render_preview(self, screen: Surface, chess_pieces: PieceSprite, card: Enchantment, coords, color: COLOR):
+        """Rysuje pojedynczą kartę w podanej pozycji jako podgląd planszowy."""
         context = GameContext()
         self.__render_card(
             screen, coords, chess_pieces, card, (context.card_width, context.card_height),
             PREDEFINED_COLOR.transparent_brown, card_color=color.value)
 
     def render_effects_preview(self, screen: Surface, chess_pieces: PieceSprite, effects, coords, color: COLOR):
+        """Układa podgląd efektów figury w siatce, dopasowując go do granic ekranu."""
         if not effects:
             return
 
@@ -140,6 +147,7 @@ class CardsProcessor:
                 delay_remaining=delay_remaining, stun_remaining=stun_remaining)
 
     def __wrap_text(self, text, font, max_width):
+        """Dzieli tekst na linie mieszczące się w maksymalnej szerokości czcionki."""
         lines = []
         current_line = ""
         for word in text.split():
@@ -157,6 +165,7 @@ class CardsProcessor:
         return lines
 
     def __render_cards(self, screen, coordinates, chess_pieces, card_deck, card_size, bg_color, color_name, color, selected_card):
+        """Rysuje karty talii w siatce i obramowuje wybraną pozycję."""
         iterator = 0
         for row in coordinates:
             for coord in row:
@@ -175,6 +184,7 @@ class CardsProcessor:
         self, screen, coords, chess_pieces, card, card_size, bg_color, card_color,
         delay_remaining=None, stun_remaining=None,
     ):
+        """Renderuje tło karty, ikonki efektów, figurę, tytuł i opis w jej polu."""
         surface = Surface((card_size[0] - 5, card_size[1] - 5), pygame.SRCALPHA)
         surface.fill(bg_color)
         screen.blit(surface, coords)

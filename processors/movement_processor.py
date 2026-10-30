@@ -4,6 +4,7 @@ from constants.pos import xy_to_id
 
 
 def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations, active_enchantment=None):
+    """Wyznacza legalne ruchy figury, uwzględniając planszę i aktywne modyfikatory."""
     # list to store possible moves of the selected piece
     possible_positions_to_move = []
     if active_enchantment is not None:
@@ -138,6 +139,7 @@ def process_possible_basic_moves(piece: Piece, xy_coord, pieces_locations, activ
 
 # helper function to find diagonal moves
 def __add_diagonal_moves(positions, xy_coord, pieces_locations):
+    """Dopisuje wolne i pierwsze zajęte pola na czterech przekątnych."""
     # reset x and y coordinate values
     x, y = xy_coord
     # find top left diagonal spots
@@ -197,6 +199,7 @@ def __add_diagonal_moves(positions, xy_coord, pieces_locations):
 
 # helper function to find horizontal and vertical moves
 def __add_linear_moves(positions, xy_coord, pieces_locations):
+    """Dopisuje pola w czterech liniach prostych, kończąc na pierwszej figurze."""
     # reset x, y coordniate value
     x, y = xy_coord
     # horizontal moves to the left
@@ -238,6 +241,7 @@ def __add_linear_moves(positions, xy_coord, pieces_locations):
 
 
 def __add_diag_hit_moves(possible_positions_to_move, color, xy_coord, pieces_locations):
+    """Dodaje pionowi ukośne pola zbicia, jeśli zajmuje je figura przeciwnika."""
     x_coord, y_coord = xy_coord
     color_var = 1
     if color == COLOR.BLACK: color_var = -1

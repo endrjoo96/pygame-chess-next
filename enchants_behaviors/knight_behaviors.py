@@ -1,4 +1,5 @@
 def one_field_in_any_direction(possible_positions_to_move, xy_coord, color, pieces_locations):
+    """Dodaje wszystkie sąsiednie pola; filtrowanie pól zajętych wykonuje wywołujący."""
     x, y = xy_coord
 
     for x_offset in (-1, 0, 1):

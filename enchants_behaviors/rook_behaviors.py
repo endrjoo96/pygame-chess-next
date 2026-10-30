@@ -2,6 +2,7 @@ from constants.pos import xy_to_id
 
 
 def move_to_board_edge(possible_positions_to_move, xy_coord, color, pieces_locations):
+    """Dodaje wieży skrajne pole planszy w każdym kierunku poziomym i pionowym."""
     x, y = xy_coord
     for x_offset, y_offset in ((0, -1), (0, 1), (-1, 0), (1, 0)):
         target_x, target_y = x, y
@@ -14,6 +15,7 @@ def move_to_board_edge(possible_positions_to_move, xy_coord, color, pieces_locat
 
 def move_through_allied_pieces_without_capturing(
         possible_positions_to_move, xy_coord, color, pieces_locations):
+    """Dodaje wolne pola wzdłuż linii, pomijając sojuszników i zatrzymując się przy wrogu."""
     x, y = xy_coord
 
     for x_offset, y_offset in ((0, -1), (0, 1), (-1, 0), (1, 0)):

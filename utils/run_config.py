@@ -8,6 +8,7 @@ class RunMode(Enum):
 
 
 def _load_properties():
+    """Odczytuje plik run.properties i zwraca słownik ustawień oraz jego ścieżkę."""
     properties_path = Path(__file__).resolve().parent.parent / "run.properties"
     properties = {}
     for line_number, line in enumerate(properties_path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -26,6 +27,7 @@ def _load_properties():
 
 
 def _load_run_config():
+    """Waliduje wymagany tryb uruchomienia i zwraca tryb oraz ustawienie logowania."""
     properties, properties_path = _load_properties()
     if "mode" not in properties:
         raise ValueError("Missing 'mode' property in {}".format(properties_path))
