@@ -14,7 +14,11 @@ from logic.game_simulation import GameSimulation
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
-from utils.run_config import AI_SEARCH_MAX_DEPTH, AI_SEARCH_TIME_LIMIT_SECONDS
+from utils.run_config import (
+    AI_SEARCH_MAX_DEPTH,
+    AI_SEARCH_TIME_LIMIT_SECONDS,
+    GAME_SEED,
+)
 
 
 PIECE_VALUES = {
@@ -104,7 +108,6 @@ class ChessAI:
             raise ValueError("The worker count must be at least one")
         self.config = config
         self.max_workers = max_workers or (os.cpu_count() or 1)
-        self.rng = random.Random()
         self._deadline = 0.0
         self._nodes = 0
 
@@ -120,7 +123,9 @@ class ChessAI:
         if observation.current_turn != COLOR.BLACK:
             raise ValueError("It is not the AI player's turn")
 
-        rng = rng or self.rng
+        if rng is None:
+            rng = random.Random(GAME_SEED if GAME_SEED is not None else 0)
+            rng.setstate(observation.random_state)
         samples = [
             observation.determinize(rng)
             for _ in range(self.config.hidden_hand_samples)

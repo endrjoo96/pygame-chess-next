@@ -26,16 +26,18 @@ from processors.cards_processor import CardsProcessor
 from processors.movement_processor import process_possible_basic_moves
 from utils.gamecontext import GameContext
 from utils.logging import debug_log
-from utils.run_config import RUN_MODE, RunMode
+from utils.run_config import RUN_MODE, RunMode, resolve_game_seed
 
 
 class GameLogicLoop(object):
-    def __init__(self, screen: Surface, black_ai=None):
+    def __init__(self, screen: Surface, black_ai=None, seed=None):
         """Tworzy stan rozgrywki, procesory i zasoby wizualne dla powierzchni ekranu."""
         self.context = GameContext()
         # display surface
         self.screen = screen
         self.black_ai = black_ai
+        self.seed = resolve_game_seed() if seed is None else seed
+        self.rng = random.Random(self.seed)
         self._ai_executor = ThreadPoolExecutor(max_workers=1)
         self._ai_future: Optional[Future] = None
         self._ai_best_move = None
@@ -67,7 +69,7 @@ class GameLogicLoop(object):
 
         # list containing captured pieces
         self.capture_processor = CaptureProcessor()
-        self.cards_processor = CardsProcessor(screen)
+        self.cards_processor = CardsProcessor(screen, self.rng)
         self.board_card_position = POS.D5.value
         self.board_card_available = False
         self.board_enchantment = None
@@ -80,6 +82,7 @@ class GameLogicLoop(object):
 
     def reset(self):
         """Przywraca planszę, talie i liczniki do stanu początkowego nowej partii."""
+        self.rng.seed(self.seed)
         # clear moves lists
         self.current_turn = COLOR.WHITE
         self.turns_started = {COLOR.WHITE: 1, COLOR.BLACK: 0}
@@ -323,7 +326,7 @@ class GameLogicLoop(object):
             )
         else:
             self.moves = []
-        random.setstate(result.random_state)
+        self.rng.setstate(result.random_state)
 
     # method to draw pieces on the chess board
     def draw_pieces(self):
@@ -1042,17 +1045,23 @@ class GameLogicLoop(object):
     ):
         """Zamyka turę, aktualizuje pojawienie się kart, loguje ruch i czyści wybór."""
         self.__end_turn()
-        if collected_board_card:
+        if collected_board_card and self.pending_board_card_delay is None:
             self.__schedule_next_board_card()
-        elif self.pending_board_card_delay is not None:
+        elif (
+            self.pending_board_card_delay is not None
+            and self.pending_board_card_delay > 0
+        ):
             previous_delay = self.pending_board_card_delay
             self.pending_board_card_delay -= 1
             debug_log(
                 "Board card placement: countdown decreased from {} to {} turn(s)".format(
                     previous_delay, self.pending_board_card_delay)
             )
-            if self.pending_board_card_delay == 0:
-                self.__place_next_board_card()
+        if (
+            self.pending_board_card_delay == 0
+            and not self.board_card_available
+        ):
+            self.__place_next_board_card()
 
         beats_or_moves = "beats" if beats else "moves"
         debug_log(
@@ -1082,14 +1091,16 @@ class GameLogicLoop(object):
         debug_log(
             "Board card placement: found {} empty square(s)".format(len(empty_positions))
         )
-        rng = getattr(self, "rng", random)
+        rng = self.rng
         self.board_card_position = rng.choice(empty_positions)
         debug_log(
             "Board card placement: selected square {}".format(POS(self.board_card_position).name)
         )
         self.board_enchantment = EnchantmentCardType.create_random(rng)
         self.board_card_available = True
-        self.pending_board_card_delay = None
+        self.pending_board_card_delay = (
+            0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
+        )
         debug_log(
             "Board card placement: '{}' is now available on {}".format(
                 self.board_enchantment.get_title(), POS(self.board_card_position).name)
@@ -1099,7 +1110,7 @@ class GameLogicLoop(object):
         """Planuje pojawienie się następnej karty, z natychmiastowym losowaniem w debug."""
         self.board_card_available = False
         self.pending_board_card_delay = (
-            0 if RUN_MODE is RunMode.DEBUG else getattr(self, "rng", random).randint(0, 4)
+            0 if RUN_MODE is RunMode.DEBUG else self.rng.randint(1, 5)
         )
         debug_log(
             "Board card placement: scheduled; delay={} turn(s) (run mode={})".format(

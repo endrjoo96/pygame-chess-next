@@ -69,6 +69,27 @@ def test_ai_returns_a_legal_fallback_when_search_budget_expires():
     assert decision.completed_depth == 0
 
 
+def test_ai_default_sampling_is_reproducible_from_observation_seed():
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.white_cards = [
+        EnchantmentCardType.PAWN_SWORDSMAN.create(),
+        EnchantmentCardType.PIECE_TELEPORT.create(),
+    ]
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=2),
+        max_workers=1,
+    )
+
+    first = ai.choose_action(observation)
+    second = ai.choose_action(observation)
+
+    assert first.action == second.action
+    assert first.score == second.score
+    assert first.completed_depth == second.completed_depth
+
+
 def test_ai_only_accepts_black_to_move_observations():
     state = make_black_to_move_state()
     state.current_turn = COLOR.WHITE

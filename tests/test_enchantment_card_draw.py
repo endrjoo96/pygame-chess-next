@@ -58,12 +58,19 @@ def test_prod_draw_uses_weights_in_original_candidate_order(monkeypatch):
         captured["k"] = k
         return [selected_candidate]
 
+    class FakeRandom:
+        @staticmethod
+        def randint(minimum, maximum):
+            return 3
+
+        @staticmethod
+        def choices(candidates, weights, k):
+            return fake_choices(candidates, weights, k)
+
     monkeypatch.setattr("models.enchantment_cards.RUN_MODE", RunMode.PROD)
-    monkeypatch.setattr("models.enchantment_cards.random.randint", lambda minimum, maximum: 3)
-    monkeypatch.setattr("models.enchantment_cards.random.choices", fake_choices)
     monkeypatch.setattr("models.enchantment_cards.debug_log", lambda message: None)
 
-    result = EnchantmentCardType._random_choice_with_uses()
+    result = EnchantmentCardType._random_choice_with_uses(FakeRandom())
 
     assert result == selected_candidate
     assert [candidate[0] for candidate in captured["candidates"]] == list(EnchantmentCardType)
@@ -77,21 +84,25 @@ def test_debug_draw_uses_uniform_choice_without_weighted_sampler(monkeypatch):
     choice_calls = []
     choices_calls = []
     monkeypatch.setattr("models.enchantment_cards.RUN_MODE", RunMode.DEBUG)
-    monkeypatch.setattr("models.enchantment_cards.random.randint", lambda minimum, maximum: 3)
 
-    def fake_choice(candidates):
-        choice_calls.append(candidates)
-        return selected_candidate
+    class FakeRandom:
+        @staticmethod
+        def randint(minimum, maximum):
+            return 3
 
-    def fake_choices(*args, **kwargs):
-        choices_calls.append((args, kwargs))
-        return [selected_candidate]
+        @staticmethod
+        def choice(candidates):
+            choice_calls.append(candidates)
+            return selected_candidate
 
-    monkeypatch.setattr("models.enchantment_cards.random.choice", fake_choice)
-    monkeypatch.setattr("models.enchantment_cards.random.choices", fake_choices)
+        @staticmethod
+        def choices(*args, **kwargs):
+            choices_calls.append((args, kwargs))
+            return [selected_candidate]
+
     monkeypatch.setattr("models.enchantment_cards.debug_log", lambda message: None)
 
-    result = EnchantmentCardType._random_choice_with_uses()
+    result = EnchantmentCardType._random_choice_with_uses(FakeRandom())
 
     assert result == selected_candidate
     assert len(choice_calls) == 1

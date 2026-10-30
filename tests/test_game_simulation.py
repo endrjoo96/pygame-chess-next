@@ -9,6 +9,7 @@ from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_state import GameState
 from logic.game_simulation import GameActionType, GameSimulation
+from utils.run_config import GAME_SEED
 
 
 @pytest.fixture
@@ -25,7 +26,8 @@ def empty_state():
         board_card_position=36,
         board_enchantment=None,
         pending_board_card_delay=None,
-        random_state=random.getstate(),
+        random_state=random.Random(
+            GAME_SEED if GAME_SEED is not None else 0).getstate(),
     )
 
 
@@ -357,3 +359,45 @@ def test_board_card_replacement_uses_state_rng_deterministically(empty_state, mo
     assert empty_state.board_card_available
     assert empty_state.board_card_position == 2
     assert empty_state.white_cards == []
+
+
+def test_board_card_countdown_runs_while_card_is_available(empty_state, monkeypatch):
+    import logic.game_rules as game_rules
+    import models.enchantment_cards as enchantment_cards
+    from utils.run_config import RunMode
+
+    monkeypatch.setattr(game_rules, "RUN_MODE", RunMode.PROD)
+    monkeypatch.setattr(enchantment_cards, "RUN_MODE", RunMode.PROD)
+    empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    empty_state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    empty_state.board_card_available = True
+    empty_state.board_card_position = 17
+    empty_state.board_enchantment = EnchantmentCardType.PIECE_TELEPORT.create()
+    empty_state.pending_board_card_delay = 1
+
+    white_move = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == 1 and action.destination == 9
+    )
+    after_white_move = GameSimulation.apply(empty_state, white_move)
+
+    assert after_white_move.board_card_available
+    assert after_white_move.pending_board_card_delay == 0
+
+    black_move = next(
+        action for action in GameSimulation.available_actions(after_white_move)
+        if action.source == 57 and action.destination == 58
+    )
+    after_black_move = GameSimulation.apply(after_white_move, black_move)
+    assert after_black_move.board_card_available
+    assert after_black_move.pending_board_card_delay == 0
+
+    collect_card = next(
+        action for action in GameSimulation.available_actions(after_black_move)
+        if action.source == 9 and action.destination == 17
+    )
+    after_collection = GameSimulation.apply(after_black_move, collect_card)
+
+    assert after_collection.board_card_available
+    assert after_collection.board_card_position != 17
+    assert 1 <= after_collection.pending_board_card_delay <= 5

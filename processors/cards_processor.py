@@ -1,3 +1,4 @@
+import random
 from typing import List
 
 import pygame
@@ -11,17 +12,20 @@ from models.enchantment_cards import EnchantmentCardType
 from models.enchantments import Enchantment
 from piecesprite import PieceSprite
 from utils.gamecontext import GameContext
+from utils.run_config import GAME_SEED
 
 
 class CardsProcessor:
     MAX_CARDS_PER_PLAYER = 8
     CARD_COLUMNS = 2
 
-    STARTING_CARD_TYPES = ()
+    STARTING_CARD_COUNT = 2
 
-    def __init__(self, screen: Surface):
+    def __init__(self, screen: Surface, rng=None):
         """Inicjalizuje talie, ikony kart i siatki ich położenia dla podanego ekranu."""
         context = GameContext()
+        self.rng = rng if rng is not None else random.Random(
+            GAME_SEED if GAME_SEED is not None else 0)
 
         self.title_font = pygame.font.SysFont("Arial", 16, bold=True)
         self.small_font = pygame.font.SysFont(context.comic_sans_font, 13)
@@ -38,7 +42,6 @@ class CardsProcessor:
         }
         self.white_cards = []
         self.black_cards = []
-        self.reset_decks()
 
         context.white_cards_starting_point = (context.board_offset_x + (context.square_length * 8) + 20, 0)
         context.black_cards_starting_point = (0, 0)
@@ -65,10 +68,19 @@ class CardsProcessor:
                     ])
 
     def reset_decks(self):
-        """Odtwarza początkowe talie obu graczy z typów kart startowych."""
-        deck = [card_type.create() for card_type in self.STARTING_CARD_TYPES]
-        self.white_cards[:] = deck
-        self.black_cards[:] = [card_type.create() for card_type in self.STARTING_CARD_TYPES]
+        """Losuje wspólne karty startowe i tworzy niezależne talie dla graczy."""
+        starting_cards = [
+            EnchantmentCardType.sample_with_uses(self.rng)
+            for _ in range(self.STARTING_CARD_COUNT)
+        ]
+        self.white_cards[:] = [
+            card_type.create(uses=uses)
+            for card_type, uses in starting_cards
+        ]
+        self.black_cards[:] = [
+            card_type.create(uses=uses)
+            for card_type, uses in starting_cards
+        ]
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         """Zwraca listę kart przypisaną do wskazanego koloru."""

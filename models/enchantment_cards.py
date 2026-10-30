@@ -12,7 +12,13 @@ from models.enchantments import (
     _resolve_remaining_uses,
 )
 from utils.logging import debug_log
-from utils.run_config import RUN_MODE, RunMode
+from utils.run_config import GAME_SEED, RUN_MODE, RunMode
+
+
+def _resolve_rng(rng):
+    if rng is not None:
+        return rng
+    return random.Random(GAME_SEED if GAME_SEED is not None else 0)
 
 
 def _resolve_remaining_uses_range(enchantment_types, remaining_uses):
@@ -40,8 +46,9 @@ def _resolve_rarity(rarity):
     return float(rarity)
 
 
-def _sample_card_candidates(card_types, rng=random):
+def _sample_card_candidates(card_types, rng=None):
     """Tworzy kandydatów losowania, próbkując liczbę użyć kart wielokrotnych."""
+    rng = _resolve_rng(rng)
     return [
         (
             card_type,
@@ -228,14 +235,14 @@ class EnchantmentCardType(Enum):
         self.resurrected_piece_type = resurrected_piece_type
         self.promoted_piece_type = promoted_piece_type
 
-    def create(self, uses=None) -> Enchantment:
+    def create(self, uses=None, rng=None) -> Enchantment:
         """Tworzy instancję zaklęcia; dla kart z zakresem losuje lub waliduje liczbę użyć."""
         if self.remaining_uses_range is None:
             if uses is not None:
                 _resolve_remaining_uses(self.enchantment_types, uses)
             remaining_uses = None
         elif uses is None:
-            remaining_uses = random.randint(*self.remaining_uses_range)
+            remaining_uses = _resolve_rng(rng).randint(*self.remaining_uses_range)
         else:
             _resolve_remaining_uses(self.enchantment_types, uses)
             minimum, maximum = self.remaining_uses_range
@@ -259,8 +266,9 @@ class EnchantmentCardType(Enum):
         return ConfiguredEnchantmentCard(self, uses)
 
     @classmethod
-    def _random_choice_with_uses(cls, rng=random):
+    def _random_choice_with_uses(cls, rng=None):
         """Losuje kartę i liczbę użyć, delegując obliczanie wag i logowanie."""
+        rng = _resolve_rng(rng)
         card_types_with_uses = _sample_card_candidates(cls, rng)
         _log_candidate_uses(card_types_with_uses)
 
@@ -284,8 +292,9 @@ class EnchantmentCardType(Enum):
         return selected
 
     @classmethod
-    def sample_with_uses(cls, rng=random):
+    def sample_with_uses(cls, rng=None):
         """Losuje kartę i liczbę użyć zgodnie z mechaniką gry, bez logowania diagnostycznego."""
+        rng = _resolve_rng(rng)
         candidates = _sample_card_candidates(cls, rng)
         if RUN_MODE is RunMode.DEBUG:
             return rng.choice(candidates)
@@ -333,15 +342,16 @@ class EnchantmentCardType(Enum):
         return probabilities
 
     @classmethod
-    def random_choice(cls) -> "EnchantmentCardType":
+    def random_choice(cls, rng=None) -> "EnchantmentCardType":
         """Losuje i zwraca typ karty, nie tworząc jeszcze zaklęcia."""
-        return cls._random_choice_with_uses()[0]
+        return cls._random_choice_with_uses(rng)[0]
 
     @classmethod
-    def create_random(cls, rng=random) -> Enchantment:
+    def create_random(cls, rng=None) -> Enchantment:
         """Losuje kartę i tworzy jej zaklęcie z wybraną liczbą użyć."""
+        rng = _resolve_rng(rng)
         card_type, uses = cls._random_choice_with_uses(rng)
-        enchantment = card_type.create(uses=uses)
+        enchantment = card_type.create(uses=uses, rng=rng)
         debug_log(
             "Board card draw: created '{}' with {} use(s)".format(
                 enchantment.get_title(), enchantment.get_remaining_uses())

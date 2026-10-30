@@ -9,7 +9,7 @@ from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_state import GameState
 from processors.movement_processor import process_possible_basic_moves
-from utils.run_config import RUN_MODE, RunMode
+from utils.run_config import GAME_SEED, RUN_MODE, RunMode
 
 
 class GameActionType(Enum):
@@ -39,7 +39,7 @@ class GameRules:
     @classmethod
     def apply_action(cls, state: GameState, action: GameAction) -> GameState:
         """Zastosowuje legalną akcję do stanu przekazanego przez wywołującego."""
-        rng = random.Random()
+        rng = random.Random(GAME_SEED if GAME_SEED is not None else 0)
         rng.setstate(state.random_state)
         state.selected_piece_position = action.source
         state.selected_card = (
@@ -313,12 +313,18 @@ class GameRules:
     @classmethod
     def _finish_piece_move(cls, state, collected_board_card, rng):
         cls._end_turn(state)
-        if collected_board_card:
+        if collected_board_card and state.pending_board_card_delay is None:
             cls._schedule_next_board_card(state, rng)
-        elif state.pending_board_card_delay is not None:
+        elif (
+            state.pending_board_card_delay is not None
+            and state.pending_board_card_delay > 0
+        ):
             state.pending_board_card_delay -= 1
-            if state.pending_board_card_delay == 0:
-                cls._place_next_board_card(state, rng)
+        if (
+            state.pending_board_card_delay == 0
+            and not state.board_card_available
+        ):
+            cls._place_next_board_card(state, rng)
 
         state.selected_piece_position = 0
         state.selected_card = None
@@ -330,7 +336,7 @@ class GameRules:
     def _schedule_next_board_card(cls, state, rng):
         state.board_card_available = False
         state.pending_board_card_delay = (
-            0 if RUN_MODE is RunMode.DEBUG else rng.randint(0, 4)
+            0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
         )
         if state.pending_board_card_delay == 0:
             cls._place_next_board_card(state, rng)
@@ -344,7 +350,9 @@ class GameRules:
         state.board_card_position = rng.choice(empty_positions)
         state.board_enchantment = EnchantmentCardType.create_random(rng)
         state.board_card_available = True
-        state.pending_board_card_delay = None
+        state.pending_board_card_delay = (
+            0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
+        )
 
     @staticmethod
     def _advance_stun_effects(state, color):

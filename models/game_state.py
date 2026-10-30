@@ -7,6 +7,11 @@ from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from models.chess_pieces import Piece
 from models.enchantments import Enchantment
+from utils.run_config import GAME_SEED
+
+
+def _initial_random_state():
+    return random.Random(GAME_SEED if GAME_SEED is not None else 0).getstate()
 
 
 @dataclass
@@ -30,7 +35,7 @@ class GameState:
     double_move_step: int = 0
     double_move_collected_board_card: bool = False
     resurrection_moves: List[int] = field(default_factory=list)
-    random_state: tuple = field(default_factory=random.getstate)
+    random_state: tuple = field(default_factory=_initial_random_state)
 
     @classmethod
     def from_game(cls, game) -> "GameState":
@@ -54,7 +59,9 @@ class GameState:
             double_move_collected_board_card=game.double_move_collected_board_card,
             resurrection_moves=game.resurrection_moves,
             random_state=(
-                game.rng.getstate() if hasattr(game, "rng") else random.getstate()
+                game.rng.getstate()
+                if hasattr(game, "rng")
+                else _initial_random_state()
             ),
         )
         return state.clone()

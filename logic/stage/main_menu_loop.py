@@ -8,6 +8,7 @@ from logic.chess_ai import ChessAI
 from logic.stage.game_logic_loop import GameLogicLoop
 from utils.gamecontext import GameContext
 from utils import utils
+from utils.run_config import resolve_game_seed
 
 
 class Game:
@@ -18,6 +19,7 @@ class Game:
         # flag to know if game menu has been showed
         self.menu_showed = False
         self.play_against_ai = False
+        self.chess = None
         # flag to set game loop
         self.running = True
         self.winner = None
@@ -71,8 +73,6 @@ class Game:
             context.chessboard_coordinates[x].reverse()
 
         # create class object that handles the gameplay logic
-        self.chess = GameLogicLoop(self.screen)
-
         # game loop
         while self.running:
             self.clock.tick(20)
@@ -87,7 +87,8 @@ class Game:
                     # set flag to break out of the game loop
                     self.running = False
                 elif key_pressed[K_SPACE]:
-                    self.chess.reset()
+                    if self.chess is not None:
+                        self.chess.reset()
 
             if not self.menu_showed:
                 self.menu()
@@ -171,16 +172,21 @@ class Game:
             mouse_coords = utils.get_mouse_event()
             if ai_toggle_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
                 self.play_against_ai = not self.play_against_ai
-                self.chess.black_ai = ChessAI() if self.play_against_ai else None
             elif start_btn.collidepoint(mouse_coords[0], mouse_coords[1]):
                 # change button behavior as it is hovered
                 pygame.draw.rect(self.screen, white_color, start_btn, 3)
 
-                # change menu flag
-                self.menu_showed = True
+                self._start_new_game()
         # check if enter or return key was pressed
         elif key_pressed[K_RETURN]:
-            self.menu_showed = True
+            self._start_new_game()
+
+    def _start_new_game(self):
+        """Tworzy nową partię dopiero po wybraniu jej seeda przy starcie."""
+        seed = resolve_game_seed()
+        ai = ChessAI() if self.play_against_ai else None
+        self.chess = GameLogicLoop(self.screen, black_ai=ai, seed=seed)
+        self.menu_showed = True
 
     def game(self):
         """Rysuje planszę, wykonuje turę i wyświetla ekran zwycięzcy po zakończeniu."""

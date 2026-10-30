@@ -1,4 +1,5 @@
 import math
+import secrets
 from enum import Enum
 from pathlib import Path
 
@@ -42,6 +43,15 @@ def _load_run_config():
         ) from None
 
     log_debug_enabled = properties.get("log.debug.enabled", "false").lower() == "true"
+    game_seed = None
+    if "game.seed" in properties:
+        try:
+            game_seed = int(properties["game.seed"])
+        except ValueError:
+            raise ValueError(
+                "Invalid 'game.seed' in {}; expected an integer".format(properties_path)
+            ) from None
+
     try:
         ai_search_max_depth = int(properties.get("ai.search.max_depth", "4"))
     except ValueError:
@@ -68,6 +78,7 @@ def _load_run_config():
     return (
         run_mode,
         log_debug_enabled,
+        game_seed,
         ai_search_max_depth,
         ai_search_time_limit_seconds,
     )
@@ -76,6 +87,12 @@ def _load_run_config():
 (
     RUN_MODE,
     LOG_DEBUG_ENABLED,
+    GAME_SEED,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
 ) = _load_run_config()
+
+
+def resolve_game_seed():
+    """Zwraca seed z konfiguracji lub losuje 64-bitowy seed dla nowej partii."""
+    return GAME_SEED if GAME_SEED is not None else secrets.randbits(64)

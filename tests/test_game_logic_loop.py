@@ -1,3 +1,4 @@
+import random
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from types import SimpleNamespace
@@ -91,6 +92,7 @@ def make_game(card_type=None, uses=None):
     game._ai_future = None
     game._ai_progress_lock = Lock()
     game._ai_generation = 0
+    game.rng = random.Random(23)
     return game
 
 
@@ -296,3 +298,27 @@ def test_ai_move_notation_uses_polish_piece_symbol_and_capture_marker():
     action = GameAction(GameActionType.MOVE, 1, 9)
 
     assert GameLogicLoop._format_ai_action_notation(state, action) == "Wxa2"
+
+
+def test_board_card_countdown_runs_while_card_is_available(monkeypatch):
+    from utils.run_config import RunMode
+    import logic.stage.game_logic_loop as game_logic_loop
+
+    monkeypatch.setattr(game_logic_loop, "RUN_MODE", RunMode.PROD)
+    game = make_game()
+    game.board_card_available = True
+    game.pending_board_card_delay = 1
+    game.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+
+    game._GameLogicLoop__finish_piece_move(
+        game.pieces_locations[1], 1, 2, False, False)
+
+    assert game.board_card_available
+    assert game.pending_board_card_delay == 0
+
+    game.board_card_available = False
+    game._GameLogicLoop__finish_piece_move(
+        game.pieces_locations[1], 1, 2, False, True)
+
+    assert game.board_card_available
+    assert 1 <= game.pending_board_card_delay <= 5
