@@ -184,19 +184,40 @@ class CardsProcessor:
         self, screen, coords, chess_pieces, card, card_size, bg_color, card_color,
         delay_remaining=None, stun_remaining=None,
     ):
-        """Renderuje tło karty, ikonki efektów, figurę, tytuł i opis w jej polu."""
+        """Układa warstwy wizualne pojedynczej karty, delegując ich renderowanie."""
         surface = Surface((card_size[0] - 5, card_size[1] - 5), pygame.SRCALPHA)
         surface.fill(bg_color)
         screen.blit(surface, coords)
 
         x, y = coords
+        icon_types, reusable_icon_x = self.__render_card_icons(
+            screen, x, y, card_size, card, delay_remaining, stun_remaining)
+        has_piece_icon = card.get_required_piece_type() != PIECE_TYPE.EMPTY
+        if has_piece_icon:
+            self.__render_card_piece(
+                screen, coords, chess_pieces, card, card_color)
+
+        margin = 6
+        graphics_height = self.__get_card_graphics_height(
+            icon_types, reusable_icon_x, has_piece_icon)
+        title_top = y + margin + graphics_height + (margin if graphics_height else 0)
+        title_width = card_size[0] - 2 * margin
+        title_area_height = 2 * self.title_font.get_linesize()
+        self.__render_card_title(
+            screen, card, x, card_size, title_top, title_width, title_area_height)
+        self.__render_card_description(
+            screen, card, x, y, card_size, title_top, title_area_height, margin)
+
+    def __render_card_icons(
+        self, screen, x, y, card_size, card, delay_remaining, stun_remaining,
+    ):
+        """Rysuje ikony modyfikatorów i ich wartości, zwracając dane do układu karty."""
         icon_types = list(dict.fromkeys(
             enchantment_type for enchantment_type in card.get_enchantment_types()
             if enchantment_type in self.enchantment_icons
         ))
         if stun_remaining is not None and EnchantmentType.STUN_AFTER_USE not in icon_types:
             icon_types.append(EnchantmentType.STUN_AFTER_USE)
-        has_piece_icon = card.get_required_piece_type() != PIECE_TYPE.EMPTY
         reusable_icon_x = None
         for index, enchantment_type in enumerate(icon_types):
             icon_x = x + card_size[0] - 5 - 24 * (index + 1)
@@ -233,12 +254,16 @@ class CardsProcessor:
                 use_count,
                 (reusable_icon_x + (24 - use_count.get_width()) // 2, y + 30))
 
-        if has_piece_icon:
-            chess_pieces.draw(
-                screen, "{}_{}".format(card_color, card.get_required_piece_type().value), coords, True)
+        return icon_types, reusable_icon_x
 
-        margin = 6
-        graphics_height = max(
+    def __render_card_piece(self, screen, coords, chess_pieces, card, card_color):
+        """Rysuje miniaturę typu figury wymaganego przez kartę."""
+        chess_pieces.draw(
+            screen, "{}_{}".format(card_color, card.get_required_piece_type().value), coords, True)
+
+    def __get_card_graphics_height(self, icon_types, reusable_icon_x, has_piece_icon):
+        """Oblicza wysokość obszaru ikon, by umieścić tytuł pod grafiką."""
+        return max(
             46 if reusable_icon_x is not None or any(
                 enchantment_type in icon_types
                 for enchantment_type in (
@@ -249,9 +274,11 @@ class CardsProcessor:
             else (29 if icon_types else 0),
             GameContext().piece_cell_thumbnail_height if has_piece_icon else 0,
         )
-        title_top = y + margin + graphics_height + (margin if graphics_height else 0)
-        title_width = card_size[0] - 2 * margin
-        title_area_height = 2 * self.title_font.get_linesize()
+
+    def __render_card_title(
+        self, screen, card, x, card_size, title_top, title_width, title_area_height,
+    ):
+        """Dopasowuje tytuł do maksymalnie dwóch linii i rysuje go na karcie."""
         title_font = self.title_font
         title_lines = []
         for font_size in range(16, 0, -1):
@@ -274,6 +301,10 @@ class CardsProcessor:
                     title_text_top + index * title_font.get_linesize(),
                 ))
 
+    def __render_card_description(
+        self, screen, card, x, y, card_size, title_top, title_area_height, margin,
+    ):
+        """Dobiera rozmiar czcionki opisu tak, by tekst mieścił się w karcie."""
         text_top = title_top + title_area_height + margin
         text_height = y + card_size[1] - margin - text_top
         text_width = card_size[0] - 2 * margin

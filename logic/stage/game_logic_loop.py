@@ -265,196 +265,231 @@ class GameLogicLoop(object):
             self.screen.blit(surface, self.context.chessboard_coordinates[x][y])
 
     def process_player_turn(self):
-        """Obsługuje kliknięcia planszy, zbitych figur i kart w ramach bieżącej tury."""
+        """Pobiera jedno kliknięcie i przekazuje je do obsługi odpowiedniego obszaru."""
         if not self.__selected_card_allows_captured_piece_selection():
             self.selected_captured_piece = None
             self.resurrection_moves = []
 
-        # get the coordinates of the square selected on the board
         position = input_processor.get_clicked_chessboard_field_id()
-        # if a square was selected
         if position:
-            if self.__selected_card_is_resurrection():
-                if position in self.resurrection_moves:
-                    self.__resurrect_selected_piece(position)
-                return
+            self.__handle_board_click(position)
+            return
 
-            piece = self.pieces_locations[position]
-            if self.__selected_card_is_piece_teleport():
-                if self.selected_piece_position == 0:
-                    if piece.exists() and piece.get_color() == self.current_turn:
-                        self.selected_piece_position = position
-                    return
+        self.__handle_sidebar_click()
 
-                if position == self.selected_piece_position or not piece.exists():
-                    return
+    def __handle_board_click(self, position):
+        """Obsługuje planszowe kliknięcie zależnie od wybranej karty i figury."""
+        if self.__selected_card_is_resurrection():
+            if position in self.resurrection_moves:
+                self.__resurrect_selected_piece(position)
+            return
 
-                self.pieces_locations[self.selected_piece_position], self.pieces_locations[position] = (
-                    piece, self.pieces_locations[self.selected_piece_position])
-                card_color, card_index = self.selected_card
-                self.cards_processor.get_cards_for(card_color).pop(card_index)
-                self.selected_card = None
-                self.selected_piece_position = 0
-                self.moves = []
-                self.__end_turn()
-                return
+        piece = self.pieces_locations[position]
+        if self.__selected_card_is_piece_teleport():
+            self.__handle_piece_teleport(position, piece)
+            return
+        if self.__selected_card_is_piece_upgrade():
+            self.__handle_piece_upgrade(piece)
+            return
+        if self.__selected_card_is_return_to_start():
+            self.__handle_return_to_start_click(position, piece)
+            return
 
-            if self.__selected_card_is_piece_upgrade():
-                card_color, card_index = self.selected_card
-                card_deck = self.cards_processor.get_cards_for(card_color)
-                used_card = card_deck[card_index]
-                card_type = used_card.get_card_type()
-                if (
-                    piece.exists()
-                    and piece.get_color() == self.current_turn
-                    and piece.get_type() == used_card.get_required_piece_type()
-                    and piece.promote_to(card_type.promoted_piece_type)
-                ):
-                    card_deck.pop(card_index)
-                    stun_turns = used_card.get_rate_stun_after_use()
-                    piece.set_stunned_for_turns(stun_turns)
-                    piece.add_stun_effect(used_card, stun_turns)
-                    self.selected_card = None
-                    self.selected_piece_position = 0
-                    self.moves = []
-                    self.__end_turn()
-                return
-
-            if self.__selected_card_is_return_to_start():
-                if self.selected_piece_position == 0:
-                    if (
-                        piece.exists()
-                        and piece.get_color() == self.current_turn
-                        and piece.can_receive_enchantment()
-                    ):
-                        self.selected_piece_position = position
-                    return
-
-                if position == self.selected_piece_position:
-                    self.selected_piece_position = 0
-                    return
-
-                if piece.exists() and piece.get_color() == self.current_turn:
-                    self.selected_piece_position = position
-                    return
-
-                if position in self.__get_return_to_start_targets():
-                    self.moves = [id_to_xy(position)]
-                    self.move_piece(position)
-                return
-
-            if (piece.exists()) and (piece.get_color() == self.current_turn):
-                if self.__selected_card_is_piece_double_move() and self.double_move_step > 0:
-                    return
-
-                if not piece.can_receive_enchantment():
-                    self.selected_piece_position = 0
-                    self.moves = []
-                    return
-
-                if position == self.selected_piece_position:
-                    self.selected_piece_position = 0
-                    self.moves = []
-                    return
-
-                active_enchantment = None
-                if self.selected_card is not None:
-                    card_color, card_index = self.selected_card
-                    card_deck = self.cards_processor.get_cards_for(card_color)
-                    if card_index >= len(card_deck):
-                        self.selected_card = None
-                        self.moves = []
-                        self.selected_piece_position = 0
-                        return
-                    active_enchantment = card_deck[card_index]
-                    required_piece_type = active_enchantment.get_required_piece_type()
-                    if required_piece_type != piece.get_type() and required_piece_type != PIECE_TYPE.EMPTY:
-                        self.moves = []
-                        self.selected_piece_position = 0
-                        return
-
-                    if active_enchantment.is_passive():
-                        delay = active_enchantment.get_rate_delay_before_use()
-                        if delay > 0:
-                            piece.add_delayed_enchantment(
-                                active_enchantment,
-                                self.turns_started[self.current_turn] + delay,
-                            )
-                        else:
-                            self.__apply_passive_enchantment(position, active_enchantment)
-                        card_deck.pop(card_index)
-                        self.selected_card = None
-                        self.selected_captured_piece = None
-                        self.selected_piece_position = 0
-                        self.moves = []
-                        self.__end_turn()
-                        return
-
-                self.selected_piece_position = position
-                self.moves = process_possible_basic_moves(
-                    piece, id_to_xy(position), self.pieces_locations,
-                    None if self.__selected_card_is_piece_double_move() else active_enchantment)
-
-            else:
-                for i in self.moves:
-                    # if selected square is a valid move
-                    if xy_to_id(i[0], i[1]) == position:
-                        # if selected square is not occupied by any piece
-                        if not piece.exists():
-                            # move piece
-                            self.move_piece(position)
-                        # if piece selected is the opponents piece
-                        else:
-                            # capture piece
-                            self.capture_piece(position)
-
+        if piece.exists() and piece.get_color() == self.current_turn:
+            self.__select_piece_for_movement(position, piece)
         else:
-            color, index = input_processor.get_clicked_captured_piece_index()
-            if color is not None and index is not None:
-                if (
-                    self.__selected_card_allows_captured_piece_selection()
-                    and self.__is_valid_captured_piece_list_for_selected_card(color)
-                ):
-                    captured_pieces = (
-                        self.capture_processor.get_captured_white()
-                        if color == COLOR.WHITE
-                        else self.capture_processor.get_captured_black()
-                    )
-                    if (
-                        0 <= index < len(captured_pieces)
-                        and self.__is_valid_captured_piece_for_selected_card(captured_pieces[index])
-                    ):
-                        piece = captured_pieces[index]
-                        debug_log(
-                            "Clicked captured piece: type={}, color={}, list_position={}".format(
-                                piece.get_type().value, piece.get_color().value, index
-                            )
-                        )
-                        clicked_piece = (color, index)
-                        self.selected_captured_piece = (
-                            None if self.selected_captured_piece == clicked_piece else clicked_piece
-                        )
-                        self.resurrection_moves = (
-                            self.__get_resurrection_moves()
-                            if self.selected_captured_piece is not None
-                            and self.__selected_card_is_resurrection()
-                            else []
-                        )
+            self.__move_to_clicked_destination(position, piece)
+
+    def __handle_piece_teleport(self, position, piece):
+        """Wybiera pierwszą figurę teleportacji lub zamienia ją z drugą i kończy turę."""
+        if self.selected_piece_position == 0:
+            if piece.exists() and piece.get_color() == self.current_turn:
+                self.selected_piece_position = position
+            return
+        if position == self.selected_piece_position or not piece.exists():
+            return
+
+        self.pieces_locations[self.selected_piece_position], self.pieces_locations[position] = (
+            piece, self.pieces_locations[self.selected_piece_position])
+        card_color, card_index = self.selected_card
+        self.cards_processor.get_cards_for(card_color).pop(card_index)
+        self.selected_card = None
+        self.selected_piece_position = 0
+        self.moves = []
+        self.__end_turn()
+
+    def __handle_piece_upgrade(self, piece):
+        """Awansuje wskazaną figurę, zużywa kartę i ustawia jej ogłuszenie."""
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        used_card = card_deck[card_index]
+        card_type = used_card.get_card_type()
+        if (
+            not piece.exists()
+            or piece.get_color() != self.current_turn
+            or piece.get_type() != used_card.get_required_piece_type()
+            or not piece.promote_to(card_type.promoted_piece_type)
+        ):
+            return
+
+        card_deck.pop(card_index)
+        stun_turns = used_card.get_rate_stun_after_use()
+        piece.set_stunned_for_turns(stun_turns)
+        piece.add_stun_effect(used_card, stun_turns)
+        self.selected_card = None
+        self.selected_piece_position = 0
+        self.moves = []
+        self.__end_turn()
+
+    def __handle_return_to_start_click(self, position, piece):
+        """Wybiera figurę do przeniesienia albo wykonuje jej powrót na pole startowe."""
+        if self.selected_piece_position == 0:
+            if (
+                piece.exists()
+                and piece.get_color() == self.current_turn
+                and piece.can_receive_enchantment()
+            ):
+                self.selected_piece_position = position
+            return
+        if position == self.selected_piece_position:
+            self.selected_piece_position = 0
+            return
+        if piece.exists() and piece.get_color() == self.current_turn:
+            self.selected_piece_position = position
+            return
+        if position in self.__get_return_to_start_targets():
+            self.moves = [id_to_xy(position)]
+            self.move_piece(position)
+
+    def __select_piece_for_movement(self, position, piece):
+        """Waliduje własną figurę i oblicza jej ruchy z wybraną kartą."""
+        if self.__selected_card_is_piece_double_move() and self.double_move_step > 0:
+            return
+        if not piece.can_receive_enchantment():
+            self.selected_piece_position = 0
+            self.moves = []
+            return
+        if position == self.selected_piece_position:
+            self.selected_piece_position = 0
+            self.moves = []
+            return
+
+        active_enchantment = self.__get_selected_enchantment()
+        if self.selected_card is not None and active_enchantment is None:
+            self.selected_card = None
+            self.moves = []
+            self.selected_piece_position = 0
+            return
+        if active_enchantment is not None:
+            required_piece_type = active_enchantment.get_required_piece_type()
+            if required_piece_type not in (PIECE_TYPE.EMPTY, piece.get_type()):
+                self.moves = []
+                self.selected_piece_position = 0
+                return
+            if active_enchantment.is_passive():
+                self.__apply_selected_passive_enchantment(
+                    position, piece, active_enchantment)
+                return
+
+        self.selected_piece_position = position
+        self.moves = process_possible_basic_moves(
+            piece, id_to_xy(position), self.pieces_locations,
+            None if self.__selected_card_is_piece_double_move() else active_enchantment)
+
+    def __get_selected_enchantment(self):
+        """Zwraca aktualnie wybraną kartę albo None, jeśli nie ma prawidłowej selekcji."""
+        if self.selected_card is None:
+            return None
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        if 0 <= card_index < len(card_deck):
+            return card_deck[card_index]
+        return None
+
+    def __apply_selected_passive_enchantment(self, position, piece, enchantment):
+        """Przypisuje efekt pasywny lub planuje go, zużywa kartę i kończy turę."""
+        delay = enchantment.get_rate_delay_before_use()
+        if delay > 0:
+            piece.add_delayed_enchantment(
+                enchantment, self.turns_started[self.current_turn] + delay)
+        else:
+            self.__apply_passive_enchantment(position, enchantment)
+
+        card_color, card_index = self.selected_card
+        self.cards_processor.get_cards_for(card_color).pop(card_index)
+        self.selected_card = None
+        self.selected_captured_piece = None
+        self.selected_piece_position = 0
+        self.moves = []
+        self.__end_turn()
+
+    def __move_to_clicked_destination(self, position, piece):
+        """Wykonuje legalny ruch na wybrane puste pole lub zbija figurę przeciwnika."""
+        for move in self.moves:
+            if xy_to_id(move[0], move[1]) != position:
+                continue
+            if piece.exists():
+                self.capture_piece(position)
             else:
-                color, index = input_processor.get_clicked_card_index()
-                if color == self.current_turn:
-                    if self.double_move_step > 0:
-                        return
-                    card_deck = self.cards_processor.get_cards_for(color)
-                    if index is not None and 0 <= index < len(card_deck):
-                        clicked_card = (color, index)
-                        self.selected_card = None if self.selected_card == clicked_card else clicked_card
-                        self.double_move_step = 0
-                        self.double_move_collected_board_card = False
-                        self.selected_captured_piece = None
-                        self.resurrection_moves = []
-                        self.selected_piece_position = 0
-                        self.moves = []
+                self.move_piece(position)
+            return
+
+    def __handle_sidebar_click(self):
+        """Obsługuje wybór figury zbitej; gdy jej nie kliknięto, przełącza kartę."""
+        color, index = input_processor.get_clicked_captured_piece_index()
+        if color is not None and index is not None:
+            self.__select_captured_piece(color, index)
+            return
+
+        color, index = input_processor.get_clicked_card_index()
+        if color != self.current_turn or self.double_move_step > 0:
+            return
+        card_deck = self.cards_processor.get_cards_for(color)
+        if index is None or not 0 <= index < len(card_deck):
+            return
+        clicked_card = (color, index)
+        self.selected_card = None if self.selected_card == clicked_card else clicked_card
+        self.double_move_step = 0
+        self.double_move_collected_board_card = False
+        self.selected_captured_piece = None
+        self.resurrection_moves = []
+        self.selected_piece_position = 0
+        self.moves = []
+
+    def __select_captured_piece(self, color, index):
+        """Przełącza wybór kwalifikującej się zbitej figury i aktualizuje pola wskrzeszenia."""
+        if (
+            not self.__selected_card_allows_captured_piece_selection()
+            or not self.__is_valid_captured_piece_list_for_selected_card(color)
+        ):
+            return
+        captured_pieces = (
+            self.capture_processor.get_captured_white()
+            if color == COLOR.WHITE
+            else self.capture_processor.get_captured_black()
+        )
+        if (
+            not 0 <= index < len(captured_pieces)
+            or not self.__is_valid_captured_piece_for_selected_card(captured_pieces[index])
+        ):
+            return
+
+        piece = captured_pieces[index]
+        debug_log(
+            "Clicked captured piece: type={}, color={}, list_position={}".format(
+                piece.get_type().value, piece.get_color().value, index
+            )
+        )
+        clicked_piece = (color, index)
+        self.selected_captured_piece = (
+            None if self.selected_captured_piece == clicked_piece else clicked_piece
+        )
+        self.resurrection_moves = (
+            self.__get_resurrection_moves()
+            if self.selected_captured_piece is not None
+            and self.__selected_card_is_resurrection()
+            else []
+        )
 
     def __is_valid_captured_piece_for_selected_card(self, piece):
         """Sprawdza, czy zbita figura spełnia ograniczenia wybranej karty."""
@@ -716,112 +751,149 @@ class GameLogicLoop(object):
         )
 
     def move_piece(self, destination, beats=False):
-        """Przenosi wybraną figurę, rozlicza kartę, efekty, zbiórkę karty i koniec tury."""
-        if self.selected_piece_position > 0:
-            collected_board_card = self.board_card_available and destination == self.board_card_position
-            moving_color = self.current_turn
-            double_move = self.__selected_card_is_piece_double_move()
-            first_double_move = double_move and self.double_move_step == 0
-            if self.double_move_step == 0:
-                self.__advance_stun_effects(moving_color)
-            used_card = None
-            if self.selected_card is not None and self.selected_card[0] == moving_color:
-                card_color, card_index = self.selected_card
-                card_deck = self.cards_processor.get_cards_for(card_color)
-                if card_index < len(card_deck):
-                    used_card = card_deck[card_index]
+        """Przenosi wybraną figurę i koordynuje rozliczenie skutków ruchu."""
+        if self.selected_piece_position <= 0:
+            return
 
-            source_position = self.selected_piece_position
-            piece: Piece = self.pieces_locations[source_position]
-            tower_throw = (
-                used_card is not None
-                and used_card.get_card_type() == EnchantmentCardType.ROOK_TOWER_THROW
+        source_position = self.selected_piece_position
+        moving_color = self.current_turn
+        first_double_move = (
+            self.__selected_card_is_piece_double_move() and self.double_move_step == 0
+        )
+        if self.double_move_step == 0:
+            self.__advance_stun_effects(moving_color)
+
+        _, card_index, card_deck, used_card = self.__get_used_card(moving_color)
+        piece: Piece = self.pieces_locations[source_position]
+        if (
+            used_card is not None
+            and used_card.get_card_type() == EnchantmentCardType.ROOK_TOWER_THROW
+        ):
+            self.__capture_rook_throw_route(source_position, destination)
+
+        self.pieces_locations[source_position] = Piece()
+        self.pieces_locations[destination] = piece
+        collected_board_card = self.__collect_board_card(destination, moving_color)
+
+        if not first_double_move and used_card is not None and used_card.consume_use() == 0:
+            card_deck.pop(card_index)
+        self.__apply_move_stun(piece, used_card)
+
+        collected_board_card = collected_board_card or self.double_move_collected_board_card
+        if first_double_move and self.__continue_double_move(
+            piece, destination, used_card, card_deck, card_index, collected_board_card
+        ):
+            return
+
+        self.__finish_piece_move(
+            piece, source_position, destination, beats, collected_board_card)
+
+    def __get_used_card(self, moving_color):
+        """Zwraca kartę bieżącego ruchu wraz z jej talią i indeksem, jeśli jest wybrana."""
+        if self.selected_card is None or self.selected_card[0] != moving_color:
+            return None, None, None, None
+        card_color, card_index = self.selected_card
+        card_deck = self.cards_processor.get_cards_for(card_color)
+        if not 0 <= card_index < len(card_deck):
+            return card_color, card_index, card_deck, None
+        return card_color, card_index, card_deck, card_deck[card_index]
+
+    def __capture_rook_throw_route(self, source_position, destination):
+        """Zbija wszystkie figury na trasie specjalnego ruchu wieży."""
+        source_x, source_y = id_to_xy(source_position)
+        destination_x, destination_y = id_to_xy(destination)
+        step_x = (destination_x > source_x) - (destination_x < source_x)
+        step_y = (destination_y > source_y) - (destination_y < source_y)
+        target_x, target_y = source_x + step_x, source_y + step_y
+        while (target_x, target_y) != (destination_x, destination_y):
+            target_position = xy_to_id(target_x, target_y)
+            target_piece = self.pieces_locations[target_position]
+            if target_piece.exists():
+                self.capture_processor.capture_piece(target_piece)
+                self.pieces_locations[target_position] = Piece()
+            target_x += step_x
+            target_y += step_y
+
+        target_piece = self.pieces_locations[destination]
+        if target_piece.exists():
+            self.capture_processor.capture_piece(target_piece)
+
+    def __collect_board_card(self, destination, moving_color):
+        """Dodaje kartę zebraną na polu docelowym i zwraca, czy została zebrana."""
+        collected = self.board_card_available and destination == self.board_card_position
+        if collected:
+            self.cards_processor.add_card_for(moving_color, self.board_enchantment)
+            self.board_card_available = False
+        return collected
+
+    def __apply_move_stun(self, piece, used_card):
+        """Nakłada ogłuszenie po ruchu z karty lub po aktywnych efektach pasywnych."""
+        passive_enchantments = piece.get_passive_enchantments()
+        stun_turns = (
+            used_card.get_rate_stun_after_use()
+            if used_card is not None
+            else sum(
+                enchantment.get_rate_stun_after_use()
+                for enchantment in passive_enchantments
             )
-            if tower_throw:
-                source_x, source_y = id_to_xy(source_position)
-                destination_x, destination_y = id_to_xy(destination)
-                step_x = (destination_x > source_x) - (destination_x < source_x)
-                step_y = (destination_y > source_y) - (destination_y < source_y)
-                target_x, target_y = source_x + step_x, source_y + step_y
-                while (target_x, target_y) != (destination_x, destination_y):
-                    target_position = xy_to_id(target_x, target_y)
-                    target_piece = self.pieces_locations[target_position]
-                    if target_piece.exists():
-                        self.capture_processor.capture_piece(target_piece)
-                        self.pieces_locations[target_position] = Piece()
-                    target_x += step_x
-                    target_y += step_y
+        )
+        if stun_turns <= 0:
+            return
 
-                target_piece = self.pieces_locations[destination]
-                if target_piece.exists():
-                    self.capture_processor.capture_piece(target_piece)
-            self.pieces_locations[source_position] = Piece()
-            self.pieces_locations[destination] = piece
+        piece.set_stunned_for_turns(stun_turns)
+        stun_enchantments = (
+            [used_card]
+            if used_card is not None and used_card.get_rate_stun_after_use() > 0
+            else passive_enchantments
+        )
+        for enchantment in stun_enchantments:
+            if enchantment.get_rate_stun_after_use() > 0:
+                piece.add_stun_effect(enchantment, stun_turns)
 
-            if collected_board_card:
-                self.cards_processor.add_card_for(moving_color, self.board_enchantment)
-                self.board_card_available = False
+    def __continue_double_move(
+        self, piece, destination, used_card, card_deck, card_index, collected_board_card,
+    ):
+        """Pozwala wykonać drugi ruch kartą podwójnego ruchu, jeśli są legalne pola."""
+        self.double_move_step = 1
+        self.double_move_collected_board_card = collected_board_card
+        self.selected_piece_position = destination
+        self.moves = process_possible_basic_moves(
+            piece, id_to_xy(destination), self.pieces_locations)
+        if self.moves:
+            return True
+        if used_card is not None and used_card.consume_use() == 0:
+            card_deck.pop(card_index)
+        return False
 
-            collected_board_card = collected_board_card or self.double_move_collected_board_card
-            if not first_double_move and used_card is not None and used_card.consume_use() == 0:
-                card_deck.pop(card_index)
-
-            stun_turns = (
-                used_card.get_rate_stun_after_use()
-                if used_card is not None
-                else sum(
-                    enchantment.get_rate_stun_after_use()
-                    for enchantment in piece.get_passive_enchantments()
-                )
-            )
-            if stun_turns > 0:
-                piece.set_stunned_for_turns(stun_turns)
-                stun_enchantments = (
-                    [used_card]
-                    if used_card is not None and used_card.get_rate_stun_after_use() > 0
-                    else piece.get_passive_enchantments()
-                )
-                for enchantment in stun_enchantments:
-                    if enchantment.get_rate_stun_after_use() > 0:
-                        piece.add_stun_effect(enchantment, stun_turns)
-
-            if first_double_move:
-                self.double_move_step = 1
-                self.double_move_collected_board_card = collected_board_card
-                self.selected_piece_position = destination
-                self.moves = process_possible_basic_moves(
-                    piece, id_to_xy(destination), self.pieces_locations)
-                if self.moves:
-                    return
-                if used_card is not None and used_card.consume_use() == 0:
-                    card_deck.pop(card_index)
-
-            self.__end_turn()
-
-            if collected_board_card:
-                self.__schedule_next_board_card()
-            elif self.pending_board_card_delay is not None:
-                previous_delay = self.pending_board_card_delay
-                self.pending_board_card_delay -= 1
-                debug_log(
-                    "Board card placement: countdown decreased from {} to {} turn(s)".format(
-                        previous_delay, self.pending_board_card_delay)
-                )
-                if self.pending_board_card_delay == 0:
-                    self.__place_next_board_card()
-
-            beats_or_moves = "moves"
-            if beats:
-                beats_or_moves = "beats"
+    def __finish_piece_move(
+        self, piece, source_position, destination, beats, collected_board_card,
+    ):
+        """Zamyka turę, aktualizuje pojawienie się kart, loguje ruch i czyści wybór."""
+        self.__end_turn()
+        if collected_board_card:
+            self.__schedule_next_board_card()
+        elif self.pending_board_card_delay is not None:
+            previous_delay = self.pending_board_card_delay
+            self.pending_board_card_delay -= 1
             debug_log(
-                "{} {} from {} to {}".format(piece.full_name(), beats_or_moves, POS(source_position).name,
-                                             POS(destination).name))
-            self.selected_piece_position = 0
-            self.moves = []
-            self.selected_card = None
-            self.selected_captured_piece = None
-            self.double_move_step = 0
-            self.double_move_collected_board_card = False
+                "Board card placement: countdown decreased from {} to {} turn(s)".format(
+                    previous_delay, self.pending_board_card_delay)
+            )
+            if self.pending_board_card_delay == 0:
+                self.__place_next_board_card()
+
+        beats_or_moves = "beats" if beats else "moves"
+        debug_log(
+            "{} {} from {} to {}".format(
+                piece.full_name(), beats_or_moves, POS(source_position).name,
+                POS(destination).name)
+        )
+        self.selected_piece_position = 0
+        self.moves = []
+        self.selected_card = None
+        self.selected_captured_piece = None
+        self.double_move_step = 0
+        self.double_move_collected_board_card = False
 
     def __advance_stun_effects(self, color):
         """Zmniejsza liczniki ogłuszenia wszystkich istniejących figur wskazanego koloru."""

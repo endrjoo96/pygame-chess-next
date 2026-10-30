@@ -38,6 +38,55 @@ def _resolve_rarity(rarity):
     return float(rarity)
 
 
+def _sample_card_candidates(card_types):
+    """Tworzy kandydatów losowania, próbkując liczbę użyć kart wielokrotnych."""
+    return [
+        (
+            card_type,
+            random.randint(*card_type.remaining_uses_range)
+            if card_type.remaining_uses_range is not None
+            else None,
+        )
+        for card_type in card_types
+    ]
+
+
+def _calculate_effective_weights(card_types_with_uses):
+    """Wylicza wagi rzadkości i proporcjonalnie ogranicza je liczbą pozostałych użyć."""
+    return [
+        card_type.rarity
+        * (
+            uses / card_type.remaining_uses_range[1]
+            if uses is not None
+            else 1
+        )
+        for card_type, uses in card_types_with_uses
+    ]
+
+
+def _log_candidate_uses(card_types_with_uses):
+    """Zapisuje rzadkość i wylosowaną liczbę użyć każdej karty-kandydata."""
+    debug_log("Board card draw: sampled uses for candidate cards:")
+    for card_type, uses in card_types_with_uses:
+        debug_log(
+            "  {}: rarity={}, sampled uses={}".format(
+                card_type.name, card_type.rarity,
+                uses if uses is not None else "not reusable")
+        )
+
+
+def _log_effective_weights(card_types_with_uses, weights):
+    """Loguje kandydatów posortowanych malejąco po wadze, bez zmiany ich kolejności losowania."""
+    debug_log("Board card draw: effective candidate weights:")
+    sorted_candidates = sorted(
+        zip(card_types_with_uses, weights),
+        key=lambda candidate: candidate[1],
+        reverse=True,
+    )
+    for (card_type, _), weight in sorted_candidates:
+        debug_log("  {}: {}".format(card_type.name, weight))
+
+
 class EnchantmentCardType(Enum):
     PAWN_TWO_FIELDS_FORWARD = (
         [EnchantmentType.REUSABLE], 0.4, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
@@ -209,22 +258,9 @@ class EnchantmentCardType(Enum):
 
     @classmethod
     def _random_choice_with_uses(cls):
-        """Losuje typ karty i liczbę użyć, stosując wagi rzadkości poza trybem debug."""
-        card_types_with_uses = [
-            (
-                card_type,
-                random.randint(*card_type.remaining_uses_range)
-                if card_type.remaining_uses_range is not None
-                else None,
-            )
-            for card_type in cls
-        ]
-        debug_log("Board card draw: sampled uses for candidate cards:")
-        for card_type, uses in card_types_with_uses:
-            debug_log(
-                "  {}: rarity={}, sampled uses={}".format(
-                    card_type.name, card_type.rarity, uses if uses is not None else "not reusable")
-            )
+        """Losuje kartę i liczbę użyć, delegując obliczanie wag i logowanie."""
+        card_types_with_uses = _sample_card_candidates(cls)
+        _log_candidate_uses(card_types_with_uses)
 
         if RUN_MODE is RunMode.DEBUG:
             selected = random.choice(card_types_with_uses)
@@ -234,23 +270,8 @@ class EnchantmentCardType(Enum):
             )
             return selected
 
-        weights = [
-            card_type.rarity
-            * (
-                uses / card_type.remaining_uses_range[1]
-                if uses is not None
-                else 1
-            )
-            for card_type, uses in card_types_with_uses
-        ]
-        debug_log("Board card draw: effective candidate weights:")
-        sorted_candidates = sorted(
-            zip(card_types_with_uses, weights),
-            key=lambda candidate: candidate[1],
-            reverse=True,
-        )
-        for (card_type, uses), weight in sorted_candidates:
-            debug_log("  {}: {}".format(card_type.name, weight))
+        weights = _calculate_effective_weights(card_types_with_uses)
+        _log_effective_weights(card_types_with_uses, weights)
         if not any(weights):
             raise ValueError("At least one enchantment must have a non-zero rarity")
         selected = random.choices(card_types_with_uses, weights=weights, k=1)[0]
