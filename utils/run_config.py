@@ -1,3 +1,4 @@
+import math
 from enum import Enum
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def _load_properties():
 
 
 def _load_run_config():
-    """Waliduje wymagany tryb uruchomienia i zwraca tryb oraz ustawienie logowania."""
+    """Waliduje ustawienia uruchomienia i zwraca je w postaci typowanej."""
     properties, properties_path = _load_properties()
     if "mode" not in properties:
         raise ValueError("Missing 'mode' property in {}".format(properties_path))
@@ -41,7 +42,40 @@ def _load_run_config():
         ) from None
 
     log_debug_enabled = properties.get("log.debug.enabled", "false").lower() == "true"
-    return run_mode, log_debug_enabled
+    try:
+        ai_search_max_depth = int(properties.get("ai.search.max_depth", "4"))
+    except ValueError:
+        raise ValueError(
+            "Invalid 'ai.search.max_depth' in {}; expected a positive integer".format(
+                properties_path)
+        ) from None
+    try:
+        ai_search_time_limit_seconds = float(
+            properties.get("ai.search.time_limit_seconds", "2.0"))
+    except ValueError:
+        raise ValueError(
+            "Invalid 'ai.search.time_limit_seconds' in {}; expected a positive number".format(
+                properties_path)
+        ) from None
+
+    if ai_search_max_depth < 1:
+        raise ValueError("'ai.search.max_depth' must be at least one in {}".format(properties_path))
+    if not math.isfinite(ai_search_time_limit_seconds) or ai_search_time_limit_seconds <= 0:
+        raise ValueError(
+            "'ai.search.time_limit_seconds' must be a positive finite number in {}".format(
+                properties_path))
+
+    return (
+        run_mode,
+        log_debug_enabled,
+        ai_search_max_depth,
+        ai_search_time_limit_seconds,
+    )
 
 
-RUN_MODE, LOG_DEBUG_ENABLED = _load_run_config()
+(
+    RUN_MODE,
+    LOG_DEBUG_ENABLED,
+    AI_SEARCH_MAX_DEPTH,
+    AI_SEARCH_TIME_LIMIT_SECONDS,
+) = _load_run_config()

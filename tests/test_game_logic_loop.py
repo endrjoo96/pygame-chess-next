@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from constants.piece_color import COLOR
@@ -85,6 +86,8 @@ def make_game(card_type=None, uses=None):
     game.board_card_position = 36
     game.board_enchantment = None
     game.pending_board_card_delay = None
+    game._ai_executor = ThreadPoolExecutor(max_workers=1)
+    game._ai_future = None
     return game
 
 
@@ -267,6 +270,9 @@ def test_ai_turn_receives_hidden_hand_count_and_applies_legal_action():
             return SimpleNamespace(action=action)
 
     game.black_ai = StubAI()
+    game.play_ai_turn()
+    game._ai_future.result(timeout=1)
+    assert game.is_ai_thinking
     game.play_ai_turn()
 
     assert game.black_ai.observation.own_color == COLOR.BLACK

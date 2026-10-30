@@ -1,4 +1,7 @@
+import math
 import random
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Optional
 
 import pygame
 from pygame import Surface
@@ -32,6 +35,8 @@ class GameLogicLoop(object):
         # display surface
         self.screen = screen
         self.black_ai = black_ai
+        self._ai_executor = ThreadPoolExecutor(max_workers=1)
+        self._ai_future: Optional[Future] = None
         # create an object of class to show chess pieces on the board
         self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
         passive_icon = pygame.image.load(self.context.card_mod_passive_src).convert_alpha()
@@ -85,6 +90,9 @@ class GameLogicLoop(object):
         self.board_card_position = POS.D5.value
         self.board_enchantment = None
         self.pending_board_card_delay = None
+        if self._ai_future is not None:
+            self._ai_future.cancel()
+            self._ai_future = None
         self.capture_processor.reset()
         self.cards_processor.reset_decks()
 
@@ -122,16 +130,58 @@ class GameLogicLoop(object):
         return winner
 
     def play_ai_turn(self):
-        """Wykonuje jedną akcję bota czarnych na podstawie wyłącznie jego obserwacji."""
+        """Asynchronicznie wyszukuje ruch i zatwierdza go po zakończeniu obliczeń."""
         if self.black_ai is None or self.current_turn != COLOR.BLACK:
             return
 
-        state = GameState.from_game(self)
-        observation = GameObservation.from_state(state, COLOR.BLACK)
-        decision = self.black_ai.choose_action(observation)
+        if self._ai_future is None:
+            state = GameState.from_game(self)
+            observation = GameObservation.from_state(state, COLOR.BLACK)
+            self._ai_future = self._ai_executor.submit(
+                self.black_ai.choose_action, observation)
+            return
+        if not self._ai_future.done():
+            return
+
+        decision = self._ai_future.result()
+        self._ai_future = None
         if decision.action is None:
             return
         self.apply_ai_action(decision.action)
+
+    @property
+    def is_ai_thinking(self):
+        return (
+            self.black_ai is not None
+            and self.current_turn == COLOR.BLACK
+            and self._ai_future is not None
+        )
+
+    def draw_ai_thinking_overlay(self):
+        """Rysuje przyciemnioną nakładkę ze spinnerem podczas obliczeń bota."""
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 190))
+        self.screen.blit(overlay, (0, 0))
+
+        center_x = self.screen.get_width() // 2
+        center_y = self.screen.get_height() // 2
+        spinner_radius = 24
+        phase = pygame.time.get_ticks() / 100.0
+        for index in range(8):
+            angle = phase - index * math.tau / 8
+            position = (
+                round(center_x + math.cos(angle) * spinner_radius),
+                round(center_y - 28 + math.sin(angle) * spinner_radius),
+            )
+            shade = 255 - index * 22
+            pygame.draw.circle(self.screen, (shade, shade, shade), position, 4)
+
+        font = SysFont(self.context.comic_sans_font, 25)
+        message = font.render("Czarny wykonuje ruch...", True, (255, 255, 255))
+        self.screen.blit(
+            message,
+            (center_x - message.get_width() // 2, center_y + 18),
+        )
 
     def apply_ai_action(self, action):
         """Zatwierdza kompletną akcję AI przez te same reguły co symulacja."""

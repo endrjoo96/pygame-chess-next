@@ -12,6 +12,7 @@ from logic.game_simulation import GameSimulation
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
+from utils.run_config import AI_SEARCH_MAX_DEPTH, AI_SEARCH_TIME_LIMIT_SECONDS
 
 
 PIECE_VALUES = {
@@ -50,8 +51,8 @@ CARD_MOVEMENT_TYPES = GameSimulation.MOVEMENT_CARDS
 class SearchConfig:
     """Limity obliczeń i próbkowania ukrytej ręki dla jednego wyboru ruchu."""
 
-    time_limit_seconds: float = 2.0
-    max_depth: int = 4
+    time_limit_seconds: float = AI_SEARCH_TIME_LIMIT_SECONDS
+    max_depth: int = AI_SEARCH_MAX_DEPTH
     hidden_hand_samples: int = 4
 
     def __post_init__(self):

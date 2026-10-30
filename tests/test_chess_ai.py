@@ -10,6 +10,7 @@ from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
+from utils.run_config import AI_SEARCH_MAX_DEPTH, AI_SEARCH_TIME_LIMIT_SECONDS
 
 
 def make_black_to_move_state():
@@ -66,8 +67,9 @@ def test_ai_only_accepts_black_to_move_observations():
         ai.choose_action(observation)
 
 
-def test_default_search_budget_is_two_seconds():
-    assert SearchConfig().time_limit_seconds == 2.0
+def test_default_search_limits_match_run_properties():
+    assert SearchConfig().time_limit_seconds == AI_SEARCH_TIME_LIMIT_SECONDS
+    assert SearchConfig().max_depth == AI_SEARCH_MAX_DEPTH
 
 
 def test_evaluation_prefers_a_piece_not_under_immediate_attack():

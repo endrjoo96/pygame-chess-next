@@ -201,6 +201,8 @@ class Game:
         winner = self.chess.play_turn()
         # draw pieces on the chess board
         self.chess.draw_pieces()
+        if self.chess.is_ai_thinking:
+            self.chess.draw_ai_thinking_overlay()
 
         if winner:
             self.winner = winner
