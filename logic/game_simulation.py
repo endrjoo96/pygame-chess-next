@@ -208,4 +208,9 @@ class GameSimulation:
             )
             raise ValueError("The action is not legal in the supplied game state")
 
+        return cls._apply_generated_action(state, action)
+
+    @classmethod
+    def _apply_generated_action(cls, state: GameState, action: GameAction) -> GameState:
+        """Stosuje akcję wygenerowaną dla niezmienionego stanu bez ponownej walidacji."""
         return GameRules.apply_action(state.clone(), action)

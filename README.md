@@ -30,6 +30,9 @@ animowany spinner oraz najlepszy dotychczas znaleziony ruch. Wyszukiwanie dział
 w osobnym wątku, a analizę możliwych ruchów rozdziela między procesy — do liczby
 dostępnych logicznych rdzeni. Bot porównuje średnie oceny ruchów dla próbek
 ukrytej ręki przeciwnika.
+Przy głębszym wyszukiwaniu stosuje redukcję późnych spokojnych ruchów (LMR);
+obiecujące warianty są ponownie sprawdzane z pełną głębokością, a bicia
+i akcje kart pozostają bez redukcji.
 Przy `log.level=DEBUG` logowane jest również podsumowanie wyszukiwania: liczba
 workerów, czas, ukończona głębokość, odwiedzone węzły, tempo węzłów na sekundę
 oraz wybrany ruch i jego ocena.

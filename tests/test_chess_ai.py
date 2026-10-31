@@ -324,6 +324,83 @@ def test_candidate_callback_reports_manager_leader_not_last_completed_worker():
     assert updates == [(actions[1], 2, 5.0)]
 
 
+def test_lmr_only_reduces_late_quiet_moves_without_cards_or_active_effects():
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    quiet_move = GameAction(GameActionType.MOVE, source=57, destination=49)
+
+    assert ChessAI._should_reduce_late_move(state, quiet_move, 3, 3)
+    assert not ChessAI._should_reduce_late_move(state, quiet_move, 2, 3)
+    assert not ChessAI._should_reduce_late_move(state, quiet_move, 3, 2)
+
+    card_move = GameAction(
+        GameActionType.MOVE, source=57, destination=49, card_index=0)
+    assert not ChessAI._should_reduce_late_move(state, card_move, 3, 3)
+
+    state.pieces_locations[49] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    assert not ChessAI._should_reduce_late_move(state, quiet_move, 3, 3)
+    state.pieces_locations[49] = Piece()
+
+    state.board_card_available = True
+    state.board_card_position = 49
+    state.board_enchantment = EnchantmentCardType.PIECE_TELEPORT.create()
+    assert not ChessAI._should_reduce_late_move(state, quiet_move, 3, 3)
+
+    state.board_card_available = False
+    state.board_enchantment = None
+    state.pieces_locations[57].set_enchantment(
+        EnchantmentCardType.ROOK_JUMP_ALLIES.create())
+    assert not ChessAI._should_reduce_late_move(state, quiet_move, 3, 3)
+
+
+def test_lmr_does_not_reduce_a_move_that_attacks_the_opposing_king():
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[64] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    action = GameAction(GameActionType.MOVE, source=57, destination=49)
+    child = GameSimulation._apply_generated_action(state, action)
+
+    assert ChessAI._should_reduce_late_move(state, action, 3, 3)
+    assert ChessAI._move_attacks_king(child, action, opposing_king_position=1)
+
+
+def test_lmr_does_not_prevent_an_immediate_king_capture(monkeypatch):
+    state = make_black_to_move_state()
+    state.pieces_locations[1] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[2] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", True)
+
+    decision = ChessAI(
+        SearchConfig(time_limit_seconds=2, max_depth=4),
+        max_workers=1,
+    ).choose_action(observation)
+
+    assert decision.action is not None
+    assert decision.action.destination == 2
+    assert decision.action in GameSimulation.available_actions(state)
+
+
+def test_lmr_preserves_sparse_search_choice_and_score(monkeypatch):
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[9] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    state.pieces_locations[64] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.pieces_locations[8] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    config = SearchConfig(time_limit_seconds=10, max_depth=4)
+
+    monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
+    baseline = ChessAI(config, max_workers=1).choose_action(observation)
+    monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", True)
+    reduced = ChessAI(config, max_workers=1).choose_action(observation)
+
+    assert baseline.completed_depth == reduced.completed_depth == 4
+    assert baseline.action == reduced.action
+    assert baseline.score == pytest.approx(reduced.score)
+
+
 def test_evaluation_prefers_a_piece_not_under_immediate_attack():
     exposed = make_black_to_move_state()
     exposed.current_turn = COLOR.WHITE

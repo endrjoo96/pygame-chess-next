@@ -58,6 +58,7 @@ CARD_VALUES = {
     EnchantmentCardType.PIECE_DOUBLE_MOVE: 2.0,
 }
 CARD_MOVEMENT_TYPES = GameSimulation.MOVEMENT_CARDS
+_LMR_ENABLED = True
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ def _evaluate_root_action(state, action, depth, config, deadline):
     worker._nodes = 0
     try:
         worker._check_deadline()
-        child = GameSimulation.apply(state, action)
+        child = GameSimulation._apply_generated_action(state, action)
         score = worker._search(child, depth - 1, -math.inf, math.inf)
     except _SearchTimeout:
         return None, worker._nodes
@@ -148,7 +149,8 @@ class ChessAI:
         self._nodes = 0
         ordered_actions = self._order_actions(state, root_actions)
         best_action = ordered_actions[0]
-        best_score = self.evaluate(GameSimulation.apply(state, best_action))
+        best_score = self.evaluate(
+            GameSimulation._apply_generated_action(state, best_action))
         action_order = {
             action: index for index, action in enumerate(ordered_actions)
         }
@@ -415,25 +417,120 @@ class ChessAI:
         if not actions:
             return self.evaluate(state)
         actions = self._order_actions(state, actions)
+        opposing_king_position = None
+        king_threatened = False
+        if _LMR_ENABLED and depth >= 3 and len(actions) > 3:
+            opposing_color = (
+                COLOR.WHITE if state.current_turn == COLOR.BLACK else COLOR.BLACK
+            )
+            opposing_king_position = self._king_position(state, opposing_color)
+            current_king_position = self._king_position(state, state.current_turn)
+            if current_king_position is not None:
+                attack_map = ChessAI._attack_map(state)
+                king_threatened = bool(
+                    attack_map[opposing_color].get(current_king_position)
+                )
 
         if state.current_turn == COLOR.BLACK:
             value = -math.inf
-            for action in actions:
-                child = GameSimulation.apply(state, action)
-                value = max(value, self._search(child, depth - 1, alpha, beta))
+            for action_index, action in enumerate(actions):
+                child = GameSimulation._apply_generated_action(state, action)
+                if (
+                    _LMR_ENABLED
+                    and not king_threatened
+                    and self._should_reduce_late_move(
+                        state, action, depth, action_index)
+                    and not self._move_attacks_king(
+                        child, action, opposing_king_position)
+                ):
+                    action_value = self._search(
+                        child, depth - 2, alpha, beta)
+                    if action_value > alpha:
+                        action_value = self._search(
+                            child, depth - 1, alpha, beta)
+                else:
+                    action_value = self._search(
+                        child, depth - 1, alpha, beta)
+                value = max(value, action_value)
                 alpha = max(alpha, value)
                 if alpha >= beta:
                     break
             return value
 
         value = math.inf
-        for action in actions:
-            child = GameSimulation.apply(state, action)
-            value = min(value, self._search(child, depth - 1, alpha, beta))
+        for action_index, action in enumerate(actions):
+            child = GameSimulation._apply_generated_action(state, action)
+            if (
+                _LMR_ENABLED
+                and not king_threatened
+                and self._should_reduce_late_move(
+                    state, action, depth, action_index)
+                and not self._move_attacks_king(
+                    child, action, opposing_king_position)
+            ):
+                action_value = self._search(
+                    child, depth - 2, alpha, beta)
+                if action_value < beta:
+                    action_value = self._search(
+                        child, depth - 1, alpha, beta)
+            else:
+                action_value = self._search(
+                    child, depth - 1, alpha, beta)
+            value = min(value, action_value)
             beta = min(beta, value)
             if alpha >= beta:
                 break
         return value
+
+    @staticmethod
+    def _king_position(state, color):
+        return next(
+            (
+                position
+                for position, piece in state.pieces_locations.items()
+                if piece.exists()
+                and piece.get_color() == color
+                and piece.get_type() == PIECE_TYPE.KING
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _move_attacks_king(state, action, opposing_king_position):
+        if opposing_king_position is None:
+            return False
+        piece = state.pieces_locations[action.destination]
+        return any(
+            xy_to_id(*destination) == opposing_king_position
+            for destination in GameSimulation.destinations_for(
+                piece, action.destination, state.pieces_locations)
+        )
+
+    @staticmethod
+    def _should_reduce_late_move(state, action, depth, action_index):
+        if depth < 3 or action_index < 3:
+            return False
+        if action.action_type != GameActionType.MOVE or action.card_index != -1:
+            return False
+
+        piece = state.pieces_locations.get(action.source)
+        target = state.pieces_locations.get(action.destination)
+        if (
+            piece is None
+            or piece.get_type() == PIECE_TYPE.KING
+            or not piece.can_receive_enchantment()
+            or target is None
+            or target.exists()
+            or piece.get_effects(state.turns_started.get(piece.get_color(), 0))
+        ):
+            return False
+
+        board_cards = state.board_cards or (
+            [(state.board_card_position, state.board_enchantment)]
+            if state.board_card_available and state.board_enchantment is not None
+            else []
+        )
+        return not any(position == action.destination for position, _ in board_cards)
 
     @staticmethod
     def evaluate(state: GameState) -> float:

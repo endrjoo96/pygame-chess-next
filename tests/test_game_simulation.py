@@ -88,6 +88,53 @@ def test_game_state_clone_isolates_piece_effects_and_preserves_card_aliases(
     assert len(piece.get_effects(0)) == 3
 
 
+def test_generated_action_fast_path_matches_validated_apply(empty_state):
+    empty_state.pieces_locations[1] = Piece(
+        COLOR.WHITE, PIECE_TYPE.ROOK, starting_position=1)
+    empty_state.pieces_locations[9] = Piece(
+        COLOR.BLACK, PIECE_TYPE.PAWN, starting_position=9)
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == 1 and action.destination == 9
+    )
+
+    validated = GameSimulation.apply(empty_state, action)
+    generated = GameSimulation._apply_generated_action(empty_state, action)
+
+    assert validated.current_turn == generated.current_turn
+    assert validated.turns_started == generated.turns_started
+    assert validated.random_state == generated.random_state
+    assert validated.get_captured_for(COLOR.WHITE)[0].get_type() == (
+        generated.get_captured_for(COLOR.WHITE)[0].get_type()
+    )
+    assert {
+        position: (piece.get_color(), piece.get_type())
+        for position, piece in validated.pieces_locations.items()
+    } == {
+        position: (piece.get_color(), piece.get_type())
+        for position, piece in generated.pieces_locations.items()
+    }
+    assert empty_state.pieces_locations[1].get_type() == PIECE_TYPE.ROOK
+    assert empty_state.pieces_locations[9].get_type() == PIECE_TYPE.PAWN
+
+
+def test_generated_action_fast_path_does_not_regenerate_legal_actions(
+    empty_state, monkeypatch
+):
+    empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    action = GameSimulation.available_actions(empty_state)[0]
+
+    def unexpected_validation(cls, state):
+        pytest.fail("The generated-action fast path must not validate again")
+
+    monkeypatch.setattr(
+        GameSimulation, "available_actions", classmethod(unexpected_validation))
+
+    result = GameSimulation._apply_generated_action(empty_state, action)
+
+    assert result.pieces_locations[action.destination].get_color() == COLOR.WHITE
+
+
 def test_card_movement_action_consumes_card_and_preserves_input_state(empty_state):
     pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
     empty_state.pieces_locations[9] = pawn
