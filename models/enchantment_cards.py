@@ -11,7 +11,7 @@ from models.enchantments import (
     _resolve_delay_before_use,
     _resolve_remaining_uses,
 )
-from utils.logging import debug_log
+from utils.logging import log_debug
 from utils.run_config import GAME_SEED, RUN_MODE, RunMode
 
 
@@ -75,9 +75,9 @@ def _calculate_effective_weights(card_types_with_uses):
 
 def _log_candidate_uses(card_types_with_uses):
     """Zapisuje rzadkość i wylosowaną liczbę użyć każdej karty-kandydata."""
-    debug_log("Board card draw: sampled uses for candidate cards:")
+    log_debug("Board card draw: sampled uses for candidate cards:")
     for card_type, uses in card_types_with_uses:
-        debug_log(
+        log_debug(
             "  {}: rarity={}, sampled uses={}".format(
                 card_type.name, card_type.rarity,
                 uses if uses is not None else "not reusable")
@@ -86,14 +86,14 @@ def _log_candidate_uses(card_types_with_uses):
 
 def _log_effective_weights(card_types_with_uses, weights):
     """Loguje kandydatów posortowanych malejąco po wadze, bez zmiany ich kolejności losowania."""
-    debug_log("Board card draw: effective candidate weights:")
+    log_debug("Board card draw: effective candidate weights:")
     sorted_candidates = sorted(
         zip(card_types_with_uses, weights),
         key=lambda candidate: candidate[1],
         reverse=True,
     )
     for (card_type, _), weight in sorted_candidates:
-        debug_log("  {}: {}".format(card_type.name, weight))
+        log_debug("  {}: {}".format(card_type.name, weight))
 
 
 class EnchantmentCardType(Enum):
@@ -274,7 +274,7 @@ class EnchantmentCardType(Enum):
 
         if RUN_MODE is RunMode.DEBUG:
             selected = rng.choice(card_types_with_uses)
-            debug_log(
+            log_debug(
                 "Board card draw: DEBUG mode selected {} uniformly (rarity weights ignored)".format(
                     selected[0].name)
             )
@@ -285,7 +285,7 @@ class EnchantmentCardType(Enum):
         if not any(weights):
             raise ValueError("At least one enchantment must have a non-zero rarity")
         selected = rng.choices(card_types_with_uses, weights=weights, k=1)[0]
-        debug_log(
+        log_debug(
             "Board card draw: selected {} with {} use(s)".format(
                 selected[0].name, selected[1] if selected[1] is not None else 1)
         )
@@ -352,7 +352,7 @@ class EnchantmentCardType(Enum):
         rng = _resolve_rng(rng)
         card_type, uses = cls._random_choice_with_uses(rng)
         enchantment = card_type.create(uses=uses, rng=rng)
-        debug_log(
+        log_debug(
             "Board card draw: created '{}' with {} use(s)".format(
                 enchantment.get_title(), enchantment.get_remaining_uses())
         )

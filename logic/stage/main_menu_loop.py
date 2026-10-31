@@ -18,7 +18,7 @@ class Game:
         context = GameContext()
         # flag to know if game menu has been showed
         self.menu_showed = False
-        self.play_against_ai = False
+        self.play_against_ai = True
         self.chess = None
         # flag to set game loop
         self.running = True

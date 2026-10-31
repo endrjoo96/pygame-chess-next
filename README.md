@@ -38,7 +38,7 @@ Ustawienia znajdują się w `run.properties`:
 | Klucz | Znaczenie |
 |---|---|
 | `mode` | `PROD` losuje karty planszowe według rzadkości; `DEBUG` wybiera je równomiernie i umieszcza natychmiast. |
-| `log.debug.enabled` | Włącza (`true`) lub wyłącza (`false`) logi diagnostyczne. |
+| `log.level` | Poziom logów: `ERROR`, `WARN`, `INFO`, `LOGIC`, `DEBUG` lub `OFF`; domyślnie `WARN`. |
 | `game.seed` | Opcjonalny seed losowości. Jeśli klucza brakuje, nowy seed 64-bitowy jest losowany przy rozpoczęciu partii. |
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
 | `ai.search.time_limit_seconds` | Łączny budżet czasu AI na wybranie ruchu, w sekundach. |
@@ -49,6 +49,27 @@ ograniczona liczbą zadań wyszukiwania. Na przykład `99` przy 8 logicznych CPU
 uruchomi maksymalnie 7 workerów, a `100` — maksymalnie 8. To ogranicza liczbę
 procesów obliczeniowych, ale nie gwarantuje dokładnego procentu użycia mierzonego
 przez system operacyjny.
+
+### Poziomy logów
+
+Logi trafiają na standardowe wyjście z lokalnym znacznikiem czasu i nazwą poziomu.
+Prefix jest kolorowany tylko w terminalu: `ERROR` na czerwono, `WARN` na żółto,
+`INFO` na cyjanowo, `LOGIC` na zielono, a `DEBUG` na szaro. Kolor obejmuje
+wyłącznie prefix; jest wyłączany przy przekierowaniu wyjścia oraz po ustawieniu
+zmiennej środowiskowej `NO_COLOR`.
+Ustawienie `log.level` wskazuje najniższy poziom, który ma być wyświetlany:
+każdy poziom zawiera również komunikaty poziomów bardziej ogólnych. `LOGIC`
+pokazuje więc też `INFO`, `WARN` i `ERROR`, natomiast nie pokazuje `DEBUG`.
+`OFF` całkowicie wyłącza logowanie.
+
+| Poziom | Przeznaczenie | Przykładowe komunikaty |
+|---|---|---|
+| `ERROR` | Operacja nie powiodła się i wymaga uwagi. | Błąd wyszukiwania AI lub odrzucona nielegalna akcja symulacji. |
+| `WARN` | Wystąpiła nietypowa sytuacja, ale aplikacja kontynuuje działanie. | Timeout wyszukiwania i użycie najlepszego znanego ruchu. |
+| `INFO` | Najważniejsze zdarzenia cyklu życia i końcowe wyniki. | Rozpoczęcie partii lub myślenia AI, wybrany ruch i zwycięzca. |
+| `LOGIC` | Przebieg decyzji bota i reguł gry. | Ruchy, bicie, użycie kart i ukończone poziomy wyszukiwania. |
+| `DEBUG` | Szczegółowe dane diagnostyczne. | Wyniki poszczególnych kandydatów, statystyki symulacji i losowanie kart. |
+| `OFF` | Wyłącza wszystkie logi. | — |
 
 Seed może być dowolną liczbą całkowitą, również ujemną lub bardzo dużą.
 Ustawienie stałej wartości, np. `game.seed=12345`, pozwala odtwarzać te same

@@ -25,8 +25,8 @@ from processors.capturing_piece_processor import CaptureProcessor
 from processors.cards_processor import CardsProcessor
 from processors.movement_processor import process_possible_basic_moves
 from utils.gamecontext import GameContext
-from utils.logging import debug_log
-from utils.run_config import RUN_MODE, RunMode, resolve_game_seed
+from utils.logging import log_debug, log_error, log_info, log_logic, log_warn
+from utils.run_config import LOG_LEVEL, RUN_MODE, RunMode, resolve_game_seed
 
 
 class GameLogicLoop(object):
@@ -83,6 +83,14 @@ class GameLogicLoop(object):
 
     def reset(self):
         """Przywraca planszę, talie i liczniki do stanu początkowego nowej partii."""
+        log_info(
+            "Initializing game state: seed={}, mode={}, log_level={}, black_ai={}".format(
+                self.seed,
+                RUN_MODE.value,
+                LOG_LEVEL.name,
+                self.black_ai is not None,
+            )
+        )
         self.rng.seed(self.seed)
         # clear moves lists
         self.current_turn = COLOR.WHITE
@@ -153,6 +161,8 @@ class GameLogicLoop(object):
             else:
                 self.process_player_turn()
             winner = self.capture_processor.get_winner()
+        if winner is not None:
+            log_info("Game winner: {}".format(winner.value))
 
         return winner
 
@@ -190,6 +200,7 @@ class GameLogicLoop(object):
                     if generation == self._ai_generation:
                         self._ai_best_move = (notation, depth, score)
 
+            log_info("Starting AI search for black")
             self._ai_future = self._ai_executor.submit(
                 self.black_ai.choose_action,
                 observation,
@@ -199,10 +210,25 @@ class GameLogicLoop(object):
         if not self._ai_future.done():
             return
 
-        decision = self._ai_future.result()
+        try:
+            decision = self._ai_future.result()
+        except Exception as error:
+            self._ai_future = None
+            log_error("AI search failed: {}".format(error))
+            raise
         self._ai_future = None
         if decision.action is None:
+            log_warn("AI search returned no legal action")
             return
+        log_info(
+            "AI selected {} (score={:+.2f}, depth={}, nodes={})".format(
+                self._format_ai_action_notation(
+                    GameState.from_game(self), decision.action),
+                decision.score,
+                decision.completed_depth,
+                decision.visited_nodes,
+            )
+        )
         self.apply_ai_action(decision.action)
 
     @property
@@ -332,6 +358,7 @@ class GameLogicLoop(object):
 
     def apply_ai_action(self, action):
         """Zatwierdza kompletną akcję AI przez te same reguły co symulacja."""
+        log_logic("Applying AI action {}".format(action))
         self.__apply_domain_action(action)
 
     def __apply_domain_action(self, action):
@@ -729,7 +756,7 @@ class GameLogicLoop(object):
             return
 
         piece = captured_pieces[index]
-        debug_log(
+        log_debug(
             "Clicked captured piece: type={}, color={}, list_position={}".format(
                 piece.get_type().value, piece.get_color().value, index
             )
@@ -1009,7 +1036,7 @@ class GameLogicLoop(object):
         action = GameAction(
             GameActionType.MOVE, source_position, destination, card_index)
         self.__apply_domain_action(action)
-        debug_log(
+        log_logic(
             "{} {} from {} to {}".format(
                 piece_name, "beats" if beats else "moves",
                 POS(source_position).name, POS(destination).name)
@@ -1121,7 +1148,7 @@ class GameLogicLoop(object):
         self.__advance_board_card_clock()
 
         beats_or_moves = "beats" if beats else "moves"
-        debug_log(
+        log_logic(
             "{} {} from {} to {}".format(
                 piece.full_name(), beats_or_moves, POS(source_position).name,
                 POS(destination).name)
@@ -1152,14 +1179,14 @@ class GameLogicLoop(object):
             if not self.pieces_locations[position].exists()
             and position not in occupied_card_positions
         ]
-        debug_log(
+        log_debug(
             "Board card placement: found {} empty square(s)".format(len(empty_positions))
         )
         if not empty_positions:
             return
         rng = self.rng
         card_position = rng.choice(empty_positions)
-        debug_log(
+        log_debug(
             "Board card placement: selected square {}".format(POS(card_position).name)
         )
         enchantment = EnchantmentCardType.create_random(rng)
@@ -1169,7 +1196,7 @@ class GameLogicLoop(object):
         self.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
         )
-        debug_log(
+        log_logic(
             "Board card placement: '{}' is now available on {}; next-card countdown starts at {} turn(s)".format(
                 enchantment.get_title(),
                 POS(card_position).name,
@@ -1184,7 +1211,7 @@ class GameLogicLoop(object):
         previous_delay = self.pending_board_card_delay
         if previous_delay > 0:
             self.pending_board_card_delay -= 1
-            debug_log(
+            log_debug(
                 "Board card placement: countdown decreased from {} to {} turn(s)".format(
                     previous_delay, self.pending_board_card_delay)
             )
@@ -1196,7 +1223,7 @@ class GameLogicLoop(object):
         self.pending_board_card_delay = (
             0 if RUN_MODE is RunMode.DEBUG else self.rng.randint(1, 5)
         )
-        debug_log(
+        log_logic(
             "Board card placement: scheduled; delay={} turn(s) (run mode={})".format(
                 self.pending_board_card_delay, RUN_MODE.value)
         )

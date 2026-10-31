@@ -13,6 +13,14 @@ from logic.game_simulation import GameSimulation
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
+from utils.logging import (
+    is_enabled,
+    log_debug,
+    log_error,
+    log_info,
+    log_logic,
+    log_warn,
+)
 from utils.run_config import (
     AI_SEARCH_CPU_PERCENT,
     AI_SEARCH_MAX_DEPTH,
@@ -123,7 +131,7 @@ class ChessAI:
             Callable[[GameAction, int, float], None]
         ] = None,
     ) -> SearchResult:
-        """Szuka ruchu w pełnym stanie i zwraca wynik ostatniej pełnej głębokości."""
+        """Szuka w pełnym stanie i zwraca najlepiej ocenionego dotąd kandydata."""
         if observation.own_color != COLOR.BLACK:
             raise ValueError("ChessAI is configured to play as black")
         if observation.current_turn != COLOR.BLACK:
@@ -132,13 +140,19 @@ class ChessAI:
         state = observation.to_state()
         root_actions = GameSimulation.available_actions(state)
         if not root_actions:
+            log_info("AI search found no legal actions")
             return SearchResult(None, self.evaluate(state), 0, 0)
 
-        self._deadline = time.monotonic() + self.config.time_limit_seconds
+        search_started = time.monotonic()
+        self._deadline = search_started + self.config.time_limit_seconds
         self._nodes = 0
         ordered_actions = self._order_actions(state, root_actions)
         best_action = ordered_actions[0]
         best_score = self.evaluate(GameSimulation.apply(state, best_action))
+        action_order = {
+            action: index for index, action in enumerate(ordered_actions)
+        }
+        best_known_scores = {best_action: (best_score, 0)}
         completed_depth = 0
         if progress_callback is not None:
             progress_callback(best_action, completed_depth)
@@ -146,30 +160,59 @@ class ChessAI:
             candidate_callback(best_action, completed_depth, best_score)
 
         worker_count = self._worker_count_for_tasks(len(ordered_actions))
+        log_info(
+            "AI search started: {} root actions, max_depth={}, time_limit={:.2f}s, "
+            "workers={}".format(
+                len(ordered_actions),
+                self.config.max_depth,
+                self.config.time_limit_seconds,
+                worker_count,
+            )
+        )
         executor = (
             ProcessPoolExecutor(max_workers=worker_count)
             if worker_count > 1
             else None
         )
+        interrupted = False
         try:
             for depth in range(1, self.config.max_depth + 1):
                 if time.monotonic() >= self._deadline:
+                    interrupted = True
                     break
+                log_logic("AI search started depth {}".format(depth))
                 depth_scores = []
                 if executor is None:
                     completed_scores = {}
                     for action_index, action in enumerate(ordered_actions):
-                        score, nodes = _evaluate_root_action(
-                            state, action, depth, self.config, self._deadline)
+                        try:
+                            score, nodes = _evaluate_root_action(
+                                state, action, depth, self.config, self._deadline)
+                        except Exception as error:
+                            log_error(
+                                "AI root task failed for {} at depth {}: {}".format(
+                                    action, depth, error)
+                            )
+                            raise
                         self._nodes += nodes
                         if score is None:
+                            interrupted = True
                             break
+                        if is_enabled("DEBUG"):
+                            log_debug(
+                                "AI root action at depth {}: {} => {:.2f} "
+                                "({} nodes)".format(depth, action, score, nodes)
+                            )
+                        previous_leader = self._candidate_leader_index(
+                            completed_scores)
                         completed_scores[action_index] = score
+                        best_known_scores[action] = (score, depth)
                         self._report_completed_candidate(
                             ordered_actions, completed_scores, depth,
-                            candidate_callback)
+                            candidate_callback, previous_leader)
                         depth_scores.append((score, action))
                     if len(depth_scores) != len(ordered_actions):
+                        interrupted = True
                         break
                 else:
                     futures = [
@@ -197,34 +240,82 @@ class ChessAI:
                         )
                         for future in sorted(done, key=future_indexes.get):
                             task_index = future_indexes[future]
-                            score, nodes = future.result()
+                            try:
+                                score, nodes = future.result()
+                            except Exception as error:
+                                log_error(
+                                    "AI worker failed for {} at depth {}: {}".format(
+                                        ordered_actions[task_index], depth, error)
+                                )
+                                raise
                             self._nodes += nodes
                             results[task_index] = score
                             if score is not None:
+                                if is_enabled("DEBUG"):
+                                    log_debug(
+                                        "AI root action at depth {}: {} => {:.2f} "
+                                        "({} nodes)".format(
+                                            depth,
+                                            ordered_actions[task_index],
+                                            score,
+                                            nodes,
+                                        )
+                                    )
+                                previous_leader = self._candidate_leader_index(
+                                    completed_scores)
                                 completed_scores[task_index] = score
+                                best_known_scores[ordered_actions[task_index]] = (
+                                    score, depth)
                                 self._report_completed_candidate(
                                     ordered_actions, completed_scores, depth,
-                                    candidate_callback)
+                                    candidate_callback, previous_leader)
 
                     if pending:
+                        interrupted = True
                         for future in pending:
                             future.cancel()
                         executor.shutdown(wait=True, cancel_futures=True)
                         executor = None
                         for task_index, future in enumerate(futures):
                             if results[task_index] is None and not future.cancelled():
-                                _, nodes = future.result()
+                                try:
+                                    score, nodes = future.result()
+                                except Exception as error:
+                                    log_error(
+                                        "AI worker failed for {} at depth {}: {}".format(
+                                            ordered_actions[task_index],
+                                            depth,
+                                            error,
+                                        )
+                                    )
+                                    raise
                                 self._nodes += nodes
+                                results[task_index] = score
+                                if score is not None:
+                                    previous_leader = self._candidate_leader_index(
+                                        completed_scores)
+                                    completed_scores[task_index] = score
+                                    best_known_scores[
+                                        ordered_actions[task_index]
+                                    ] = (score, depth)
+                                    self._report_completed_candidate(
+                                        ordered_actions, completed_scores, depth,
+                                        candidate_callback, previous_leader)
                         break
 
                     # Preserve action order for deterministic tie-breaking.
                     if any(score is None for score in results):
+                        interrupted = True
                         break
                     depth_scores = list(zip(results, ordered_actions))
 
                 best_score, best_action = max(
                     depth_scores, key=lambda item: item[0])
                 completed_depth = depth
+                log_logic(
+                    "AI search completed depth {}: best action={}, score={:+.2f}".format(
+                        depth, best_action, best_score)
+                )
                 if progress_callback is not None:
                     progress_callback(best_action, completed_depth)
                 if candidate_callback is not None:
@@ -238,22 +329,60 @@ class ChessAI:
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
 
+        best_action = max(
+            best_known_scores,
+            key=lambda action: (
+                best_known_scores[action][0],
+                -action_order[action],
+            ),
+        )
+        best_score, best_action_depth = best_known_scores[best_action]
+        if interrupted:
+            log_warn(
+                "AI search stopped before completing the next depth; using best "
+                "known action {} (score={:+.2f}, evaluated at depth {})".format(
+                    best_action, best_score, best_action_depth)
+            )
+        log_info(
+            "AI search finished: action={}, score={:+.2f}, completed_depth={}, "
+            "elapsed={:.3f}s, nodes={}".format(
+                best_action,
+                best_score,
+                completed_depth,
+                time.monotonic() - search_started,
+                self._nodes,
+            )
+        )
+        if candidate_callback is not None:
+            candidate_callback(best_action, best_action_depth, best_score)
         return SearchResult(best_action, best_score, completed_depth, self._nodes)
 
     def _worker_count_for_tasks(self, task_count):
         return min(self.max_workers, task_count)
 
     @staticmethod
-    def _report_completed_candidate(actions, completed_scores, depth, callback):
-        if callback is None:
-            return
+    def _candidate_leader_index(completed_scores):
         if not completed_scores:
-            return
-        best_index = max(
+            return None
+        return max(
             completed_scores,
             key=lambda index: (completed_scores[index], -index),
         )
-        callback(actions[best_index], depth, completed_scores[best_index])
+
+    @staticmethod
+    def _report_completed_candidate(
+        actions, completed_scores, depth, callback, previous_leader=None
+    ):
+        if not completed_scores:
+            return
+        best_index = ChessAI._candidate_leader_index(completed_scores)
+        if best_index != previous_leader:
+            log_logic(
+                "AI candidate leader at depth {}: {} => {:+.2f}".format(
+                    depth, actions[best_index], completed_scores[best_index])
+            )
+        if callback is not None:
+            callback(actions[best_index], depth, completed_scores[best_index])
 
     def _search(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
         self._check_deadline()

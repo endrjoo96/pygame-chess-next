@@ -1,3 +1,6 @@
 .vscode
+.idea/
+.goals/
+program.prof
 __pycache__
 *.pyc

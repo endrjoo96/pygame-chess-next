@@ -1,12 +1,21 @@
 import math
 import secrets
-from enum import Enum
+from enum import Enum, IntEnum
 from pathlib import Path
 
 
 class RunMode(Enum):
     DEBUG = "DEBUG"
     PROD = "PROD"
+
+
+class LogLevel(IntEnum):
+    ERROR = 50
+    WARN = 40
+    INFO = 30
+    LOGIC = 20
+    DEBUG = 10
+    OFF = 100
 
 
 def _load_properties():
@@ -42,7 +51,14 @@ def _load_run_config():
                 properties["mode"], properties_path)
         ) from None
 
-    log_debug_enabled = properties.get("log.debug.enabled", "false").lower() == "true"
+    log_level_value = properties.get("log.level", "WARN").upper()
+    try:
+        log_level = LogLevel[log_level_value]
+    except KeyError:
+        raise ValueError(
+            "Invalid 'log.level' {!r} in {}; expected ERROR, WARN, INFO, LOGIC, "
+            "DEBUG, or OFF".format(log_level_value, properties_path)
+        ) from None
     game_seed = None
     if "game.seed" in properties:
         try:
@@ -89,7 +105,7 @@ def _load_run_config():
 
     return (
         run_mode,
-        log_debug_enabled,
+        log_level,
         game_seed,
         ai_search_max_depth,
         ai_search_time_limit_seconds,
@@ -99,7 +115,7 @@ def _load_run_config():
 
 (
     RUN_MODE,
-    LOG_DEBUG_ENABLED,
+    LOG_LEVEL,
     GAME_SEED,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,

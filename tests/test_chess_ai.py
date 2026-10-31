@@ -74,6 +74,36 @@ def test_ai_returns_a_legal_fallback_when_search_budget_expires():
     assert decision.completed_depth == 0
 
 
+def test_ai_returns_best_known_move_after_an_incomplete_iteration(monkeypatch):
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    ai = ChessAI(SearchConfig(time_limit_seconds=2, max_depth=2), max_workers=1)
+    initial_actions = ai._order_actions(
+        state, GameSimulation.available_actions(state))
+    shallow_candidate = initial_actions[0]
+    deep_candidate = initial_actions[-1]
+
+    def evaluate_root_action(search_state, action, depth, config, deadline):
+        if depth == 1:
+            if action == shallow_candidate:
+                return 15.0, 1
+            if action == deep_candidate:
+                return 20.0, 1
+            return 0.0, 1
+        if action == deep_candidate:
+            return -10.0, 1
+        return None, 1
+
+    monkeypatch.setattr("logic.chess_ai._evaluate_root_action", evaluate_root_action)
+
+    decision = ai.choose_action(observation)
+
+    assert decision.action == shallow_candidate
+    assert decision.score == 15.0
+    assert decision.completed_depth == 1
+
+
 def test_ai_search_is_reproducible_for_the_same_observation():
     state = make_black_to_move_state()
     state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)

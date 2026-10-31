@@ -8,6 +8,7 @@ from models.game_state import GameState
 from models.starting_positions import pieces_starting_positions_map
 from logic.game_rules import GameAction, GameActionType, GameRules
 from processors.movement_processor import process_possible_basic_moves
+from utils.logging import log_error
 
 
 class GameSimulation:
@@ -201,6 +202,10 @@ class GameSimulation:
     def apply(cls, state: GameState, action: GameAction) -> GameState:
         """Zastosowuje legalną akcję na kopii stanu i pozostawia wejście nietknięte."""
         if action not in cls.available_actions(state):
+            log_error(
+                "Rejected illegal simulated action {} for {}".format(
+                    action, state.current_turn.value)
+            )
             raise ValueError("The action is not legal in the supplied game state")
 
         return GameRules.apply_action(state.clone(), action)

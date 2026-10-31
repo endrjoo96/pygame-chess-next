@@ -30,7 +30,7 @@ def test_effective_weight_log_is_descending_without_reordering_candidates(monkey
     ]
     weights = _calculate_effective_weights(candidates)
     messages = []
-    monkeypatch.setattr("models.enchantment_cards.debug_log", messages.append)
+    monkeypatch.setattr("models.enchantment_cards.log_debug", messages.append)
 
     _log_effective_weights(candidates, weights)
 
@@ -68,7 +68,7 @@ def test_prod_draw_uses_weights_in_original_candidate_order(monkeypatch):
             return fake_choices(candidates, weights, k)
 
     monkeypatch.setattr("models.enchantment_cards.RUN_MODE", RunMode.PROD)
-    monkeypatch.setattr("models.enchantment_cards.debug_log", lambda message: None)
+    monkeypatch.setattr("models.enchantment_cards.log_debug", lambda message: None)
 
     result = EnchantmentCardType._random_choice_with_uses(FakeRandom())
 
@@ -100,7 +100,7 @@ def test_debug_draw_uses_uniform_choice_without_weighted_sampler(monkeypatch):
             choices_calls.append((args, kwargs))
             return [selected_candidate]
 
-    monkeypatch.setattr("models.enchantment_cards.debug_log", lambda message: None)
+    monkeypatch.setattr("models.enchantment_cards.log_debug", lambda message: None)
 
     result = EnchantmentCardType._random_choice_with_uses(FakeRandom())
 

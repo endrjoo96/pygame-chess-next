@@ -274,7 +274,12 @@ def test_ai_turn_receives_both_hands_and_applies_legal_action():
             self.observation = observation
             if candidate_callback is not None:
                 candidate_callback(action, 1, 2.5)
-            return SimpleNamespace(action=action)
+            return SimpleNamespace(
+                action=action,
+                score=2.5,
+                completed_depth=1,
+                visited_nodes=1,
+            )
 
     game.black_ai = StubAI()
     game.play_ai_turn()
