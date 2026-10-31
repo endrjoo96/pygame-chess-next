@@ -166,6 +166,70 @@ def test_default_search_limits_match_run_properties():
     assert ChessAI().max_workers >= 1
 
 
+@pytest.mark.parametrize("debug_enabled", [True, False])
+def test_ai_logs_search_metrics_only_when_debug_is_enabled(
+    monkeypatch, debug_enabled
+):
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    messages = []
+    monkeypatch.setattr(
+        "logic.chess_ai.is_enabled",
+        lambda level: debug_enabled and level == "DEBUG",
+    )
+    monkeypatch.setattr("logic.chess_ai.log_debug", messages.append)
+
+    decision = ChessAI(
+        SearchConfig(time_limit_seconds=2, max_depth=1),
+        max_workers=1,
+    ).choose_action(observation)
+
+    metrics = [
+        message for message in messages
+        if message.startswith("AI search metrics:")
+    ]
+    assert decision.action is not None
+    assert len(metrics) == int(debug_enabled)
+    if debug_enabled:
+        assert "workers=1" in metrics[0]
+        assert "max_depth=1" in metrics[0]
+        assert "completed_depth=1" in metrics[0]
+        assert "elapsed=" in metrics[0]
+        assert "nodes=" in metrics[0]
+        assert "nodes_per_second=" in metrics[0]
+
+
+def test_evaluation_reuses_basic_destinations_for_threat_assessment(monkeypatch):
+    state = make_black_to_move_state()
+    state.pieces_locations[1] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.pieces_locations[9] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[64] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    calls = []
+    original_destinations_for = GameSimulation.destinations_for
+
+    def counted_destinations_for(piece, source, locations, enchantment=None):
+        calls.append((source, enchantment))
+        return original_destinations_for(
+            piece, source, locations, enchantment)
+
+    monkeypatch.setattr(
+        GameSimulation,
+        "destinations_for",
+        staticmethod(counted_destinations_for),
+    )
+
+    ChessAI.evaluate(state)
+
+    eligible_sources = [
+        position
+        for position, piece in state.pieces_locations.items()
+        if piece.exists() and piece.can_receive_enchantment()
+    ]
+    assert [source for source, enchantment in calls] == eligible_sources
+    assert all(enchantment is None for _, enchantment in calls)
+
+
 @pytest.mark.parametrize(
     ("cpu_percent", "expected_workers"),
     [(1, 1), (12, 1), (50, 4), (99, 7), (100, 8)],

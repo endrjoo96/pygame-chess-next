@@ -57,6 +57,37 @@ def test_available_actions_and_simulation_share_board_move_rules(empty_state):
     assert empty_state.captured_white == []
 
 
+def test_game_state_clone_isolates_piece_effects_and_preserves_card_aliases(
+    empty_state,
+):
+    card = EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.create(uses=2)
+    piece = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    piece.set_enchantment(card)
+    piece.add_delayed_enchantment(card, 2)
+    piece.set_stunned_for_turns(2)
+    piece.add_stun_effect(card, 2)
+    empty_state.pieces_locations[9] = piece
+    empty_state.white_cards.append(card)
+
+    cloned_state = empty_state.clone()
+    cloned_piece = cloned_state.pieces_locations[9]
+    cloned_card = cloned_state.white_cards[0]
+    cloned_effects = cloned_piece.get_effects(0)
+
+    assert cloned_effects[0][0] is cloned_card
+    assert cloned_effects[1][0] is cloned_card
+    assert cloned_effects[2][0] is cloned_card
+    assert cloned_state.random_state is empty_state.random_state
+    assert cloned_state.turns_started is not empty_state.turns_started
+
+    cloned_card.consume_use()
+    assert cloned_card.get_remaining_uses() == 1
+    assert card.get_remaining_uses() == 2
+    assert cloned_piece.get_delayed_enchantments_ready_at(2) == [cloned_card]
+    assert len(cloned_piece.get_effects(0)) == 2
+    assert len(piece.get_effects(0)) == 3
+
+
 def test_card_movement_action_consumes_card_and_preserves_input_state(empty_state):
     pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
     empty_state.pieces_locations[9] = pawn

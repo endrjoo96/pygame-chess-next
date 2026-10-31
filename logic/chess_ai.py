@@ -343,16 +343,33 @@ class ChessAI:
                 "known action {} (score={:+.2f}, evaluated at depth {})".format(
                     best_action, best_score, best_action_depth)
             )
+        elapsed = time.monotonic() - search_started
         log_info(
             "AI search finished: action={}, score={:+.2f}, completed_depth={}, "
             "elapsed={:.3f}s, nodes={}".format(
                 best_action,
                 best_score,
                 completed_depth,
-                time.monotonic() - search_started,
+                elapsed,
                 self._nodes,
             )
         )
+        if is_enabled("DEBUG"):
+            nodes_per_second = self._nodes / elapsed if elapsed > 0 else 0.0
+            log_debug(
+                "AI search metrics: workers={}, max_depth={}, completed_depth={}, "
+                "elapsed={:.3f}s, nodes={}, nodes_per_second={:.1f}, "
+                "action={}, score={:+.2f}".format(
+                    worker_count,
+                    self.config.max_depth,
+                    completed_depth,
+                    elapsed,
+                    self._nodes,
+                    nodes_per_second,
+                    best_action,
+                    best_score,
+                )
+            )
         if candidate_callback is not None:
             candidate_callback(best_action, best_action_depth, best_score)
         return SearchResult(best_action, best_score, completed_depth, self._nodes)
@@ -426,6 +443,7 @@ class ChessAI:
             return 100_000.0 if winner == COLOR.BLACK else -100_000.0
 
         score = 0.0
+        basic_destinations = {}
         for position, piece in state.pieces_locations.items():
             if not piece.exists():
                 continue
@@ -443,11 +461,13 @@ class ChessAI:
             score += sign * ChessAI._development_value(piece, position)
 
             if piece.can_receive_enchantment():
-                mobility = len(GameSimulation.destinations_for(
-                    piece, position, state.pieces_locations))
+                destinations = GameSimulation.destinations_for(
+                    piece, position, state.pieces_locations)
+                basic_destinations[position] = destinations
+                mobility = len(destinations)
                 score += sign * min(mobility, 12) * 0.025
 
-        score += ChessAI._threat_score(state)
+        score += ChessAI._threat_score(state, basic_destinations)
 
         for color in (COLOR.BLACK, COLOR.WHITE):
             sign = 1 if color == COLOR.BLACK else -1
@@ -486,10 +506,10 @@ class ChessAI:
         return 0.0
 
     @staticmethod
-    def _threat_score(state):
+    def _threat_score(state, basic_destinations=None):
         """Penalizes valuable pieces that the opponent can capture next."""
         score = 0.0
-        attack_map = ChessAI._attack_map(state)
+        attack_map = ChessAI._attack_map(state, basic_destinations)
         for target_position, target in state.pieces_locations.items():
             if not target.exists():
                 continue
@@ -511,14 +531,18 @@ class ChessAI:
         return score
 
     @staticmethod
-    def _attack_map(state):
+    def _attack_map(state, basic_destinations=None):
         attack_map = {COLOR.BLACK: {}, COLOR.WHITE: {}}
         for source, piece in state.pieces_locations.items():
             if not piece.exists() or not piece.can_receive_enchantment():
                 continue
             color = piece.get_color()
-            destinations = GameSimulation.destinations_for(
-                piece, source, state.pieces_locations)
+            destinations = (
+                basic_destinations[source]
+                if basic_destinations is not None
+                else GameSimulation.destinations_for(
+                    piece, source, state.pieces_locations)
+            )
             ChessAI._record_attacks(attack_map[color], source, destinations)
 
             for card in state.get_cards_for(color):

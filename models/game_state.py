@@ -78,7 +78,34 @@ class GameState:
 
     def clone(self) -> "GameState":
         """Kopiuje rekurencyjnie mutowalny stan figur, efektów i kart."""
-        return copy.deepcopy(self)
+        memo = {}
+        return GameState(
+            pieces_locations={
+                position: copy.deepcopy(piece, memo)
+                for position, piece in self.pieces_locations.items()
+            },
+            current_turn=self.current_turn,
+            turns_started=self.turns_started.copy(),
+            white_cards=copy.deepcopy(self.white_cards, memo),
+            black_cards=copy.deepcopy(self.black_cards, memo),
+            captured_white=copy.deepcopy(self.captured_white, memo),
+            captured_black=copy.deepcopy(self.captured_black, memo),
+            board_card_available=self.board_card_available,
+            board_card_position=self.board_card_position,
+            board_enchantment=copy.deepcopy(self.board_enchantment, memo),
+            pending_board_card_delay=self.pending_board_card_delay,
+            selected_card=self.selected_card,
+            selected_piece_position=self.selected_piece_position,
+            selected_captured_piece=self.selected_captured_piece,
+            double_move_step=self.double_move_step,
+            double_move_collected_board_card=self.double_move_collected_board_card,
+            resurrection_moves=self.resurrection_moves.copy(),
+            random_state=self.random_state,
+            board_cards=[
+                (position, copy.deepcopy(enchantment, memo))
+                for position, enchantment in self.board_cards
+            ],
+        )
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         """Zwraca talię wskazanego gracza."""

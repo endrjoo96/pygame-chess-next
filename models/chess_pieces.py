@@ -1,3 +1,4 @@
+import copy
 from typing import List, Optional, Tuple
 
 from constants.enchantment_type import EnchantmentType
@@ -32,6 +33,31 @@ class Piece:
         self.__delayed_enchantments: List[Tuple[Enchantment, int]] = []
         self.__stun_effects: List[Tuple[Enchantment, int]] = []
         self.__stunned_turns_remaining = 0
+
+    def __deepcopy__(self, memo):
+        copied = memo.get(id(self))
+        if copied is not None:
+            return copied
+
+        copied = type(self).__new__(type(self))
+        memo[id(self)] = copied
+        copied.__color = self.__color
+        copied.__type = self.__type
+        copied.__starting_position = self.__starting_position
+        copied.__enchantments = [
+            copy.deepcopy(enchantment, memo)
+            for enchantment in self.__enchantments
+        ]
+        copied.__delayed_enchantments = [
+            (copy.deepcopy(enchantment, memo), ready_turn)
+            for enchantment, ready_turn in self.__delayed_enchantments
+        ]
+        copied.__stun_effects = [
+            (copy.deepcopy(enchantment, memo), turns_remaining)
+            for enchantment, turns_remaining in self.__stun_effects
+        ]
+        copied.__stunned_turns_remaining = self.__stunned_turns_remaining
+        return copied
 
     def full_name(self) -> str:
         """Zwraca nazwę używaną do wyboru grafiki albo pusty tekst dla pustego pola."""
