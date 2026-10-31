@@ -1,6 +1,5 @@
 import math
 import os
-import random
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
@@ -18,7 +17,6 @@ from utils.run_config import (
     AI_SEARCH_CPU_PERCENT,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
-    GAME_SEED,
 )
 
 
@@ -56,19 +54,16 @@ CARD_MOVEMENT_TYPES = GameSimulation.MOVEMENT_CARDS
 
 @dataclass(frozen=True)
 class SearchConfig:
-    """Limity obliczeń i próbkowania ukrytej ręki dla jednego wyboru ruchu."""
+    """Limity obliczeń dla jednego wyboru ruchu."""
 
     time_limit_seconds: float = AI_SEARCH_TIME_LIMIT_SECONDS
     max_depth: int = AI_SEARCH_MAX_DEPTH
-    hidden_hand_samples: int = 4
 
     def __post_init__(self):
         if self.time_limit_seconds <= 0:
             raise ValueError("The search time limit must be positive")
         if self.max_depth < 1:
             raise ValueError("The search depth must be at least one")
-        if self.hidden_hand_samples < 1:
-            raise ValueError("At least one hidden-hand sample is required")
 
 
 @dataclass(frozen=True)
@@ -83,14 +78,14 @@ class _SearchTimeout(Exception):
     pass
 
 
-def _evaluate_root_action(sample, action, depth, config, deadline):
+def _evaluate_root_action(state, action, depth, config, deadline):
     """Ocenia jeden ruch startowy w izolowanym workerze."""
     worker = ChessAI(config, max_workers=1)
     worker._deadline = deadline
     worker._nodes = 0
     try:
         worker._check_deadline()
-        child = GameSimulation.apply(sample, action)
+        child = GameSimulation.apply(state, action)
         score = worker._search(child, depth - 1, -math.inf, math.inf)
     except _SearchTimeout:
         return None, worker._nodes
@@ -98,7 +93,7 @@ def _evaluate_root_action(sample, action, depth, config, deadline):
 
 
 class ChessAI:
-    """Wybiera akcje z perspektywy czarnych, nie otrzymując kart wroga."""
+    """Wybiera akcje z perspektywy czarnych, znając ręce obu graczy."""
 
     def __init__(
         self,
@@ -123,47 +118,34 @@ class ChessAI:
     def choose_action(
         self,
         observation: GameObservation,
-        rng: Optional[random.Random] = None,
         progress_callback: Optional[Callable[[GameAction, int], None]] = None,
         candidate_callback: Optional[
             Callable[[GameAction, int, float], None]
         ] = None,
     ) -> SearchResult:
-        """Szuka ruchu w próbkach ukrytych rąk i zwraca wynik ostatniej pełnej głębokości."""
+        """Szuka ruchu w pełnym stanie i zwraca wynik ostatniej pełnej głębokości."""
         if observation.own_color != COLOR.BLACK:
             raise ValueError("ChessAI is configured to play as black")
         if observation.current_turn != COLOR.BLACK:
             raise ValueError("It is not the AI player's turn")
 
-        if rng is None:
-            rng = random.Random(GAME_SEED if GAME_SEED is not None else 0)
-            rng.setstate(observation.random_state)
-        samples = [
-            observation.determinize(rng)
-            for _ in range(self.config.hidden_hand_samples)
-        ]
-        root_actions = GameSimulation.available_actions(samples[0])
+        state = observation.to_state()
+        root_actions = GameSimulation.available_actions(state)
         if not root_actions:
-            return SearchResult(None, self.evaluate(samples[0]), 0, 0)
-        if any(GameSimulation.available_actions(sample) != root_actions for sample in samples[1:]):
-            raise ValueError("The AI's legal actions differ across hidden-hand samples")
+            return SearchResult(None, self.evaluate(state), 0, 0)
 
         self._deadline = time.monotonic() + self.config.time_limit_seconds
         self._nodes = 0
-        ordered_actions = self._order_actions(samples[0], root_actions)
+        ordered_actions = self._order_actions(state, root_actions)
         best_action = ordered_actions[0]
-        best_score = sum(
-            self.evaluate(GameSimulation.apply(sample, best_action))
-            for sample in samples
-        ) / len(samples)
+        best_score = self.evaluate(GameSimulation.apply(state, best_action))
         completed_depth = 0
         if progress_callback is not None:
             progress_callback(best_action, completed_depth)
         if candidate_callback is not None:
             candidate_callback(best_action, completed_depth, best_score)
 
-        worker_count = self._worker_count_for_tasks(
-            len(ordered_actions) * len(samples))
+        worker_count = self._worker_count_for_tasks(len(ordered_actions))
         executor = (
             ProcessPoolExecutor(max_workers=worker_count)
             if worker_count > 1
@@ -177,48 +159,33 @@ class ChessAI:
                 if executor is None:
                     completed_scores = {}
                     for action_index, action in enumerate(ordered_actions):
-                        sample_scores = []
-                        for sample in samples:
-                            score, nodes = _evaluate_root_action(
-                                sample, action, depth, self.config, self._deadline)
-                            self._nodes += nodes
-                            if score is None:
-                                break
-                            sample_scores.append(score)
-                        if len(sample_scores) != len(samples):
+                        score, nodes = _evaluate_root_action(
+                            state, action, depth, self.config, self._deadline)
+                        self._nodes += nodes
+                        if score is None:
                             break
-                        action_score = sum(sample_scores) / len(samples)
-                        completed_scores[action_index] = action_score
+                        completed_scores[action_index] = score
                         self._report_completed_candidate(
                             ordered_actions, completed_scores, depth,
                             candidate_callback)
-                        depth_scores.append((action_score, action))
+                        depth_scores.append((score, action))
                     if len(depth_scores) != len(ordered_actions):
                         break
                 else:
-                    tasks_per_depth = [
-                        (action, sample)
-                        for action in ordered_actions
-                        for sample in samples
-                    ]
                     futures = [
                         executor.submit(
                             _evaluate_root_action,
-                            sample,
+                            state,
                             action,
                             depth,
                             self.config,
                             self._deadline,
                         )
-                        for action, sample in tasks_per_depth
+                        for action in ordered_actions
                     ]
                     results = [None] * len(futures)
                     pending = set(futures)
                     future_indexes = {future: index for index, future in enumerate(futures)}
-                    candidate_sample_scores = [
-                        [None for _ in samples] for _ in ordered_actions
-                    ]
-                    candidate_completed_counts = [0 for _ in ordered_actions]
                     completed_scores = {}
 
                     while pending and time.monotonic() < self._deadline:
@@ -232,21 +199,12 @@ class ChessAI:
                             task_index = future_indexes[future]
                             score, nodes = future.result()
                             self._nodes += nodes
-                            results[task_index] = (score, nodes)
+                            results[task_index] = score
                             if score is not None:
-                                action_index, sample_index = divmod(
-                                    task_index, len(samples))
-                                candidate_sample_scores[action_index][sample_index] = score
-                                candidate_completed_counts[action_index] += 1
-                                if candidate_completed_counts[action_index] == len(samples):
-                                    action_score = (
-                                        sum(candidate_sample_scores[action_index])
-                                        / len(samples)
-                                    )
-                                    completed_scores[action_index] = action_score
-                                    self._report_completed_candidate(
-                                        ordered_actions, completed_scores, depth,
-                                        candidate_callback)
+                                completed_scores[task_index] = score
+                                self._report_completed_candidate(
+                                    ordered_actions, completed_scores, depth,
+                                    candidate_callback)
 
                     if pending:
                         for future in pending:
@@ -260,17 +218,9 @@ class ChessAI:
                         break
 
                     # Preserve action order for deterministic tie-breaking.
-                    if any(score is None for score, _ in results):
+                    if any(score is None for score in results):
                         break
-                    index = 0
-                    for action in ordered_actions:
-                        action_scores = [
-                            score
-                            for score, _ in results[index:index + len(samples)]
-                        ]
-                        index += len(samples)
-                        depth_scores.append(
-                            (sum(action_scores) / len(action_scores), action))
+                    depth_scores = list(zip(results, ordered_actions))
 
                 best_score, best_action = max(
                     depth_scores, key=lambda item: item[0])

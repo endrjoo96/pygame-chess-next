@@ -42,14 +42,13 @@ def test_ai_finds_immediate_king_capture():
     state.pieces_locations[2] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
     observation = GameObservation.from_state(state, COLOR.BLACK)
     ai = ChessAI(
-        SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=1),
+        SearchConfig(time_limit_seconds=2, max_depth=1),
         max_workers=1,
     )
     progress = []
 
     decision = ai.choose_action(
         observation,
-        random.Random(5),
         progress_callback=lambda action, depth: progress.append((action, depth)),
     )
 
@@ -65,17 +64,17 @@ def test_ai_returns_a_legal_fallback_when_search_budget_expires():
     state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     observation = GameObservation.from_state(state, COLOR.BLACK)
     ai = ChessAI(
-        SearchConfig(time_limit_seconds=1e-12, max_depth=4, hidden_hand_samples=1),
+        SearchConfig(time_limit_seconds=1e-12, max_depth=4),
         max_workers=1,
     )
 
-    decision = ai.choose_action(observation, random.Random(5))
+    decision = ai.choose_action(observation)
 
     assert decision.action in GameSimulation.available_actions(state)
     assert decision.completed_depth == 0
 
 
-def test_ai_default_sampling_is_reproducible_from_observation_seed():
+def test_ai_search_is_reproducible_for_the_same_observation():
     state = make_black_to_move_state()
     state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     state.white_cards = [
@@ -84,7 +83,7 @@ def test_ai_default_sampling_is_reproducible_from_observation_seed():
     ]
     observation = GameObservation.from_state(state, COLOR.BLACK)
     ai = ChessAI(
-        SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=2),
+        SearchConfig(time_limit_seconds=2, max_depth=1),
         max_workers=1,
     )
 
@@ -94,6 +93,31 @@ def test_ai_default_sampling_is_reproducible_from_observation_seed():
     assert first.action == second.action
     assert first.score == second.score
     assert first.completed_depth == second.completed_depth
+
+
+def test_ai_passes_the_opponents_exact_cards_to_root_simulations(monkeypatch):
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.white_cards = [EnchantmentCardType.PAWN_SWORDSMAN.create()]
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    searched_states = []
+
+    def evaluate_root_action(search_state, action, depth, config, deadline):
+        searched_states.append(search_state)
+        return 0.0, 1
+
+    monkeypatch.setattr("logic.chess_ai._evaluate_root_action", evaluate_root_action)
+    ai = ChessAI(SearchConfig(time_limit_seconds=2, max_depth=1), max_workers=1)
+
+    result = ai.choose_action(observation)
+
+    assert result.completed_depth == 1
+    assert searched_states
+    assert all(
+        search_state.white_cards[0].get_card_type()
+        == EnchantmentCardType.PAWN_SWORDSMAN
+        for search_state in searched_states
+    )
 
 
 def test_ai_only_accepts_black_to_move_observations():
@@ -153,7 +177,6 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
     config = SearchConfig(
         time_limit_seconds=15,
         max_depth=2,
-        hidden_hand_samples=2,
     )
     serial_progress = []
     parallel_progress = []
@@ -162,13 +185,11 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
 
     serial_result = ChessAI(config, max_workers=1).choose_action(
         observation,
-        random.Random(17),
         progress_callback=lambda action, depth: serial_progress.append(
             (action, depth)),
     )
     parallel_result = ChessAI(config, max_workers=2).choose_action(
         observation,
-        random.Random(17),
         progress_callback=lambda action, depth: (
             parallel_progress.append((action, depth)),
             parallel_events.append(("complete", depth)),
@@ -268,11 +289,11 @@ def test_ai_prefers_a_safe_board_card_over_a_small_capture():
     state.board_enchantment = EnchantmentCardType.PIECE_TELEPORT.create()
     observation = GameObservation.from_state(state, COLOR.BLACK)
     ai = ChessAI(
-        SearchConfig(time_limit_seconds=2, max_depth=1, hidden_hand_samples=1),
+        SearchConfig(time_limit_seconds=2, max_depth=1),
         max_workers=1,
     )
 
-    decision = ai.choose_action(observation, random.Random(5))
+    decision = ai.choose_action(observation)
 
     assert decision.action is not None
     assert decision.action.destination == state.board_card_position

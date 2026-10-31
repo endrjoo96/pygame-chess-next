@@ -257,7 +257,7 @@ def test_move_collects_board_card_and_schedules_the_next_one():
     assert game.board_card_available or game.pending_board_card_delay is not None
 
 
-def test_ai_turn_receives_hidden_hand_count_and_applies_legal_action():
+def test_ai_turn_receives_both_hands_and_applies_legal_action():
     game = make_game()
     game.current_turn = COLOR.BLACK
     game.cards_processor.add_card_for(
@@ -284,7 +284,11 @@ def test_ai_turn_receives_hidden_hand_count_and_applies_legal_action():
     game.play_ai_turn()
 
     assert game.black_ai.observation.own_color == COLOR.BLACK
-    assert game.black_ai.observation.opponent_card_count == 1
+    assert len(game.black_ai.observation.opponent_cards) == 1
+    assert (
+        game.black_ai.observation.opponent_cards[0].get_card_type()
+        == EnchantmentCardType.PAWN_SWORDSMAN
+    )
     assert not hasattr(game.black_ai.observation, "white_cards")
     assert game.current_turn == COLOR.WHITE
     assert game.pieces_locations[action.destination].get_color() == COLOR.BLACK

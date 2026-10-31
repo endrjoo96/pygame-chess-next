@@ -1,25 +1,23 @@
 import copy
-import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from constants.piece_color import COLOR
 from models.chess_pieces import Piece
-from models.enchantment_cards import EnchantmentCardType
 from models.enchantments import Enchantment
 from models.game_state import GameState
 
 
 @dataclass
 class GameObservation:
-    """Informacje dostępne dla AI, bez ujawniania typów kart przeciwnika."""
+    """Pełna migawka informacji przekazywana do wyszukiwania AI."""
 
     own_color: COLOR
     pieces_locations: Dict[int, Piece]
     current_turn: COLOR
     turns_started: Dict[COLOR, int]
     own_cards: List[Enchantment]
-    opponent_card_count: int
+    opponent_cards: List[Enchantment]
     captured_white: List[Piece]
     captured_black: List[Piece]
     board_card_available: bool
@@ -37,15 +35,15 @@ class GameObservation:
 
     @classmethod
     def from_state(cls, state: GameState, own_color: COLOR):
-        """Buduje obserwację publiczną i prywatną rękę gracza, pomijając rękę wroga."""
-        opponent_color = _opponent_of(own_color)
+        """Buduje obserwację zawierającą dokładne ręce obu graczy."""
+        opponent_color = COLOR.BLACK if own_color == COLOR.WHITE else COLOR.WHITE
         observation = cls(
             own_color=own_color,
             pieces_locations=state.pieces_locations,
             current_turn=state.current_turn,
             turns_started=state.turns_started,
             own_cards=state.get_cards_for(own_color),
-            opponent_card_count=len(state.get_cards_for(opponent_color)),
+            opponent_cards=state.get_cards_for(opponent_color),
             captured_white=state.captured_white,
             captured_black=state.captured_black,
             board_card_available=state.board_card_available,
@@ -63,18 +61,17 @@ class GameObservation:
         )
         return copy.deepcopy(observation)
 
-    def determinize(self, rng: random.Random) -> GameState:
-        """Tworzy możliwy pełny stan z ukrytą ręką wylosowaną wg prawdziwych szans."""
-        opponent_cards = _sample_opponent_hand(self.opponent_card_count, rng)
+    def to_state(self) -> GameState:
+        """Tworzy odizolowany stan symulacji z dokładnymi rękami obu graczy."""
         white_cards = (
             copy.deepcopy(self.own_cards)
             if self.own_color == COLOR.WHITE
-            else opponent_cards
+            else copy.deepcopy(self.opponent_cards)
         )
         black_cards = (
             copy.deepcopy(self.own_cards)
             if self.own_color == COLOR.BLACK
-            else opponent_cards
+            else copy.deepcopy(self.opponent_cards)
         )
         return GameState(
             pieces_locations=copy.deepcopy(self.pieces_locations),
@@ -94,39 +91,6 @@ class GameObservation:
             double_move_step=self.double_move_step,
             double_move_collected_board_card=self.double_move_collected_board_card,
             resurrection_moves=copy.deepcopy(self.resurrection_moves),
-            random_state=rng.getstate(),
+            random_state=self.random_state,
             board_cards=copy.deepcopy(self.board_cards),
         )
-
-    @staticmethod
-    def opponent_card_probabilities():
-        """Pobiera bieżący rozkład losowania z konfiguracji talii gry."""
-        return EnchantmentCardType.draw_probability_distribution()
-
-
-def _opponent_of(color):
-    return COLOR.BLACK if color == COLOR.WHITE else COLOR.WHITE
-
-
-def _sample_opponent_hand(card_count, rng):
-    if not 0 <= card_count <= 8:
-        raise ValueError("Opponent card count must be between 0 and 8")
-
-    cards = []
-    while len(cards) < card_count:
-        card_type, uses = EnchantmentCardType.sample_with_uses(rng)
-        card = card_type.create(uses=uses)
-        matching_reusable = next(
-            (
-                existing for existing in cards
-                if card.is_reusable()
-                and existing.is_reusable()
-                and existing.get_card_type() == card_type
-            ),
-            None,
-        )
-        if matching_reusable is not None:
-            matching_reusable.add_uses(card.get_remaining_uses())
-        else:
-            cards.append(card)
-    return cards
