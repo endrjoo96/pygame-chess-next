@@ -270,17 +270,17 @@ def test_ai_turn_receives_hidden_hand_count_and_applies_legal_action():
     )
 
     class StubAI:
-        def choose_action(self, observation, progress_callback=None):
+        def choose_action(self, observation, candidate_callback=None):
             self.observation = observation
-            if progress_callback is not None:
-                progress_callback(action, 1)
+            if candidate_callback is not None:
+                candidate_callback(action, 1, 2.5)
             return SimpleNamespace(action=action)
 
     game.black_ai = StubAI()
     game.play_ai_turn()
     game._ai_future.result(timeout=1)
     assert game.is_ai_thinking
-    assert game._ai_best_move == ("Wb8", 1)
+    assert game._ai_best_move == ("Wb8", 1, 2.5)
     game.play_ai_turn()
 
     assert game.black_ai.observation.own_color == COLOR.BLACK

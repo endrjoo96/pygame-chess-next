@@ -6,6 +6,7 @@ import pytest
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from logic.chess_ai import ChessAI, SearchConfig
+from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
@@ -156,6 +157,8 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
     )
     serial_progress = []
     parallel_progress = []
+    parallel_candidate_updates = []
+    parallel_events = []
 
     serial_result = ChessAI(config, max_workers=1).choose_action(
         observation,
@@ -166,8 +169,14 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
     parallel_result = ChessAI(config, max_workers=2).choose_action(
         observation,
         random.Random(17),
-        progress_callback=lambda action, depth: parallel_progress.append(
-            (action, depth)),
+        progress_callback=lambda action, depth: (
+            parallel_progress.append((action, depth)),
+            parallel_events.append(("complete", depth)),
+        ),
+        candidate_callback=lambda action, depth, score: (
+            parallel_candidate_updates.append((action, depth, score)),
+            parallel_events.append(("candidate", depth)),
+        ),
     )
 
     assert parallel_result.action == serial_result.action
@@ -176,6 +185,28 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
     assert [depth for _, depth in parallel_progress] == [0, 1, 2]
     assert [depth for _, depth in serial_progress] == [0, 1, 2]
     assert parallel_result.visited_nodes == serial_result.visited_nodes
+    assert any(depth == 2 for _, depth, _ in parallel_candidate_updates)
+    assert all(isinstance(score, float) for _, _, score in parallel_candidate_updates)
+    assert parallel_events.index(("candidate", 2)) < parallel_events.index(
+        ("complete", 2))
+
+
+def test_candidate_callback_reports_manager_leader_not_last_completed_worker():
+    actions = [
+        GameAction(GameActionType.MOVE, source=1, destination=2),
+        GameAction(GameActionType.MOVE, source=1, destination=3),
+        GameAction(GameActionType.MOVE, source=1, destination=4),
+    ]
+    updates = []
+
+    ChessAI._report_completed_candidate(
+        actions,
+        {2: 1.0, 0: 3.0, 1: 5.0},
+        2,
+        lambda action, depth, score: updates.append((action, depth, score)),
+    )
+
+    assert updates == [(actions[1], 2, 5.0)]
 
 
 def test_evaluation_prefers_a_piece_not_under_immediate_attack():

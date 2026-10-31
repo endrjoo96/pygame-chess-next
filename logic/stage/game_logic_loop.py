@@ -184,16 +184,16 @@ class GameLogicLoop(object):
                 generation = self._ai_generation
                 self._ai_best_move = None
 
-            def report_progress(action, depth):
+            def report_candidate(action, depth, score):
                 notation = self._format_ai_action_notation(state, action)
                 with self._ai_progress_lock:
                     if generation == self._ai_generation:
-                        self._ai_best_move = (notation, depth)
+                        self._ai_best_move = (notation, depth, score)
 
             self._ai_future = self._ai_executor.submit(
                 self.black_ai.choose_action,
                 observation,
-                progress_callback=report_progress,
+                candidate_callback=report_candidate,
             )
             return
         if not self._ai_future.done():
@@ -240,7 +240,7 @@ class GameLogicLoop(object):
         )
         with self._ai_progress_lock:
             best_move = (
-                self._ai_best_move[0]
+                self._ai_best_move
                 if self._ai_best_move is not None
                 else None
             )
@@ -248,9 +248,16 @@ class GameLogicLoop(object):
             caption = SysFont(self.context.comic_sans_font, 20).render(
                 "Myślę, że najlepszy ruch to...", True, (255, 255, 255))
             notation = SysFont(self.context.comic_sans_font, 30, bold=True).render(
-                best_move, True, (255, 255, 255))
+                best_move[0], True, (255, 255, 255))
+            score = SysFont(self.context.comic_sans_font, 18).render(
+                "Ocena heurystyczna (czarne): {:+.2f} | głębokość: {}".format(
+                    best_move[2], best_move[1]),
+                True,
+                (220, 220, 220),
+            )
             self.screen.blit(caption, (24, 24))
             self.screen.blit(notation, (24, 54))
+            self.screen.blit(score, (24, 92))
 
     @staticmethod
     def _format_ai_action_notation(state, action):

@@ -2,7 +2,7 @@ import math
 import os
 import random
 import time
-from concurrent.futures import ALL_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -125,6 +125,9 @@ class ChessAI:
         observation: GameObservation,
         rng: Optional[random.Random] = None,
         progress_callback: Optional[Callable[[GameAction, int], None]] = None,
+        candidate_callback: Optional[
+            Callable[[GameAction, int, float], None]
+        ] = None,
     ) -> SearchResult:
         """Szuka ruchu w próbkach ukrytych rąk i zwraca wynik ostatniej pełnej głębokości."""
         if observation.own_color != COLOR.BLACK:
@@ -149,10 +152,15 @@ class ChessAI:
         self._nodes = 0
         ordered_actions = self._order_actions(samples[0], root_actions)
         best_action = ordered_actions[0]
-        best_score = self._quick_action_score(samples[0], best_action)
+        best_score = sum(
+            self.evaluate(GameSimulation.apply(sample, best_action))
+            for sample in samples
+        ) / len(samples)
         completed_depth = 0
         if progress_callback is not None:
             progress_callback(best_action, completed_depth)
+        if candidate_callback is not None:
+            candidate_callback(best_action, completed_depth, best_score)
 
         worker_count = self._worker_count_for_tasks(
             len(ordered_actions) * len(samples))
@@ -167,18 +175,24 @@ class ChessAI:
                     break
                 depth_scores = []
                 if executor is None:
-                    for action in ordered_actions:
-                        scores = []
+                    completed_scores = {}
+                    for action_index, action in enumerate(ordered_actions):
+                        sample_scores = []
                         for sample in samples:
                             score, nodes = _evaluate_root_action(
                                 sample, action, depth, self.config, self._deadline)
                             self._nodes += nodes
                             if score is None:
                                 break
-                            scores.append(score)
-                        if len(scores) != len(samples):
+                            sample_scores.append(score)
+                        if len(sample_scores) != len(samples):
                             break
-                        depth_scores.append((sum(scores) / len(scores), action))
+                        action_score = sum(sample_scores) / len(samples)
+                        completed_scores[action_index] = action_score
+                        self._report_completed_candidate(
+                            ordered_actions, completed_scores, depth,
+                            candidate_callback)
+                        depth_scores.append((action_score, action))
                     if len(depth_scores) != len(ordered_actions):
                         break
                 else:
@@ -198,23 +212,54 @@ class ChessAI:
                         )
                         for action, sample in tasks_per_depth
                     ]
-                    remaining = max(0.0, self._deadline - time.monotonic())
-                    _, pending = wait(
-                        futures, timeout=remaining, return_when=ALL_COMPLETED)
+                    results = [None] * len(futures)
+                    pending = set(futures)
+                    future_indexes = {future: index for index, future in enumerate(futures)}
+                    candidate_sample_scores = [
+                        [None for _ in samples] for _ in ordered_actions
+                    ]
+                    candidate_completed_counts = [0 for _ in ordered_actions]
+                    completed_scores = {}
+
+                    while pending and time.monotonic() < self._deadline:
+                        remaining = max(0.0, self._deadline - time.monotonic())
+                        done, pending = wait(
+                            pending,
+                            timeout=min(0.05, remaining),
+                            return_when=FIRST_COMPLETED,
+                        )
+                        for future in sorted(done, key=future_indexes.get):
+                            task_index = future_indexes[future]
+                            score, nodes = future.result()
+                            self._nodes += nodes
+                            results[task_index] = (score, nodes)
+                            if score is not None:
+                                action_index, sample_index = divmod(
+                                    task_index, len(samples))
+                                candidate_sample_scores[action_index][sample_index] = score
+                                candidate_completed_counts[action_index] += 1
+                                if candidate_completed_counts[action_index] == len(samples):
+                                    action_score = (
+                                        sum(candidate_sample_scores[action_index])
+                                        / len(samples)
+                                    )
+                                    completed_scores[action_index] = action_score
+                                    self._report_completed_candidate(
+                                        ordered_actions, completed_scores, depth,
+                                        candidate_callback)
+
                     if pending:
                         for future in pending:
                             future.cancel()
                         executor.shutdown(wait=True, cancel_futures=True)
                         executor = None
-                        for future in futures:
-                            if not future.cancelled():
+                        for task_index, future in enumerate(futures):
+                            if results[task_index] is None and not future.cancelled():
                                 _, nodes = future.result()
                                 self._nodes += nodes
                         break
 
                     # Preserve action order for deterministic tie-breaking.
-                    results = [future.result() for future in futures]
-                    self._nodes += sum(nodes for _, nodes in results)
                     if any(score is None for score, _ in results):
                         break
                     index = 0
@@ -232,6 +277,8 @@ class ChessAI:
                 completed_depth = depth
                 if progress_callback is not None:
                     progress_callback(best_action, completed_depth)
+                if candidate_callback is not None:
+                    candidate_callback(best_action, completed_depth, best_score)
                 ordered_actions = [
                     action
                     for _, action in sorted(
@@ -245,6 +292,18 @@ class ChessAI:
 
     def _worker_count_for_tasks(self, task_count):
         return min(self.max_workers, task_count)
+
+    @staticmethod
+    def _report_completed_candidate(actions, completed_scores, depth, callback):
+        if callback is None:
+            return
+        if not completed_scores:
+            return
+        best_index = max(
+            completed_scores,
+            key=lambda index: (completed_scores[index], -index),
+        )
+        callback(actions[best_index], depth, completed_scores[best_index])
 
     def _search(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
         self._check_deadline()
