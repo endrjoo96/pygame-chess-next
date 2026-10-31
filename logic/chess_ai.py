@@ -3,6 +3,7 @@ import os
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from threading import Lock
 from typing import Callable, Optional
 
 from constants.piece_color import COLOR
@@ -10,6 +11,7 @@ from constants.piece_type import PIECE_TYPE
 from constants.pos import id_to_xy, xy_to_id
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
+from logic.search_cache import Bound, CacheEntry, SearchCache
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
@@ -23,6 +25,8 @@ from utils.logging import (
 )
 from utils.run_config import (
     AI_SEARCH_CPU_PERCENT,
+    AI_SEARCH_CACHE_ENABLED,
+    AI_SEARCH_CACHE_MAX_ENTRIES,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
 )
@@ -59,6 +63,7 @@ CARD_VALUES = {
 }
 CARD_MOVEMENT_TYPES = GameSimulation.MOVEMENT_CARDS
 _LMR_ENABLED = True
+_WORKER_CACHE_LIMIT = 256
 
 
 @dataclass(frozen=True)
@@ -67,12 +72,20 @@ class SearchConfig:
 
     time_limit_seconds: float = AI_SEARCH_TIME_LIMIT_SECONDS
     max_depth: int = AI_SEARCH_MAX_DEPTH
+    cache_enabled: bool = AI_SEARCH_CACHE_ENABLED
+    cache_max_entries: int = AI_SEARCH_CACHE_MAX_ENTRIES
 
     def __post_init__(self):
         if self.time_limit_seconds <= 0:
             raise ValueError("The search time limit must be positive")
         if self.max_depth < 1:
             raise ValueError("The search depth must be at least one")
+        if not isinstance(self.cache_enabled, bool):
+            raise ValueError("The search cache setting must be a boolean")
+        if (not isinstance(self.cache_max_entries, int)
+                or isinstance(self.cache_max_entries, bool)
+                or self.cache_max_entries < 1):
+            raise ValueError("The search cache limit must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -87,18 +100,38 @@ class _SearchTimeout(Exception):
     pass
 
 
-def _evaluate_root_action(state, action, depth, config, deadline):
+@dataclass(frozen=True)
+class _RootEvaluation:
+    score: Optional[float]
+    nodes: int
+    entries: tuple = ()
+    hits: int = 0
+    score_hits: int = 0
+    hints: int = 0
+
+
+def _evaluate_root_action(state, action, depth, config, deadline, cache_snapshot=()):
     """Ocenia jeden ruch startowy w izolowanym workerze."""
     worker = ChessAI(config, max_workers=1)
     worker._deadline = deadline
     worker._nodes = 0
+    if worker._cache is not None:
+        worker._cache = SearchCache(min(config.cache_max_entries, _WORKER_CACHE_LIMIT))
+        for entry in cache_snapshot:
+            worker._cache.put(entry, updated=False)
     try:
         worker._check_deadline()
         child = GameSimulation._apply_generated_action(state, action)
         score = worker._search(child, depth - 1, -math.inf, math.inf)
     except _SearchTimeout:
-        return None, worker._nodes
-    return score, worker._nodes
+        score = None
+    entries = (
+        worker._cache.snapshot(_WORKER_CACHE_LIMIT, updated_only=True)
+        if worker._cache is not None else ()
+    )
+    return _RootEvaluation(
+        score, worker._nodes, entries, worker._cache_hits,
+        worker._cache_score_hits, worker._cache_hints)
 
 
 class ChessAI:
@@ -123,6 +156,22 @@ class ChessAI:
         )
         self._deadline = 0.0
         self._nodes = 0
+        self._cache = SearchCache(config.cache_max_entries) if config.cache_enabled else None
+        self._cache_lock = Lock()
+        self._cache_generation = 0
+        self._cache_hits = 0
+        self._cache_score_hits = 0
+        self._cache_hints = 0
+
+    def clear_search_cache(self):
+        with self._cache_lock:
+            self._cache_generation += 1
+            if self._cache is not None:
+                self._cache = SearchCache(self.config.cache_max_entries)
+
+    def search_cache_generation(self):
+        with self._cache_lock:
+            return self._cache_generation
 
     def choose_action(
         self,
@@ -131,6 +180,7 @@ class ChessAI:
         candidate_callback: Optional[
             Callable[[GameAction, int, float], None]
         ] = None,
+        cache_generation: Optional[int] = None,
     ) -> SearchResult:
         """Szuka w pełnym stanie i zwraca najlepiej ocenionego dotąd kandydata."""
         if observation.own_color != COLOR.BLACK:
@@ -147,13 +197,26 @@ class ChessAI:
         search_started = time.monotonic()
         self._deadline = search_started + self.config.time_limit_seconds
         self._nodes = 0
+        self._cache_hits = self._cache_score_hits = self._cache_hints = 0
         ordered_actions = self._order_actions(state, root_actions)
-        best_action = ordered_actions[0]
-        best_score = self.evaluate(
-            GameSimulation._apply_generated_action(state, best_action))
         action_order = {
             action: index for index, action in enumerate(ordered_actions)
         }
+        with self._cache_lock:
+            if cache_generation is None:
+                cache_generation = self._cache_generation
+            hint = (
+                self._cache.best_move(state.cache_key())
+                if self._cache is not None
+                and cache_generation == self._cache_generation else None
+            )
+        if hint in ordered_actions:
+            ordered_actions.remove(hint)
+            ordered_actions.insert(0, hint)
+            self._cache_hints += 1
+        best_action = ordered_actions[0]
+        best_score = self.evaluate(
+            GameSimulation._apply_generated_action(state, best_action))
         best_known_scores = {best_action: (best_score, 0)}
         completed_depth = 0
         if progress_callback is not None:
@@ -183,94 +246,101 @@ class ChessAI:
                     interrupted = True
                     break
                 log_logic("AI search started depth {}".format(depth))
-                depth_scores = []
+                with self._cache_lock:
+                    snapshot = (
+                        self._cache.snapshot(_WORKER_CACHE_LIMIT)
+                        if self._cache is not None
+                        and self._cache_generation == cache_generation else ()
+                    )
+                iteration_cache = (
+                    SearchCache(self.config.cache_max_entries)
+                    if self.config.cache_enabled else None
+                )
+                completed_scores = {}
+                outcomes = {}
+                next_merge = 0
+
+                def record_result(index, result):
+                    nonlocal next_merge
+                    self._nodes += result.nodes
+                    self._cache_hits += result.hits
+                    self._cache_score_hits += result.score_hits
+                    self._cache_hints += result.hints
+                    outcomes[index] = result
+                    while next_merge in outcomes:
+                        completed = outcomes.pop(next_merge)
+                        if iteration_cache is not None:
+                            for entry in completed.entries:
+                                iteration_cache.put(entry)
+                        next_merge += 1
+                    if result.score is None:
+                        return
+                    if is_enabled("DEBUG"):
+                        log_debug(
+                            "AI root action at depth {}: {} => {:.2f} "
+                            "({} nodes)".format(
+                                depth, ordered_actions[index], result.score, result.nodes)
+                        )
+                    previous_leader = self._candidate_leader_index(completed_scores)
+                    completed_scores[index] = result.score
+                    best_known_scores[ordered_actions[index]] = (result.score, depth)
+                    self._report_completed_candidate(
+                        ordered_actions, completed_scores, depth,
+                        candidate_callback, previous_leader)
+
                 if executor is None:
-                    completed_scores = {}
                     for action_index, action in enumerate(ordered_actions):
                         try:
-                            score, nodes = _evaluate_root_action(
-                                state, action, depth, self.config, self._deadline)
+                            result = _evaluate_root_action(
+                                state, action, depth, self.config, self._deadline,
+                                snapshot)
                         except Exception as error:
                             log_error(
                                 "AI root task failed for {} at depth {}: {}".format(
                                     action, depth, error)
                             )
                             raise
-                        self._nodes += nodes
-                        if score is None:
+                        record_result(action_index, result)
+                        if result.score is None:
                             interrupted = True
                             break
-                        if is_enabled("DEBUG"):
-                            log_debug(
-                                "AI root action at depth {}: {} => {:.2f} "
-                                "({} nodes)".format(depth, action, score, nodes)
-                            )
-                        previous_leader = self._candidate_leader_index(
-                            completed_scores)
-                        completed_scores[action_index] = score
-                        best_known_scores[action] = (score, depth)
-                        self._report_completed_candidate(
-                            ordered_actions, completed_scores, depth,
-                            candidate_callback, previous_leader)
-                        depth_scores.append((score, action))
-                    if len(depth_scores) != len(ordered_actions):
-                        interrupted = True
-                        break
                 else:
-                    futures = [
-                        executor.submit(
-                            _evaluate_root_action,
-                            state,
-                            action,
-                            depth,
-                            self.config,
-                            self._deadline,
-                        )
-                        for action in ordered_actions
-                    ]
-                    results = [None] * len(futures)
-                    pending = set(futures)
-                    future_indexes = {future: index for index, future in enumerate(futures)}
-                    completed_scores = {}
-
-                    while pending and time.monotonic() < self._deadline:
+                    pending = {}
+                    next_action = 0
+                    while time.monotonic() < self._deadline:
+                        while (
+                            next_action < len(ordered_actions)
+                            and len(pending) < worker_count
+                            and next_action < next_merge + worker_count
+                        ):
+                            future = executor.submit(
+                                _evaluate_root_action, state, ordered_actions[next_action],
+                                depth, self.config, self._deadline, snapshot)
+                            pending[future] = next_action
+                            next_action += 1
+                        if not pending:
+                            break
                         remaining = max(0.0, self._deadline - time.monotonic())
-                        done, pending = wait(
-                            pending,
+                        done, _ = wait(
+                            set(pending),
                             timeout=min(0.05, remaining),
                             return_when=FIRST_COMPLETED,
                         )
-                        for future in sorted(done, key=future_indexes.get):
-                            task_index = future_indexes[future]
+                        for future in sorted(done, key=pending.get):
+                            task_index = pending.pop(future)
                             try:
-                                score, nodes = future.result()
+                                result = future.result()
                             except Exception as error:
                                 log_error(
                                     "AI worker failed for {} at depth {}: {}".format(
                                         ordered_actions[task_index], depth, error)
                                 )
                                 raise
-                            self._nodes += nodes
-                            results[task_index] = score
-                            if score is not None:
-                                if is_enabled("DEBUG"):
-                                    log_debug(
-                                        "AI root action at depth {}: {} => {:.2f} "
-                                        "({} nodes)".format(
-                                            depth,
-                                            ordered_actions[task_index],
-                                            score,
-                                            nodes,
-                                        )
-                                    )
-                                previous_leader = self._candidate_leader_index(
-                                    completed_scores)
-                                completed_scores[task_index] = score
-                                best_known_scores[ordered_actions[task_index]] = (
-                                    score, depth)
-                                self._report_completed_candidate(
-                                    ordered_actions, completed_scores, depth,
-                                    candidate_callback, previous_leader)
+                            record_result(task_index, result)
+                            if result.score is None:
+                                interrupted = True
+                        if interrupted:
+                            break
 
                     if pending:
                         interrupted = True
@@ -278,10 +348,12 @@ class ChessAI:
                             future.cancel()
                         executor.shutdown(wait=True, cancel_futures=True)
                         executor = None
-                        for task_index, future in enumerate(futures):
-                            if results[task_index] is None and not future.cancelled():
+                        for future, task_index in sorted(
+                            pending.items(), key=lambda item: item[1]
+                        ):
+                            if not future.cancelled():
                                 try:
-                                    score, nodes = future.result()
+                                    result = future.result()
                                 except Exception as error:
                                     log_error(
                                         "AI worker failed for {} at depth {}: {}".format(
@@ -291,28 +363,27 @@ class ChessAI:
                                         )
                                     )
                                     raise
-                                self._nodes += nodes
-                                results[task_index] = score
-                                if score is not None:
-                                    previous_leader = self._candidate_leader_index(
-                                        completed_scores)
-                                    completed_scores[task_index] = score
-                                    best_known_scores[
-                                        ordered_actions[task_index]
-                                    ] = (score, depth)
-                                    self._report_completed_candidate(
-                                        ordered_actions, completed_scores, depth,
-                                        candidate_callback, previous_leader)
-                        break
+                                record_result(task_index, result)
 
-                    # Preserve action order for deterministic tie-breaking.
-                    if any(score is None for score in results):
-                        interrupted = True
-                        break
-                    depth_scores = list(zip(results, ordered_actions))
+                if iteration_cache is not None:
+                    for index in sorted(outcomes):
+                        for entry in outcomes[index].entries:
+                            iteration_cache.put(entry)
+                    with self._cache_lock:
+                        if self._cache_generation == cache_generation:
+                            for entry in iteration_cache.snapshot(self.config.cache_max_entries):
+                                self._cache.put(entry)
+                if len(completed_scores) != len(ordered_actions):
+                    interrupted = True
+                    break
+                depth_scores = [
+                    (completed_scores[index], action)
+                    for index, action in enumerate(ordered_actions)
+                ]
 
                 best_score, best_action = max(
-                    depth_scores, key=lambda item: item[0])
+                    depth_scores,
+                    key=lambda item: (item[0], -action_order[item[1]]))
                 completed_depth = depth
                 log_logic(
                     "AI search completed depth {}: best action={}, score={:+.2f}".format(
@@ -325,7 +396,9 @@ class ChessAI:
                 ordered_actions = [
                     action
                     for _, action in sorted(
-                        depth_scores, key=lambda item: item[0], reverse=True)
+                        depth_scores,
+                        key=lambda item: (item[0], -action_order[item[1]]),
+                        reverse=True)
                 ]
         finally:
             if executor is not None:
@@ -358,6 +431,9 @@ class ChessAI:
         )
         if is_enabled("DEBUG"):
             nodes_per_second = self._nodes / elapsed if elapsed > 0 else 0.0
+            with self._cache_lock:
+                cache_size = len(self._cache) if self._cache is not None else 0
+                cache_evictions = self._cache.evictions if self._cache is not None else 0
             log_debug(
                 "AI search metrics: workers={}, max_depth={}, completed_depth={}, "
                 "elapsed={:.3f}s, nodes={}, nodes_per_second={:.1f}, "
@@ -371,6 +447,12 @@ class ChessAI:
                     best_action,
                     best_score,
                 )
+            )
+            log_debug(
+                "AI cache metrics: enabled={}, entries={}, hits={}, score_hits={}, "
+                "move_hints={}, evictions={}".format(
+                    self.config.cache_enabled, cache_size, self._cache_hits,
+                    self._cache_score_hits, self._cache_hints, cache_evictions)
             )
         if candidate_callback is not None:
             candidate_callback(best_action, best_action_depth, best_score)
@@ -404,19 +486,47 @@ class ChessAI:
             callback(actions[best_index], depth, completed_scores[best_index])
 
     def _search(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
+        return self._search_with_proof(state, depth, alpha, beta)[0]
+
+    def _search_with_proof(
+        self, state: GameState, depth: int, alpha: float, beta: float
+    ):
         self._check_deadline()
         self._nodes += 1
 
         winner = state.get_winner()
         if winner is not None:
-            return 100_000.0 if winner == COLOR.BLACK else -100_000.0
+            return (100_000.0 if winner == COLOR.BLACK else -100_000.0), True
         if depth <= 0:
-            return self.evaluate(state)
+            return self.evaluate(state), True
+
+        original_alpha, original_beta = alpha, beta
+        key = state.cache_key() if self._cache is not None else None
+        hint = None
+        if self._cache is not None:
+            entry = self._cache.get(key, depth)
+            hint = self._cache.best_move(key)
+            if entry is not None:
+                self._cache_hits += 1
+                if (
+                    entry.bound == Bound.EXACT
+                    or (entry.bound == Bound.LOWER and entry.score >= beta)
+                    or (entry.bound == Bound.UPPER and entry.score <= alpha)
+                ):
+                    self._cache_score_hits += 1
+                    return entry.score, True
 
         actions = GameSimulation.available_actions(state)
         if not actions:
-            return self.evaluate(state)
+            value = self.evaluate(state)
+            if self._cache is not None:
+                self._cache.put(CacheEntry(key, depth, None, value, Bound.EXACT))
+            return value, True
         actions = self._order_actions(state, actions)
+        if hint in actions:
+            actions.remove(hint)
+            actions.insert(0, hint)
+            self._cache_hints += 1
         opposing_king_position = None
         king_threatened = False
         if _LMR_ENABLED and depth >= 3 and len(actions) > 3:
@@ -431,33 +541,10 @@ class ChessAI:
                     attack_map[opposing_color].get(current_king_position)
                 )
 
-        if state.current_turn == COLOR.BLACK:
-            value = -math.inf
-            for action_index, action in enumerate(actions):
-                child = GameSimulation._apply_generated_action(state, action)
-                if (
-                    _LMR_ENABLED
-                    and not king_threatened
-                    and self._should_reduce_late_move(
-                        state, action, depth, action_index)
-                    and not self._move_attacks_king(
-                        child, action, opposing_king_position)
-                ):
-                    action_value = self._search(
-                        child, depth - 2, alpha, beta)
-                    if action_value > alpha:
-                        action_value = self._search(
-                            child, depth - 1, alpha, beta)
-                else:
-                    action_value = self._search(
-                        child, depth - 1, alpha, beta)
-                value = max(value, action_value)
-                alpha = max(alpha, value)
-                if alpha >= beta:
-                    break
-            return value
-
-        value = math.inf
+        maximizing = state.current_turn == COLOR.BLACK
+        value = -math.inf if maximizing else math.inf
+        best_action = None
+        reliable = True
         for action_index, action in enumerate(actions):
             child = GameSimulation._apply_generated_action(state, action)
             if (
@@ -468,19 +555,41 @@ class ChessAI:
                 and not self._move_attacks_king(
                     child, action, opposing_king_position)
             ):
-                action_value = self._search(
+                action_value, child_reliable = self._search_with_proof(
                     child, depth - 2, alpha, beta)
-                if action_value < beta:
-                    action_value = self._search(
+                if (action_value > alpha if maximizing else action_value < beta):
+                    action_value, child_reliable = self._search_with_proof(
                         child, depth - 1, alpha, beta)
+                else:
+                    # The reduced probe does not establish a full-depth bound.
+                    child_reliable = False
             else:
-                action_value = self._search(
+                action_value, child_reliable = self._search_with_proof(
                     child, depth - 1, alpha, beta)
-            value = min(value, action_value)
-            beta = min(beta, value)
+            reliable = reliable and child_reliable
+            if best_action is None or (
+                action_value > value if maximizing else action_value < value
+            ):
+                value = action_value
+                best_action = action
+            if maximizing:
+                alpha = max(alpha, value)
+            else:
+                beta = min(beta, value)
             if alpha >= beta:
                 break
-        return value
+
+        if self._cache is not None:
+            bound = None
+            if reliable:
+                if value <= original_alpha:
+                    bound = Bound.UPPER
+                elif value >= original_beta:
+                    bound = Bound.LOWER
+                else:
+                    bound = Bound.EXACT
+            self._cache.put(CacheEntry(key, depth, best_action, value, bound))
+        return value, reliable
 
     @staticmethod
     def _king_position(state, color):

@@ -217,3 +217,14 @@ class Piece:
         self.__delayed_enchantments.clear()
         self.__stun_effects.clear()
         self.__stunned_turns_remaining = 0
+
+    def cache_key(self, enchantment_key):
+        return (
+            self.__color, self.__type, self.__starting_position,
+            tuple(enchantment_key(item) for item in self.__enchantments),
+            tuple((enchantment_key(item), turn)
+                  for item, turn in self.__delayed_enchantments),
+            tuple((enchantment_key(item), turns)
+                  for item, turns in self.__stun_effects),
+            self.__stunned_turns_remaining,
+        )

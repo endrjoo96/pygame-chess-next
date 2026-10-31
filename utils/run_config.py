@@ -103,6 +103,22 @@ def _load_run_config():
             "'ai.search.cpu_percent' must be between 1 and 100 in {}".format(
                 properties_path))
 
+    cache_enabled_value = properties.get("ai.search.cache.enabled", "true").lower()
+    if cache_enabled_value not in ("true", "false"):
+        raise ValueError(
+            "'ai.search.cache.enabled' must be true or false in {}".format(
+                properties_path))
+    try:
+        cache_max_entries = int(properties.get("ai.search.cache.max_entries", "2048"))
+    except ValueError:
+        raise ValueError(
+            "'ai.search.cache.max_entries' must be a positive integer in {}".format(
+                properties_path)) from None
+    if cache_max_entries < 1:
+        raise ValueError(
+            "'ai.search.cache.max_entries' must be a positive integer in {}".format(
+                properties_path))
+
     return (
         run_mode,
         log_level,
@@ -110,6 +126,8 @@ def _load_run_config():
         ai_search_max_depth,
         ai_search_time_limit_seconds,
         ai_search_cpu_percent,
+        cache_enabled_value == "true",
+        cache_max_entries,
     )
 
 
@@ -120,6 +138,8 @@ def _load_run_config():
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
     AI_SEARCH_CPU_PERCENT,
+    AI_SEARCH_CACHE_ENABLED,
+    AI_SEARCH_CACHE_MAX_ENTRIES,
 ) = _load_run_config()
 
 

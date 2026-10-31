@@ -5,7 +5,7 @@ import pytest
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
-from logic.chess_ai import ChessAI, SearchConfig
+from logic.chess_ai import ChessAI, SearchConfig, _RootEvaluation
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
@@ -84,16 +84,16 @@ def test_ai_returns_best_known_move_after_an_incomplete_iteration(monkeypatch):
     shallow_candidate = initial_actions[0]
     deep_candidate = initial_actions[-1]
 
-    def evaluate_root_action(search_state, action, depth, config, deadline):
+    def evaluate_root_action(search_state, action, depth, config, deadline, snapshot):
         if depth == 1:
             if action == shallow_candidate:
-                return 15.0, 1
+                return _RootEvaluation(15.0, 1)
             if action == deep_candidate:
-                return 20.0, 1
-            return 0.0, 1
+                return _RootEvaluation(20.0, 1)
+            return _RootEvaluation(0.0, 1)
         if action == deep_candidate:
-            return -10.0, 1
-        return None, 1
+            return _RootEvaluation(-10.0, 1)
+        return _RootEvaluation(None, 1)
 
     monkeypatch.setattr("logic.chess_ai._evaluate_root_action", evaluate_root_action)
 
@@ -132,9 +132,9 @@ def test_ai_passes_the_opponents_exact_cards_to_root_simulations(monkeypatch):
     observation = GameObservation.from_state(state, COLOR.BLACK)
     searched_states = []
 
-    def evaluate_root_action(search_state, action, depth, config, deadline):
+    def evaluate_root_action(search_state, action, depth, config, deadline, snapshot):
         searched_states.append(search_state)
-        return 0.0, 1
+        return _RootEvaluation(0.0, 1)
 
     monkeypatch.setattr("logic.chess_ai._evaluate_root_action", evaluate_root_action)
     ai = ChessAI(SearchConfig(time_limit_seconds=2, max_depth=1), max_workers=1)

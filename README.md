@@ -28,14 +28,20 @@ Licznik tur jest widoczny nad planszą, a zebranie karty nie wpływa na odliczan
 Bot gra czarnymi. Podczas namysłu plansza jest przyciemniona, wyświetla się
 animowany spinner oraz najlepszy dotychczas znaleziony ruch. Wyszukiwanie działa
 w osobnym wątku, a analizę możliwych ruchów rozdziela między procesy — do liczby
-dostępnych logicznych rdzeni. Bot porównuje średnie oceny ruchów dla próbek
-ukrytej ręki przeciwnika.
+dostępnych logicznych rdzeni. Bot analizuje dokładne kopie rąk obu graczy.
 Przy głębszym wyszukiwaniu stosuje redukcję późnych spokojnych ruchów (LMR);
 obiecujące warianty są ponownie sprawdzane z pełną głębokością, a bicia
 i akcje kart pozostają bez redukcji.
 Przy `log.level=DEBUG` logowane jest również podsumowanie wyszukiwania: liczba
 workerów, czas, ukończona głębokość, odwiedzone węzły, tempo węzłów na sekundę
 oraz wybrany ruch i jego ocena.
+Domyślnie bot przechowuje ograniczoną pamięć wyników między iteracjami i turami
+tej samej partii. Zapamiętane ruchy mogą zmieniać kolejność przeszukiwania;
+oceny i granice alpha-beta są używane tylko dla tej samej głębokości i gdy ich
+wiarygodność nie została naruszona przez redukcje LMR. Pamięć jest czyszczona
+przy rozpoczęciu nowej partii i nie gwarantuje szybszego ani lepszego ruchu.
+Przy `DEBUG` podawane są także liczby trafień, użytych ocen, wskazówek ruchu,
+wpisów i usunięć z pamięci.
 
 ## Konfiguracja
 
@@ -49,6 +55,8 @@ Ustawienia znajdują się w `run.properties`:
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
 | `ai.search.time_limit_seconds` | Łączny budżet czasu AI na wybranie ruchu, w sekundach. |
 | `ai.search.cpu_percent` | Limit workerów AI jako procent logicznych CPU, liczba całkowita od 1 do 100; domyślnie `100`. |
+| `ai.search.cache.enabled` | `true` włącza pamięć wyników i wskazówek ruchu; `false` wyłącza ich tworzenie i odczyt. Domyślnie `true`. |
+| `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii, dodatnia liczba całkowita; domyślnie `2048`. W dostarczonym `run.properties` ustawiono `16384`. Tabele workerów mają dodatkowy limit. |
 
 Liczba workerów to `max(1, floor(logiczne_CPU * cpu_percent / 100))`, dodatkowo
 ograniczona liczbą zadań wyszukiwania. Na przykład `99` przy 8 logicznych CPU

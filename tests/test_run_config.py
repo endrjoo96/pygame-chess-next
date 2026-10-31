@@ -95,7 +95,7 @@ def test_run_config_defaults_cpu_usage_percentage_to_full_capacity(
         lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
     )
 
-    assert run_config._load_run_config()[-1] == 100
+    assert run_config._load_run_config()[5] == 100
 
 
 @pytest.mark.parametrize("cpu_percent", ["1", "99", "100"])
@@ -109,7 +109,7 @@ def test_run_config_accepts_cpu_usage_percentage(monkeypatch, tmp_path, cpu_perc
         ),
     )
 
-    assert run_config._load_run_config()[-1] == int(cpu_percent)
+    assert run_config._load_run_config()[5] == int(cpu_percent)
 
 
 @pytest.mark.parametrize("cpu_percent", ["0", "101", "-1", "50.5", "invalid"])
@@ -147,3 +147,44 @@ def test_configured_game_seed_is_used_as_is(monkeypatch):
     for seed in (-7, 2 ** 100):
         monkeypatch.setattr(run_config, "GAME_SEED", seed)
         assert run_config.resolve_game_seed() == seed
+
+
+def test_search_cache_defaults(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+    )
+    assert run_config._load_run_config()[-2:] == (True, 2048)
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("FALSE", False)])
+def test_search_cache_enabled_configuration(monkeypatch, tmp_path, value, expected):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.cache.enabled": value,
+             "ai.search.cache.max_entries": "16384"},
+            tmp_path / "run.properties",
+        ),
+    )
+    assert run_config._load_run_config()[-2:] == (expected, 16384)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("ai.search.cache.enabled", "yes"),
+        ("ai.search.cache.enabled", ""),
+        ("ai.search.cache.max_entries", "0"),
+        ("ai.search.cache.max_entries", "-1"),
+        ("ai.search.cache.max_entries", "1.5"),
+        ("ai.search.cache.max_entries", "invalid"),
+    ],
+)
+def test_search_cache_rejects_invalid_configuration(monkeypatch, tmp_path, key, value):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD", key: value}, tmp_path / "run.properties"),
+    )
+    with pytest.raises(ValueError, match=key.replace(".", r"\.")):
+        run_config._load_run_config()

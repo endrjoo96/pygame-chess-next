@@ -63,34 +63,35 @@ class GameObservation:
 
     def to_state(self) -> GameState:
         """Tworzy odizolowany stan symulacji z dokładnymi rękami obu graczy."""
+        memo = {}
         white_cards = (
-            copy.deepcopy(self.own_cards)
+            copy.deepcopy(self.own_cards, memo)
             if self.own_color == COLOR.WHITE
-            else copy.deepcopy(self.opponent_cards)
+            else copy.deepcopy(self.opponent_cards, memo)
         )
         black_cards = (
-            copy.deepcopy(self.own_cards)
+            copy.deepcopy(self.own_cards, memo)
             if self.own_color == COLOR.BLACK
-            else copy.deepcopy(self.opponent_cards)
+            else copy.deepcopy(self.opponent_cards, memo)
         )
         return GameState(
-            pieces_locations=copy.deepcopy(self.pieces_locations),
+            pieces_locations=copy.deepcopy(self.pieces_locations, memo),
             current_turn=self.current_turn,
-            turns_started=copy.deepcopy(self.turns_started),
+            turns_started=copy.deepcopy(self.turns_started, memo),
             white_cards=white_cards,
             black_cards=black_cards,
-            captured_white=copy.deepcopy(self.captured_white),
-            captured_black=copy.deepcopy(self.captured_black),
+            captured_white=copy.deepcopy(self.captured_white, memo),
+            captured_black=copy.deepcopy(self.captured_black, memo),
             board_card_available=self.board_card_available,
             board_card_position=self.board_card_position,
-            board_enchantment=copy.deepcopy(self.board_enchantment),
+            board_enchantment=copy.deepcopy(self.board_enchantment, memo),
             pending_board_card_delay=self.pending_board_card_delay,
             selected_card=self.selected_card,
             selected_piece_position=self.selected_piece_position,
             selected_captured_piece=self.selected_captured_piece,
             double_move_step=self.double_move_step,
             double_move_collected_board_card=self.double_move_collected_board_card,
-            resurrection_moves=copy.deepcopy(self.resurrection_moves),
+            resurrection_moves=copy.deepcopy(self.resurrection_moves, memo),
             random_state=self.random_state,
-            board_cards=copy.deepcopy(self.board_cards),
+            board_cards=copy.deepcopy(self.board_cards, memo),
         )

@@ -299,6 +299,24 @@ def test_ai_turn_receives_both_hands_and_applies_legal_action():
     assert game.pieces_locations[action.destination].get_color() == COLOR.BLACK
 
 
+def test_reset_clears_search_cache_and_invalidates_active_generation(monkeypatch):
+    from logic.chess_ai import ChessAI, SearchConfig
+    from logic.search_cache import Bound, CacheEntry
+
+    game = make_game()
+    game.seed = 23
+    game.black_ai = ChessAI(SearchConfig(cache_max_entries=8), max_workers=1)
+    game.black_ai._cache.put(CacheEntry(("old",), 1, None, 1.0, Bound.EXACT))
+    old_generation = game.black_ai.search_cache_generation()
+    monkeypatch.setattr(game.cards_processor, "reset_decks", lambda: None, raising=False)
+    monkeypatch.setattr(game, "_GameLogicLoop__schedule_next_board_card", lambda: None)
+
+    game.reset()
+
+    assert len(game.black_ai._cache) == 0
+    assert game.black_ai.search_cache_generation() != old_generation
+
+
 def test_ai_move_notation_uses_polish_piece_symbol_and_capture_marker():
     game = make_game()
     game.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)

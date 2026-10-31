@@ -1,7 +1,24 @@
+import importlib
+from functools import lru_cache
+from types import FunctionType
 from typing import List, Optional
 
 from constants.enchantment_type import EnchantmentType
 from constants.piece_type import PIECE_TYPE
+
+
+@lru_cache(maxsize=256)
+def _behavior_cache_key(behavior):
+    if behavior is None:
+        return None
+    if not isinstance(behavior, FunctionType) or "<locals>" in behavior.__qualname__:
+        raise ValueError("Enchantment behavior cannot be represented in the search cache")
+    resolved = importlib.import_module(behavior.__module__)
+    for name in behavior.__qualname__.split("."):
+        resolved = getattr(resolved, name)
+    if resolved is not behavior:
+        raise ValueError("Enchantment behavior is not a stable module-level function")
+    return behavior.__module__, behavior.__qualname__, behavior
 
 
 def _resolve_remaining_uses(enchantment_types, remaining_uses):
@@ -112,3 +129,11 @@ class Enchantment:
     def get_required_piece_type(self) -> PIECE_TYPE:
         """Zwraca wymagany typ figury; EMPTY oznacza brak ograniczenia."""
         return self.__piece_type_restriction
+
+    def cache_key(self):
+        return (
+            tuple(self.__enchantment_types), self.__piece_type_restriction,
+            _behavior_cache_key(self.__behavior_to_inject), self.__card_type,
+            self.__remaining_uses, self.__delay_before_use,
+            self.__allows_captured_piece_selection,
+        )

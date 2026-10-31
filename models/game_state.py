@@ -107,6 +107,44 @@ class GameState:
             ],
         )
 
+    def cache_key(self) -> tuple:
+        """Zwraca pełną, niezmienną reprezentację stanu dla wyszukiwania."""
+        references = {}
+
+        def reference(obj, build):
+            if obj is None:
+                return None
+            identity = id(obj)
+            if identity in references:
+                return ("ref", references[identity])
+            index = len(references)
+            references[identity] = index
+            return ("object", index, build(obj))
+
+        def enchantment_key(enchantment):
+            return reference(enchantment, lambda item: item.cache_key())
+
+        def piece_key(piece):
+            return reference(piece, lambda item: item.cache_key(enchantment_key))
+
+        return (
+            tuple((position, piece_key(piece))
+                  for position, piece in self.pieces_locations.items()),
+            self.current_turn,
+            tuple(sorted(self.turns_started.items(), key=lambda item: item[0].value)),
+            tuple(enchantment_key(card) for card in self.white_cards),
+            tuple(enchantment_key(card) for card in self.black_cards),
+            tuple(piece_key(piece) for piece in self.captured_white),
+            tuple(piece_key(piece) for piece in self.captured_black),
+            self.board_card_available, self.board_card_position,
+            enchantment_key(self.board_enchantment), self.pending_board_card_delay,
+            self.selected_card, self.selected_piece_position,
+            self.selected_captured_piece, self.double_move_step,
+            self.double_move_collected_board_card, tuple(self.resurrection_moves),
+            self.random_state,
+            tuple((position, enchantment_key(card)) for position, card in self.board_cards),
+        )
+
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         """Zwraca talię wskazanego gracza."""
         return self.white_cards if color == COLOR.WHITE else self.black_cards

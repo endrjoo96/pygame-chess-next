@@ -110,6 +110,8 @@ class GameLogicLoop(object):
         if self._ai_future is not None:
             self._ai_future.cancel()
             self._ai_future = None
+        if isinstance(self.black_ai, ChessAI):
+            self.black_ai.clear_search_cache()
         with self._ai_progress_lock:
             self._ai_generation += 1
             self._ai_best_move = None
@@ -201,10 +203,16 @@ class GameLogicLoop(object):
                         self._ai_best_move = (notation, depth, score)
 
             log_info("Starting AI search for black")
+            search_options = {}
+            if isinstance(self.black_ai, ChessAI):
+                search_options["cache_generation"] = (
+                    self.black_ai.search_cache_generation()
+                )
             self._ai_future = self._ai_executor.submit(
                 self.black_ai.choose_action,
                 observation,
                 candidate_callback=report_candidate,
+                **search_options,
             )
             return
         if not self._ai_future.done():
