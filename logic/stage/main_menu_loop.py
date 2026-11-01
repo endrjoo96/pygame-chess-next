@@ -9,6 +9,7 @@ from pygame._sdl2 import Window
 from pygame.locals import *
 
 from logic.chess_ai import ChessAI, WorkerPoolInitializationCancelled
+from logic.stage.ai_stats_window import AIStatsWindow
 from logic.stage.game_logic_loop import GameLogicLoop
 from utils.gamecontext import GameContext
 from utils import utils
@@ -28,6 +29,9 @@ class Game:
         self.menu_showed = False
         self.play_against_ai = True
         self.chess = None
+        self.ai_stats_window: Optional[AIStatsWindow] = None
+        self.paused = False
+        self._pause_background = None
         # flag to set game loop
         self.running = True
         self.winner = None
@@ -94,30 +98,41 @@ class Game:
         try:
             while self.running:
                 self.clock.tick(20)
-                events = pygame.event.get()
+                pause_was_open = self.paused
+                events = []
+                for event in pygame.event.get():
+                    if (
+                        self.ai_stats_window is not None
+                        and self.ai_stats_window.handle_event(event)
+                    ):
+                        self.ai_stats_window = None
+                        continue
+                    if (
+                        self.ai_stats_window is not None
+                        and self.ai_stats_window.owns_event(event)
+                    ):
+                        continue
+                    events.append(event)
                 utils.begin_input_frame(events)
                 for event in events:
-                    key_pressed = pygame.key.get_pressed()
-                    if event.type == pygame.QUIT or key_pressed[K_ESCAPE]:
-                        self.running = False
-                    elif (
-                        self._loading_error is not None
-                        and event.type == pygame.KEYDOWN
-                        and event.key == K_RETURN
-                    ):
-                        self._dismiss_loading_error()
-                    elif key_pressed[K_SPACE]:
-                        if self.chess is not None:
-                            self.chess.reset()
+                    self._handle_app_event(event)
 
+                if not self.running:
+                    break
                 if self.running and self._loading:
                     self._finish_startup_if_ready()
+                if pause_was_open and not self.paused:
+                    utils.begin_input_frame([])
                 if self._loading or self._loading_error is not None:
                     self.draw_loading_screen()
                 elif not self.menu_showed:
                     self.menu()
+                elif self.paused:
+                    self.draw_pause_menu()
                 else:
                     self.game()
+                if self.ai_stats_window is not None and self.chess is not None:
+                    self.ai_stats_window.draw(self.chess.ai_search_stats)
 
                 pygame.display.flip()
                 pygame.event.pump()
@@ -126,6 +141,37 @@ class Game:
                 self._shutdown_resources()
             finally:
                 pygame.quit()
+
+    def _handle_app_event(self, event):
+        if event.type == pygame.QUIT:
+            self.running = False
+        elif event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
+            if (
+                self.menu_showed
+                and not self._loading
+                and self._loading_error is None
+            ):
+                if self.paused:
+                    self.paused = False
+                    self._pause_background = None
+                else:
+                    self._pause_background = self.screen.copy()
+                    self.paused = True
+            else:
+                self.running = False
+        elif (
+            self._loading_error is not None
+            and event.type == pygame.KEYDOWN
+            and event.key == K_RETURN
+        ):
+            self._dismiss_loading_error()
+        elif (
+            event.type == pygame.KEYDOWN
+            and event.key == K_SPACE
+            and self.chess is not None
+            and not self.paused
+        ):
+            self.chess.reset()
 
     def menu(self):
         """Rysuje menu startowe i przełącza do gry po kliknięciu lub Enterze."""
@@ -206,10 +252,12 @@ class Game:
         """Tworzy nową partię dopiero po wybraniu jej seeda przy starcie."""
         seed = resolve_game_seed()
         if not self.play_against_ai:
+            self.ai_stats_window = None
             self.chess = GameLogicLoop(self.screen, black_ai=None, seed=seed)
             self.menu_showed = True
             return
 
+        self.ai_stats_window = None
         self._loading_ai = ChessAI()
         self._loading_seed = seed
         self._loading_error = None
@@ -243,13 +291,16 @@ class Game:
         if self._loading_future is None or not self._loading_future.done():
             return
 
+        stats_window: Optional[AIStatsWindow] = None
         try:
             self._loading_future.result()
+            stats_window = AIStatsWindow()
             self.chess = GameLogicLoop(
                 self.screen,
                 black_ai=self._loading_ai,
                 seed=self._loading_seed,
             )
+            self.ai_stats_window = stats_window
         except WorkerPoolInitializationCancelled:
             self._loading_error = "Inicjalizacja workerów AI została anulowana."
             self._loading = False
@@ -257,6 +308,9 @@ class Game:
             log_error("Game startup failed: {}".format(error))
             self._loading_error = str(error)
             self._loading = False
+            if stats_window is not None:
+                stats_window.close()
+            self.ai_stats_window = None
             if self._loading_ai is not None:
                 self._loading_ai.shutdown_worker_pool()
         else:
@@ -332,10 +386,16 @@ class Game:
             except Exception as error:
                 log_error("AI worker initialization failed during shutdown: {}".format(error))
         try:
-            if self.chess is not None:
-                self.chess.close()
-            elif self._loading_ai is not None:
-                self._loading_ai.shutdown_worker_pool()
+            try:
+                if self.chess is not None:
+                    self.chess.close()
+                elif self._loading_ai is not None:
+                    self._loading_ai.shutdown_worker_pool()
+            finally:
+                stats_window = self.ai_stats_window
+                if stats_window is not None:
+                    stats_window.close()
+                    self.ai_stats_window = None
         finally:
             self._startup_executor.shutdown(wait=True, cancel_futures=True)
 
@@ -364,6 +424,135 @@ class Game:
         if winner:
             self.winner = winner
             self.declare_winner(winner)
+
+    def _pause_menu_options(self):
+        options = [
+            ("resume", "Wznów grę"),
+            ("main_menu", "Zakończ grę i wróć do menu głównego"),
+            ("quit", "Wyjdź z gry"),
+        ]
+        if (
+            self.ai_stats_window is not None
+            or (self.chess is not None and self.chess.black_ai is not None)
+        ):
+            label = (
+                "Zamknij okno debugowania"
+                if self.ai_stats_window is not None
+                else "Otwórz okno debugowania"
+            )
+            options.append(("toggle_debug", label))
+        return options
+
+    def _pause_menu_buttons(self):
+        options = self._pause_menu_options()
+        panel_width = min(620, max(240, self.screen.get_width() - 40))
+        button_width = panel_width - 48
+        button_height = 46
+        button_gap = 12
+        panel_height = 104 + len(options) * button_height + (
+            len(options) - 1
+        ) * button_gap
+        panel_top = (self.screen.get_height() - panel_height) // 2
+        button_left = (self.screen.get_width() - button_width) // 2
+        first_button_top = panel_top + 78
+        return [
+            (
+                action,
+                label,
+                pygame.Rect(
+                    button_left,
+                    first_button_top + index * (button_height + button_gap),
+                    button_width,
+                    button_height,
+                ),
+            )
+            for index, (action, label) in enumerate(options)
+        ]
+
+    def draw_pause_menu(self):
+        """Wyświetla menu pauzy i obsługuje wybrane w nim działanie."""
+        if self._pause_background is not None:
+            self.screen.blit(self._pause_background, (0, 0))
+        else:
+            self.screen.fill((24, 24, 24))
+
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+
+        buttons = self._pause_menu_buttons()
+        panel_rect = pygame.Rect(
+            buttons[0][2].left - 24,
+            buttons[0][2].top - 78,
+            buttons[0][2].width + 48,
+            buttons[-1][2].bottom - buttons[0][2].top + 102,
+        )
+        pygame.draw.rect(self.screen, (36, 36, 36), panel_rect, border_radius=12)
+
+        title_font = pygame.font.SysFont(None, 36)
+        title = title_font.render("Pauza", True, (255, 255, 255))
+        self.screen.blit(
+            title,
+            (panel_rect.centerx - title.get_width() // 2, panel_rect.top + 22),
+        )
+
+        button_font = pygame.font.SysFont(None, 23)
+        click_position: Optional[tuple[int, int]] = None
+        if utils.left_click_event():
+            mouse_position = utils.get_mouse_event()
+            click_position = (mouse_position[0], mouse_position[1])
+        for action, label, button in buttons:
+            pygame.draw.rect(
+                self.screen,
+                (58, 58, 58),
+                button,
+                border_radius=6,
+            )
+            rendered_label = button_font.render(label, True, (255, 255, 255))
+            self.screen.blit(
+                rendered_label,
+                (
+                    button.centerx - rendered_label.get_width() // 2,
+                    button.centery - rendered_label.get_height() // 2,
+                ),
+            )
+            if click_position is not None and button.collidepoint(
+                click_position[0], click_position[1]
+            ):
+                self._handle_pause_menu_action(action)
+                return
+
+    def _handle_pause_menu_action(self, action):
+        if action == "resume":
+            self.paused = False
+            self._pause_background = None
+        elif action == "main_menu":
+            chess = self.chess
+            stats_window = self.ai_stats_window
+            try:
+                if chess is not None:
+                    chess.close()
+            finally:
+                if stats_window is not None:
+                    stats_window.close()
+            self.chess = None
+            self.ai_stats_window = None
+            self.menu_showed = False
+            self.winner = None
+            self.paused = False
+            self._pause_background = None
+        elif action == "quit":
+            self.running = False
+            self.paused = False
+            self._pause_background = None
+        elif action == "toggle_debug":
+            if self.ai_stats_window is not None:
+                self.ai_stats_window.close()
+                self.ai_stats_window = None
+            elif self.chess is not None and self.chess.black_ai is not None:
+                self.ai_stats_window = AIStatsWindow()
+        else:
+            raise ValueError("Unknown pause menu action: {}".format(action))
 
     def declare_winner(self, winner):
         """Wyświetla zwycięzcę i obsługuje rozpoczęcie nowej partii."""

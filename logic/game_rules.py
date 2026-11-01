@@ -4,7 +4,7 @@ from enum import Enum
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
-from constants.pos import id_to_xy, xy_to_id
+from constants.pos import POS, id_to_xy, xy_to_id
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_state import GameState
@@ -31,6 +31,29 @@ class GameAction:
     card_index: int = -1
     captured_color: COLOR = COLOR.EMPTY
     captured_index: int = -1
+
+    @staticmethod
+    def _format_position(position):
+        if position in range(1, 65):
+            return POS(position).name
+        return "invalid({})".format(position)
+
+    def __str__(self):
+        fields = [
+            "type={}".format(self.action_type.value),
+            "source={}".format(self._format_position(self.source)),
+        ]
+        if self.destination:
+            fields.append(
+                "destination={}".format(self._format_position(self.destination)))
+        if self.card_index >= 0:
+            fields.append("card_index={}".format(self.card_index))
+        if self.captured_color != COLOR.EMPTY or self.captured_index >= 0:
+            fields.extend((
+                "captured_color={}".format(self.captured_color.value),
+                "captured_index={}".format(self.captured_index),
+            ))
+        return "GameAction({})".format(", ".join(fields))
 
 
 class GameRules:

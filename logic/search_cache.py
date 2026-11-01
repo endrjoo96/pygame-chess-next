@@ -1,7 +1,7 @@
 import heapq
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from logic.game_rules import GameAction
 
@@ -19,31 +19,49 @@ class CacheEntry:
     action: Optional[GameAction]
     score: float
     bound: Optional[Bound]
+    root_scope_ids: frozenset = frozenset()
 
 
 class SearchCache:
     """Ograniczona tabela transpozycji; brak granicy oznacza tylko wskazówkę ruchu."""
 
-    def __init__(self, max_entries: int):
+    def __init__(
+        self,
+        max_entries: int,
+        on_size_change: Optional[Callable[[int], None]] = None,
+    ):
         if max_entries < 1:
             raise ValueError("The search cache limit must be positive")
         self.max_entries = max_entries
+        self._on_size_change = on_size_change
         self._entries = {}
         self._by_state = {}
         self._heap = []
         self._sequence = 0
         self._updated = set()
+        self._read = set()
         self.evictions = 0
+        self._scope_ids = {}
+        self._scope_keys = {}
+        self._next_scope_id = 0
 
     @staticmethod
     def _quality(entry):
         return (entry.depth, entry.bound is not None, entry.bound == Bound.EXACT)
 
     def put(self, entry: CacheEntry, updated=True):
+        size_before = len(self._entries)
         key = (entry.key, entry.depth)
         old = self._entries.get(key)
-        if old is not None and self._quality(old[0]) > self._quality(entry):
-            return
+        if old is not None:
+            old_entry, _ = old
+            scopes = old_entry.root_scope_ids | entry.root_scope_ids
+            if self._quality(old_entry) > self._quality(entry):
+                if scopes == old_entry.root_scope_ids:
+                    return
+                entry = replace(old_entry, root_scope_ids=scopes)
+            else:
+                entry = replace(entry, root_scope_ids=scopes)
         self._sequence += 1
         sequence = self._sequence
         self._entries[key] = (entry, sequence)
@@ -59,6 +77,7 @@ class SearchCache:
                 for item_key, value in self._entries.items()
             ]
             heapq.heapify(self._heap)
+        self._notify_size_change(size_before)
 
     def _evict(self):
         while self._heap:
@@ -73,23 +92,91 @@ class SearchCache:
             if not by_depth:
                 del self._by_state[state_key]
             self._updated.discard(key)
+            self._read.discard(key)
             self.evictions += 1
             return
 
     def get(self, key: tuple, depth: int) -> Optional[CacheEntry]:
-        value = self._entries.get((key, depth))
+        cache_key = (key, depth)
+        value = self._entries.get(cache_key)
+        if value is not None:
+            self._read.add(cache_key)
         return value[0] if value else None
 
     def best_move(self, key: tuple) -> Optional[GameAction]:
         entries = self._by_state.get(key, {})
         choices = [entry for entry in entries.values() if entry.action is not None]
-        return max(choices, key=self._quality).action if choices else None
+        if not choices:
+            return None
+        best_entry = max(choices, key=self._quality)
+        self._read.add((best_entry.key, best_entry.depth))
+        return best_entry.action
 
-    def snapshot(self, limit: int, updated_only=False) -> Tuple[CacheEntry, ...]:
-        values = (
-            (self._entries[key] for key in self._updated if key in self._entries)
-            if updated_only else self._entries.values()
-        )
+    def scope_id_for(self, root_key: tuple, action: GameAction, create=False):
+        scope_key = (root_key, action)
+        scope_id = self._scope_ids.get(scope_key)
+        if scope_id is None and create:
+            scope_id = self._next_scope_id
+            self._next_scope_id += 1
+            self._scope_ids[scope_key] = scope_id
+            self._scope_keys[scope_id] = scope_key
+        return scope_id
+
+    def retain_scope(self, scope_id: Optional[int]):
+        size_before = len(self._entries)
+        if scope_id is None:
+            self._entries.clear()
+            self._by_state.clear()
+            self._heap.clear()
+            self._updated.clear()
+            self._read.clear()
+            self._scope_ids.clear()
+            self._scope_keys.clear()
+            self._notify_size_change(size_before)
+            return
+
+        retained = {}
+        for key, (entry, sequence) in self._entries.items():
+            if scope_id not in entry.root_scope_ids:
+                continue
+            entry = replace(entry, root_scope_ids=frozenset((scope_id,)))
+            retained[key] = (entry, sequence)
+        self._entries = retained
+        self._by_state = {}
+        for (state_key, depth), (entry, _) in retained.items():
+            self._by_state.setdefault(state_key, {})[depth] = entry
+        self._heap = [
+            (*self._quality(entry), sequence, key)
+            for key, (entry, sequence) in retained.items()
+        ]
+        heapq.heapify(self._heap)
+        self._updated.intersection_update(retained)
+        self._read.intersection_update(retained)
+        scope_key = self._scope_keys.get(scope_id)
+        self._scope_ids = {scope_key: scope_id} if scope_key is not None else {}
+        self._scope_keys = {scope_id: scope_key} if scope_key is not None else {}
+        self._notify_size_change(size_before)
+
+    def _notify_size_change(self, size_before):
+        size_after = len(self._entries)
+        if self._on_size_change is not None and size_before != size_after:
+            self._on_size_change(size_after)
+
+    def snapshot(
+        self, limit: int, updated_only=False, touched_only=False
+    ) -> Tuple[CacheEntry, ...]:
+        if touched_only:
+            selected_keys = self._updated | self._read
+            values = (
+                self._entries[key]
+                for key in selected_keys if key in self._entries
+            )
+        elif updated_only:
+            values = (
+                self._entries[key] for key in self._updated if key in self._entries
+            )
+        else:
+            values = self._entries.values()
         selected = heapq.nlargest(
             limit, values, key=lambda value: (*self._quality(value[0]), value[1]))
         return tuple(entry for entry, _ in reversed(selected))

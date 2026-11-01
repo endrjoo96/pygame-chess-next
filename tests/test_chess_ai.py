@@ -1,8 +1,8 @@
 import os
 import random
 import time
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event, Lock
 
 import pytest
 
@@ -13,9 +13,11 @@ from logic.chess_ai import (
     SearchConfig,
     WorkerPoolInitializationCancelled,
     _RootEvaluation,
+    _evaluate_root_action,
 )
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
+from logic.search_cache import Bound, CacheEntry
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
@@ -92,7 +94,10 @@ def test_ai_returns_best_known_move_after_an_incomplete_iteration(monkeypatch):
     shallow_candidate = initial_actions[0]
     deep_candidate = initial_actions[-1]
 
-    def evaluate_root_action(search_state, action, depth, config, deadline, snapshot):
+    def evaluate_root_action(
+        search_state, action, depth, config, deadline, snapshot,
+        cache_size_callback=None,
+    ):
         if depth == 1:
             if action == shallow_candidate:
                 return _RootEvaluation(15.0, 1)
@@ -140,7 +145,10 @@ def test_ai_passes_the_opponents_exact_cards_to_root_simulations(monkeypatch):
     observation = GameObservation.from_state(state, COLOR.BLACK)
     searched_states = []
 
-    def evaluate_root_action(search_state, action, depth, config, deadline, snapshot):
+    def evaluate_root_action(
+        search_state, action, depth, config, deadline, snapshot,
+        cache_size_callback=None,
+    ):
         searched_states.append(search_state)
         return _RootEvaluation(0.0, 1)
 
@@ -260,12 +268,130 @@ def test_worker_count_is_capped_by_available_search_tasks():
     assert ChessAI(max_workers=8)._worker_count_for_tasks(3) == 3
 
 
+def test_ponder_worker_count_uses_ceiling_and_respects_task_count():
+    ai = ChessAI(max_workers=9, ponder_cpu_percent=50)
+
+    assert ai._ponder_worker_count_for_tasks(100) == 5
+    assert ai._ponder_worker_count_for_tasks(3) == 3
+    assert ChessAI(
+        max_workers=9, ponder_cpu_percent=0
+    )._ponder_worker_count_for_tasks(100) == 0
+
+
+def test_ponder_stops_when_cache_reaches_its_limit(monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    white_action = GameAction(GameActionType.MOVE, 1, 2)
+    second_white_action = GameAction(GameActionType.MOVE, 2, 3)
+    black_action = GameAction(GameActionType.MOVE, 3, 4)
+
+    def available_actions(search_state):
+        if search_state.current_turn == COLOR.BLACK:
+            return [black_action]
+        if search_state.double_move_step:
+            return [second_white_action]
+        return [white_action]
+
+    def apply_generated_action(search_state, action):
+        child = search_state.clone()
+        if search_state.current_turn == COLOR.WHITE and not search_state.double_move_step:
+            child.current_turn = COLOR.WHITE
+            child.double_move_step = 1
+        else:
+            child.current_turn = COLOR.BLACK
+            child.double_move_step = 0
+        return child
+
+    def evaluate_root_action(
+        search_state, action, depth, config, deadline, cache_snapshot,
+        cache_size_callback=None,
+    ):
+        entry = CacheEntry(
+            ("pondered", search_state.cache_key()),
+            depth,
+            action,
+            float(depth),
+            Bound.EXACT,
+        )
+        return _RootEvaluation(float(depth), 1, (entry,))
+
+    monkeypatch.setattr(GameSimulation, "available_actions", available_actions)
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action", apply_generated_action)
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+    ai = ChessAI(
+        SearchConfig(max_depth=3, cache_max_entries=2),
+        max_workers=1,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+
+    result = ai.ponder(state, Event())
+
+    assert result.completed_depth == 2
+    assert result.root_branches == 1
+    assert result.stopped_reason == "cache-full"
+    assert len(ai._cache) == 2
+    assert all(entry.root_scope_ids for entry in ai._cache.snapshot(2))
+    assert not ai._worker_search_cancel_event.is_set()
+    assert not ai._ponder_active
+
+
+def test_pondering_is_disabled_when_ponder_percent_is_zero():
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    ai = ChessAI(max_workers=1, ponder_cpu_percent=0)
+
+    result = ai.ponder(state)
+
+    assert result.stopped_reason == "disabled"
+    assert ai._worker_pool is None
+
+
+def test_pondering_reuses_the_persistent_process_pool():
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    state.pieces_locations[64] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    ai = ChessAI(
+        SearchConfig(max_depth=2, cache_max_entries=64),
+        max_workers=1,
+        ponder_cpu_percent=100,
+    )
+
+    try:
+        first_result = ai.ponder(state)
+        worker_pool = ai._worker_pool
+        second_result = ai.ponder(state)
+
+        assert worker_pool is not None
+        assert ai._worker_pool is worker_pool
+        assert first_result.completed_depth == 2
+        assert second_result.completed_depth == 2
+        assert len(ai._cache) > 0
+    finally:
+        ai.shutdown_worker_pool()
+
+
 def test_prepared_worker_pool_reports_readiness_and_is_reused():
     state = make_black_to_move_state()
     state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     observation = GameObservation.from_state(state, COLOR.BLACK)
     ai = ChessAI(SearchConfig(time_limit_seconds=5, max_depth=1), max_workers=2)
     progress = []
+    worker_statuses = []
 
     def report_progress(ready, total):
         progress.append((
@@ -274,6 +400,7 @@ def test_prepared_worker_pool_reports_readiness_and_is_reused():
             ai._worker_probe_started_count.value,
             time.monotonic(),
         ))
+        worker_statuses.append(ai.worker_stats())
 
     try:
         with ThreadPoolExecutor(max_workers=1) as startup_executor:
@@ -289,7 +416,13 @@ def test_prepared_worker_pool_reports_readiness_and_is_reused():
             (1, 2, 1),
             (2, 2, 2),
         ]
+        assert any(
+            worker.state == "initializing" for worker in worker_statuses[0])
         assert progress[1][3] - progress[0][3] >= 0.05
+        prepared_workers = ai.worker_stats()
+        assert [worker.state for worker in prepared_workers] == ["idle", "idle"]
+        assert len({worker.pid for worker in prepared_workers}) == 2
+        assert [worker.cache_entries for worker in prepared_workers] == [0, 0]
         ai.choose_action(observation)
         assert ai._worker_pool is worker_pool
         ai.choose_action(observation)
@@ -298,7 +431,123 @@ def test_prepared_worker_pool_reports_readiness_and_is_reused():
         ai.shutdown_worker_pool()
 
     assert ai._worker_pool is None
+    assert [worker.state for worker in ai.worker_stats()] == [
+        "not-started", "not-started"]
     ai.shutdown_worker_pool()
+
+
+def test_cache_and_local_worker_diagnostics():
+    ai = ChessAI(
+        SearchConfig(cache_enabled=True, cache_max_entries=2),
+        max_workers=1,
+    )
+    assert ai.cache_stats() == (True, 0, 2, 0)
+    assert [(worker.state, worker.is_local) for worker in ai.worker_stats()] == [
+        ("idle", True)]
+
+    ai._cache.put(CacheEntry(("one",), 1, None, 1.0, Bound.EXACT))
+    ai._cache.put(CacheEntry(("two",), 1, None, 2.0, Bound.EXACT))
+    ai._cache.put(CacheEntry(("three",), 1, None, 3.0, Bound.EXACT))
+    assert ai.cache_stats() == (True, 2, 2, 1)
+
+    ai._set_local_worker_busy(True)
+    assert [worker.state for worker in ai.worker_stats()] == ["busy"]
+    ai._set_local_worker_busy(False)
+
+    disabled_cache = ChessAI(
+        SearchConfig(cache_enabled=False, cache_max_entries=2),
+        max_workers=1,
+    )
+    assert disabled_cache.cache_stats() == (False, 0, 2, 0)
+
+
+def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=5, max_depth=1),
+        max_workers=1,
+        ponder_cpu_percent=0,
+    )
+    observed_cache_sizes = []
+
+    def evaluate_root_action(
+        state, action, depth, config, deadline, snapshot,
+        cache_size_callback=None,
+    ):
+        cache_size_callback(7)
+        worker = ai.worker_stats()[0]
+        observed_cache_sizes.append((worker.state, worker.cache_entries))
+        return _RootEvaluation(0.0, 1)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+
+    ai.choose_action(GameObservation.from_state(state, COLOR.BLACK))
+
+    assert observed_cache_sizes
+    assert all(value == ("busy", 7) for value in observed_cache_sizes)
+    assert ai.worker_stats()[0].cache_entries == 0
+
+
+def test_process_worker_status_changes_while_evaluating(monkeypatch):
+    import logic.chess_ai as chess_ai
+
+    ai = ChessAI(max_workers=2)
+    status_values = [chess_ai._WORKER_IDLE, chess_ai._WORKER_IDLE]
+    status_pids = [123, 456]
+    cache_entry_values = [0, 0]
+    status_lock = Lock()
+    ai._worker_status_values = status_values
+    ai._worker_status_pids = status_pids
+    ai._worker_cache_entry_values = cache_entry_values
+    ai._worker_status_process_lock = status_lock
+    ai._worker_pool_state = "ready"
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_VALUES", status_values)
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_PIDS", status_pids)
+    monkeypatch.setattr(
+        chess_ai, "_WORKER_CACHE_ENTRY_VALUES", cache_entry_values)
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_LOCK", status_lock)
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_INDEX", 0)
+    entered_search = Event()
+    release_search = Event()
+
+    def wait_during_search(_worker, _state, _depth, _alpha, _beta):
+        entered_search.set()
+        assert release_search.wait(timeout=2)
+        return 0.0
+
+    monkeypatch.setattr(ChessAI, "_search", wait_during_search)
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    action = GameSimulation.available_actions(state)[0]
+    config = SearchConfig(cache_enabled=True, cache_max_entries=8, max_depth=1)
+    seed_entry = CacheEntry(("worker-seed",), 1, None, 0.0, Bound.EXACT)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _evaluate_root_action,
+                state,
+                action,
+                1,
+                config,
+                time.monotonic() + 5,
+                (seed_entry,),
+            )
+            assert entered_search.wait(timeout=1)
+            assert [worker.state for worker in ai.worker_stats()] == [
+                "busy", "idle"]
+            assert [
+                worker.cache_entries for worker in ai.worker_stats()
+            ] == [1, 0]
+            release_search.set()
+            assert future.result(timeout=2).score == 0.0
+        assert [worker.state for worker in ai.worker_stats()] == [
+            "idle", "idle"]
+        assert [worker.cache_entries for worker in ai.worker_stats()] == [0, 0]
+    finally:
+        release_search.set()
 
 
 def test_prepared_worker_pool_survives_search_timeout():

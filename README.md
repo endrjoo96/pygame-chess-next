@@ -14,7 +14,10 @@ python -m logic.game_init
 
 W menu wybierz **Graj**, aby rozpocząć partię. Przełącznik **Bot czarnych**
 pozwala włączyć grę przeciwko AI; gdy jest wyłączony, czarne obsługuje drugi
-gracz. W trakcie gry `Esc` zamyka okno, a `Spacja` rozpoczyna partię od nowa.
+gracz. W trakcie gry `Esc` otwiera menu pauzy, z którego można wznowić grę,
+wrócić do menu głównego, wyjść z aplikacji lub przełączyć okno debugowania AI.
+Bot kontynuuje obliczenia w tle podczas pauzy. `Esc` ponownie wznawia grę, a
+`Spacja` rozpoczyna partię od nowa.
 
 Na początku każdej partii obaj gracze otrzymują po dwie losowe karty. Ich typ
 i liczba użyć są takie same dla obu stron, ale karty są osobnymi instancjami.
@@ -26,9 +29,19 @@ Licznik tur jest widoczny nad planszą, a zebranie karty nie wpływa na odliczan
 ## Bot
 
 Bot gra czarnymi. Podczas namysłu plansza jest przyciemniona, wyświetla się
-animowany spinner oraz najlepszy dotychczas znaleziony ruch. Wyszukiwanie działa
-w osobnym wątku, a analizę możliwych ruchów rozdziela między procesy — do liczby
-dostępnych logicznych rdzeni. Bot analizuje dokładne kopie rąk obu graczy.
+animowany spinner. Przy partii przeciwko botowi otwiera się osobne okno
+statystyk, w którym widać najlepszy dotychczas znaleziony ruch, jego ocenę i
+głębokość; po zakończeniu wyszukiwania także wybrany ruch i liczbę odwiedzonych
+węzłów. Panel pokazuje również liczbę wpisów głównego cache względem limitu, wyparcia,
+łączną liczbę wpisów w lokalnych cache workerów (aktualizowaną w trakcie
+wyszukiwania) oraz bieżący stan każdego workera (`not-started`, `starting`,
+`initializing`, `busy` lub `idle`);
+lista mieści 24 workery, a przy większej liczbie można ją przewijać kółkiem myszy.
+Wyszukiwanie szeregowe pokazuje worker lokalny. Okno jest pozbawione górnej belki
+i można je przesuwać, przeciągając dowolne miejsce. Zamknięcie okna statystyk nie
+przerywa partii.
+Wyszukiwanie działa w osobnym wątku, a analizę możliwych ruchów rozdziela między
+procesy — do liczby dostępnych logicznych rdzeni. Bot analizuje dokładne kopie rąk obu graczy.
 Przy głębszym wyszukiwaniu stosuje redukcję późnych spokojnych ruchów (LMR);
 obiecujące warianty są ponownie sprawdzane z pełną głębokością, a bicia
 i akcje kart pozostają bez redukcji.
@@ -42,6 +55,16 @@ wiarygodność nie została naruszona przez redukcje LMR. Pamięć jest czyszczo
 przy rozpoczęciu nowej partii i nie gwarantuje szybszego ani lepszego ruchu.
 Przy `DEBUG` podawane są także liczby trafień, użytych ocen, wskazówek ruchu,
 wpisów i usunięć z pamięci.
+Na początku partii bot korzysta również z niewielkiego zestawu klasycznych
+otwarć do czwartego półruchu. Legalne ruchy książkowe jedynie zmieniają
+kolejność przy równym wyniku heurystycznym — nie zastępują oceny AI ani nie
+pomijają ruchów kartami.
+Po ruchu czarnych bot może w trakcie tury białych analizować ich możliwe
+odpowiedzi i dalsze warianty. Pondering nie ma limitu czasu; kończy się po
+osiągnięciu maksymalnej głębokości, zapełnieniu pamięci albo wykonaniu ruchu
+przez białe. Wyniki są zachowywane w pamięci i mogą przyspieszyć następny wybór
+ruchu. Po każdym wyborze zachowywana jest tylko gałąź wybranego przez bota
+ruchu. Funkcja jest domyślnie wyłączona.
 
 ## Konfiguracja
 
@@ -55,8 +78,9 @@ Ustawienia znajdują się w `run.properties`:
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
 | `ai.search.time_limit_seconds` | Łączny budżet czasu AI na wybranie ruchu, w sekundach. |
 | `ai.search.cpu_percent` | Limit workerów AI jako procent logicznych CPU, liczba całkowita od 1 do 100; domyślnie `100`. |
+| `ai.search.ponder.cpu_percent` | Procent puli workerów przeznaczony na pondering podczas tury białych, liczba całkowita od 0 do 100; brak klucza oznacza `0` i wyłącza pondering. Wymaga `ai.search.cache.enabled=true`. Dla wartości dodatniej liczba workerów wynosi `ceil(rozmiar_puli * procent / 100)`. |
 | `ai.search.cache.enabled` | `true` włącza pamięć wyników i wskazówek ruchu; `false` wyłącza ich tworzenie i odczyt. Domyślnie `true`. |
-| `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii, dodatnia liczba całkowita; domyślnie `2048`. W dostarczonym `run.properties` ustawiono `16384`. Tabele workerów mają dodatkowy limit. |
+| `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii; dodatnia liczba całkowita z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne: 1024, 1024², 1024³). W dostarczonym `run.properties` ustawiono `64k`. Tabele workerów mają dodatkowy limit. |
 
 Liczba workerów to `max(1, floor(logiczne_CPU * cpu_percent / 100))`, dodatkowo
 ograniczona liczbą zadań wyszukiwania. Na przykład `99` przy 8 logicznych CPU

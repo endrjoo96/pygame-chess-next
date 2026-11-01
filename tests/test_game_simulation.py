@@ -5,10 +5,11 @@ import pytest
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
+from logic.game_rules import GameAction, GameActionType
+from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_state import GameState
-from logic.game_simulation import GameActionType, GameSimulation
 from utils.run_config import GAME_SEED
 
 
@@ -29,6 +30,12 @@ def empty_state():
         random_state=random.Random(
             GAME_SEED if GAME_SEED is not None else 0).getstate(),
     )
+
+
+def test_game_action_log_string_uses_chess_square_names():
+    action = GameAction(GameActionType.MOVE, source=13, destination=45)
+
+    assert str(action) == "GameAction(type=move, source=E2, destination=E6)"
 
 
 def test_available_actions_and_simulation_share_board_move_rules(empty_state):

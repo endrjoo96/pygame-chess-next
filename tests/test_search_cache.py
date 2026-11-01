@@ -135,6 +135,46 @@ def test_cache_retains_deeper_verified_entries_and_is_bounded():
     assert cache.get(("b",), 3) == deep
 
 
+def test_cache_can_retain_only_entries_from_the_selected_root_scope():
+    cache = SearchCache(8)
+    root_key = ("root",)
+    selected_action = GameAction(GameActionType.MOVE, 1, 2)
+    other_action = GameAction(GameActionType.MOVE, 1, 3)
+    selected_scope = cache.scope_id_for(root_key, selected_action, create=True)
+    other_scope = cache.scope_id_for(root_key, other_action, create=True)
+    selected_entry = CacheEntry(
+        ("selected",), 1, None, 1.0, Bound.EXACT, frozenset((selected_scope,)))
+    other_entry = CacheEntry(
+        ("other",), 1, None, 2.0, Bound.EXACT, frozenset((other_scope,)))
+    shared_entry = CacheEntry(
+        ("shared",), 1, None, 3.0, Bound.EXACT,
+        frozenset((selected_scope, other_scope)))
+    for entry in (selected_entry, other_entry, shared_entry):
+        cache.put(entry)
+
+    cache.retain_scope(selected_scope)
+
+    assert len(cache) == 2
+    assert cache.get(("selected",), 1) == selected_entry
+    assert cache.get(("other",), 1) is None
+    assert cache.get(("shared",), 1).root_scope_ids == frozenset((selected_scope,))
+
+
+def test_cache_snapshot_can_include_only_entries_used_or_updated():
+    cache = SearchCache(8)
+    untouched = CacheEntry(("untouched",), 1, None, 1.0, Bound.EXACT)
+    updated = CacheEntry(("updated",), 1, None, 2.0, Bound.EXACT)
+    read = CacheEntry(("read",), 1, None, 3.0, Bound.EXACT)
+    cache.put(untouched, updated=False)
+    cache.put(read, updated=False)
+    cache.put(updated)
+    assert cache.get(read.key, read.depth) == read
+
+    snapshot = cache.snapshot(8, touched_only=True)
+
+    assert set(snapshot) == {updated, read}
+
+
 @pytest.mark.parametrize(
     "settings",
     [
@@ -432,7 +472,8 @@ def test_cached_root_hint_preserves_original_tie_breaking(monkeypatch):
     monkeypatch.setattr(ChessAI, "evaluate", staticmethod(lambda state: 0.0))
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
-        lambda state, action, depth, config, deadline, snapshot: _RootEvaluation(0.0, 1),
+        lambda state, action, depth, config, deadline, snapshot,
+               cache_size_callback=None: _RootEvaluation(0.0, 1),
     )
     updates = []
     result = ai.choose_action(
@@ -443,6 +484,35 @@ def test_cached_root_hint_preserves_original_tie_breaking(monkeypatch):
     assert result.action == actions[0]
 
 
+def test_choose_action_keeps_only_the_selected_root_branch(tree, monkeypatch):
+    ai, root, actions = tree
+    entries = {
+        action: CacheEntry(
+            ("root-result", action), 1, None, float(index), Bound.EXACT)
+        for index, action in enumerate(actions)
+    }
+
+    class TreeObservation:
+        own_color = COLOR.BLACK
+        current_turn = COLOR.BLACK
+
+        def to_state(self):
+            return root
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action",
+        lambda state, action, depth, config, deadline, snapshot,
+               cache_size_callback=None:
+            _RootEvaluation(float(actions.index(action)), 1, (entries[action],)),
+    )
+
+    result = ai.choose_action(TreeObservation())
+
+    assert result.action == actions[-1]
+    assert len(ai._cache) == 1
+    assert ai._cache.snapshot(1)[0].key == ("root-result", actions[-1])
+
+
 def test_reset_during_search_cannot_restore_previous_entries(monkeypatch):
     state = populated_state()
     observation = GameObservation.from_state(state, COLOR.BLACK)
@@ -451,7 +521,10 @@ def test_reset_during_search_cannot_restore_previous_entries(monkeypatch):
     entry = CacheEntry(("old",), 1, None, 1.0, Bound.EXACT)
     calls = 0
 
-    def root_result(search_state, action, depth, config, deadline, snapshot):
+    def root_result(
+        search_state, action, depth, config, deadline, snapshot,
+        cache_size_callback=None,
+    ):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -473,7 +546,8 @@ def test_search_queued_before_reset_cannot_populate_new_cache(monkeypatch):
     entry = CacheEntry(("old",), 1, None, 1.0, Bound.EXACT)
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
-        lambda state, action, depth, config, deadline, snapshot:
+        lambda state, action, depth, config, deadline, snapshot,
+               cache_size_callback=None:
             _RootEvaluation(1.0, 1, (entry,)),
     )
     ai.choose_action(
@@ -538,3 +612,18 @@ def test_serial_and_parallel_search_use_equivalent_warm_snapshots():
     assert serial_result.score == pytest.approx(parallel_result.score)
     assert serial._cache_score_hits > 0
     assert parallel._cache_score_hits > 0
+
+
+def test_cache_size_callback_reports_only_size_changes():
+    size_changes = []
+    cache = SearchCache(2, on_size_change=size_changes.append)
+
+    cache.put(CacheEntry(("one",), 1, None, 1.0, Bound.EXACT))
+    cache.put(CacheEntry(("two",), 1, None, 2.0, Bound.EXACT))
+    cache.put(CacheEntry(("three",), 1, None, 3.0, Bound.EXACT))
+
+    assert size_changes == [1, 2]
+
+    cache.retain_scope(None)
+
+    assert size_changes == [1, 2, 0]

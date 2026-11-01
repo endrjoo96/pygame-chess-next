@@ -1,7 +1,7 @@
 import math
 import random
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
-from threading import Lock
+from threading import Event, Lock
 from typing import Optional
 
 import pygame
@@ -14,6 +14,7 @@ from constants.predefined_colors import PREDEFINED_COLOR
 from logic.chess_ai import ChessAI
 from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
+from models.ai_search_stats import AISearchStats
 from models.game_observation import GameObservation
 from models.game_state import GameState
 from models.chess_pieces import Piece, COLOR
@@ -41,8 +42,13 @@ class GameLogicLoop(object):
         self._ai_executor = ThreadPoolExecutor(max_workers=1)
         self._ai_future: Optional[Future] = None
         self._ai_best_move = None
+        self._ai_searching = False
+        self._ai_final_result = None
         self._ai_progress_lock = Lock()
         self._ai_generation = 0
+        self._ai_active_generation = None
+        self._ponder_future: Optional[Future] = None
+        self._ponder_cancel_event = Event()
         # create an object of class to show chess pieces on the board
         self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
         passive_icon = pygame.image.load(self.context.card_mod_passive_src).convert_alpha()
@@ -83,6 +89,7 @@ class GameLogicLoop(object):
 
     def reset(self):
         """Przywraca planszę, talie i liczniki do stanu początkowego nowej partii."""
+        self._cancel_pondering()
         log_info(
             "Initializing game state: seed={}, mode={}, log_level={}, black_ai={}".format(
                 self.seed,
@@ -114,7 +121,10 @@ class GameLogicLoop(object):
             self.black_ai.clear_search_cache()
         with self._ai_progress_lock:
             self._ai_generation += 1
+            self._ai_active_generation = None
             self._ai_best_move = None
+            self._ai_searching = False
+            self._ai_final_result = None
         self.capture_processor.reset()
         self.cards_processor.reset_decks()
 
@@ -131,9 +141,13 @@ class GameLogicLoop(object):
 
     def close(self):
         """Kończy wyszukiwanie i zamyka zasoby AI przy zamykaniu aplikacji."""
+        self._cancel_pondering()
         if self._ai_future is not None and not self._ai_future.done():
             self._ai_future.cancel()
+        if self._ponder_future is not None and self._ponder_future.done():
+            self._reap_pondering()
         self._ai_executor.shutdown(wait=True, cancel_futures=True)
+        self._reap_pondering()
         if self._ai_future is not None:
             try:
                 self._ai_future.result()
@@ -146,6 +160,7 @@ class GameLogicLoop(object):
 
     def play_turn(self):
         """Rysuje informacje o turze, obsługuje jej wejście i zwraca zwycięzcę, jeśli jest."""
+        self._reap_pondering()
         # white color
         white_color = (255, 255, 255)
         # create fonts for texts
@@ -209,7 +224,10 @@ class GameLogicLoop(object):
             with self._ai_progress_lock:
                 self._ai_generation += 1
                 generation = self._ai_generation
+                self._ai_active_generation = generation
                 self._ai_best_move = None
+                self._ai_searching = True
+                self._ai_final_result = None
 
             def report_candidate(action, depth, score):
                 notation = self._format_ai_action_notation(state, action)
@@ -237,22 +255,78 @@ class GameLogicLoop(object):
             decision = self._ai_future.result()
         except Exception as error:
             self._ai_future = None
+            with self._ai_progress_lock:
+                if self._ai_active_generation == self._ai_generation:
+                    self._ai_searching = False
             log_error("AI search failed: {}".format(error))
             raise
         self._ai_future = None
         if decision.action is None:
+            with self._ai_progress_lock:
+                if self._ai_active_generation == self._ai_generation:
+                    self._ai_searching = False
             log_warn("AI search returned no legal action")
             return
+        final_notation = self._format_ai_action_notation(
+            GameState.from_game(self), decision.action)
+        with self._ai_progress_lock:
+            if self._ai_active_generation == self._ai_generation:
+                self._ai_searching = False
+                self._ai_final_result = (
+                    final_notation,
+                    decision.score,
+                    decision.completed_depth,
+                    decision.visited_nodes,
+                )
         log_info(
             "AI selected {} (score={:+.2f}, depth={}, nodes={})".format(
-                self._format_ai_action_notation(
-                    GameState.from_game(self), decision.action),
+                final_notation,
                 decision.score,
                 decision.completed_depth,
                 decision.visited_nodes,
             )
         )
         self.apply_ai_action(decision.action)
+        self._start_pondering()
+
+    def _start_pondering(self):
+        if (
+            not isinstance(self.black_ai, ChessAI)
+            or self.black_ai.ponder_cpu_percent == 0
+            or self.current_turn != COLOR.WHITE
+            or self.capture_processor.get_winner() is not None
+        ):
+            return
+        self._reap_pondering()
+        if self._ponder_future is not None:
+            return
+        self._ponder_cancel_event.clear()
+        state = GameState.from_game(self)
+        log_info("Starting AI pondering during white turn")
+        self._ponder_future = self._ai_executor.submit(
+            self.black_ai.ponder, state, self._ponder_cancel_event)
+
+    def _cancel_pondering(self):
+        future = getattr(self, "_ponder_future", None)
+        if future is None:
+            return
+        self._ponder_cancel_event.set()
+        if isinstance(self.black_ai, ChessAI):
+            self.black_ai.cancel_ponder()
+        if future.cancel():
+            self._ponder_future = None
+
+    def _reap_pondering(self):
+        future = getattr(self, "_ponder_future", None)
+        if future is None or not future.done():
+            return
+        try:
+            future.result()
+        except CancelledError:
+            pass
+        except Exception as error:
+            log_error("AI pondering failed: {}".format(error))
+        self._ponder_future = None
 
     @property
     def is_ai_thinking(self):
@@ -260,6 +334,37 @@ class GameLogicLoop(object):
             self.black_ai is not None
             and self.current_turn == COLOR.BLACK
             and self._ai_future is not None
+        )
+
+    @property
+    def ai_search_stats(self) -> AISearchStats:
+        with self._ai_progress_lock:
+            best_move = self._ai_best_move
+            final_result = self._ai_final_result
+            is_searching = self._ai_searching
+        cache_stats = None
+        workers = ()
+        if isinstance(self.black_ai, ChessAI):
+            cache_stats = self.black_ai.cache_stats()
+            workers = self.black_ai.worker_stats()
+        return AISearchStats(
+            is_searching=is_searching,
+            candidate_move=best_move[0] if best_move is not None else None,
+            candidate_score=best_move[2] if best_move is not None else None,
+            candidate_depth=best_move[1] if best_move is not None else None,
+            final_move=final_result[0] if final_result is not None else None,
+            final_score=final_result[1] if final_result is not None else None,
+            completed_depth=(
+                final_result[2] if final_result is not None else None
+            ),
+            visited_nodes=(
+                final_result[3] if final_result is not None else None
+            ),
+            cache_enabled=cache_stats[0] if cache_stats is not None else None,
+            cache_entries=cache_stats[1] if cache_stats is not None else None,
+            cache_limit=cache_stats[2] if cache_stats is not None else None,
+            cache_evictions=cache_stats[3] if cache_stats is not None else None,
+            workers=workers,
         )
 
     def draw_ai_thinking_overlay(self):
@@ -287,26 +392,6 @@ class GameLogicLoop(object):
             message,
             (center_x - message.get_width() // 2, center_y + 18),
         )
-        with self._ai_progress_lock:
-            best_move = (
-                self._ai_best_move
-                if self._ai_best_move is not None
-                else None
-            )
-        if best_move is not None:
-            caption = SysFont(self.context.comic_sans_font, 20).render(
-                "Myślę, że najlepszy ruch to...", True, (255, 255, 255))
-            notation = SysFont(self.context.comic_sans_font, 30, bold=True).render(
-                best_move[0], True, (255, 255, 255))
-            score = SysFont(self.context.comic_sans_font, 18).render(
-                "Ocena heurystyczna (czarne): {:+.2f} | głębokość: {}".format(
-                    best_move[2], best_move[1]),
-                True,
-                (220, 220, 220),
-            )
-            self.screen.blit(caption, (24, 24))
-            self.screen.blit(notation, (24, 54))
-            self.screen.blit(score, (24, 92))
 
     @staticmethod
     def _format_ai_action_notation(state, action):
@@ -417,6 +502,8 @@ class GameLogicLoop(object):
         else:
             self.moves = []
         self.rng.setstate(result.random_state)
+        if result.current_turn == COLOR.BLACK:
+            self._cancel_pondering()
 
     # method to draw pieces on the chess board
     def draw_pieces(self):

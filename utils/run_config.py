@@ -37,6 +37,15 @@ def _load_properties():
     return properties, properties_path
 
 
+def _parse_cache_max_entries(value):
+    multipliers = {"k": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+    multiplier = 1
+    if value and value[-1] in multipliers:
+        multiplier = multipliers[value[-1]]
+        value = value[:-1]
+    return int(value) * multiplier
+
+
 def _load_run_config():
     """Waliduje ustawienia uruchomienia i zwraca je w postaci typowanej."""
     properties, properties_path = _load_properties()
@@ -92,6 +101,15 @@ def _load_run_config():
                 properties_path)
         ) from None
 
+    try:
+        ai_search_ponder_cpu_percent = int(
+            properties.get("ai.search.ponder.cpu_percent", "0"))
+    except ValueError:
+        raise ValueError(
+            "Invalid 'ai.search.ponder.cpu_percent' in {}; expected an integer "
+            "from 0 to 100".format(properties_path)
+        ) from None
+
     if ai_search_max_depth < 1:
         raise ValueError("'ai.search.max_depth' must be at least one in {}".format(properties_path))
     if not math.isfinite(ai_search_time_limit_seconds) or ai_search_time_limit_seconds <= 0:
@@ -102,6 +120,10 @@ def _load_run_config():
         raise ValueError(
             "'ai.search.cpu_percent' must be between 1 and 100 in {}".format(
                 properties_path))
+    if not 0 <= ai_search_ponder_cpu_percent <= 100:
+        raise ValueError(
+            "'ai.search.ponder.cpu_percent' must be between 0 and 100 in {}".format(
+                properties_path))
 
     cache_enabled_value = properties.get("ai.search.cache.enabled", "true").lower()
     if cache_enabled_value not in ("true", "false"):
@@ -109,15 +131,16 @@ def _load_run_config():
             "'ai.search.cache.enabled' must be true or false in {}".format(
                 properties_path))
     try:
-        cache_max_entries = int(properties.get("ai.search.cache.max_entries", "2048"))
+        cache_max_entries = _parse_cache_max_entries(
+            properties.get("ai.search.cache.max_entries", "2048"))
     except ValueError:
         raise ValueError(
-            "'ai.search.cache.max_entries' must be a positive integer in {}".format(
-                properties_path)) from None
+            "'ai.search.cache.max_entries' must be a positive integer or use "
+            "a k, M, or G suffix in {}".format(properties_path)) from None
     if cache_max_entries < 1:
         raise ValueError(
-            "'ai.search.cache.max_entries' must be a positive integer in {}".format(
-                properties_path))
+            "'ai.search.cache.max_entries' must be a positive integer or use "
+            "a k, M, or G suffix in {}".format(properties_path))
 
     return (
         run_mode,
@@ -126,6 +149,7 @@ def _load_run_config():
         ai_search_max_depth,
         ai_search_time_limit_seconds,
         ai_search_cpu_percent,
+        ai_search_ponder_cpu_percent,
         cache_enabled_value == "true",
         cache_max_entries,
     )
@@ -138,6 +162,7 @@ def _load_run_config():
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
     AI_SEARCH_CPU_PERCENT,
+    AI_SEARCH_PONDER_CPU_PERCENT,
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
 ) = _load_run_config()

@@ -1,6 +1,6 @@
 import random
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Event, Lock
 from types import SimpleNamespace
 
 from constants.piece_color import COLOR
@@ -64,6 +64,9 @@ class FakeCaptureProcessor:
         self.captured_black.clear()
         self.captured.clear()
 
+    def get_winner(self):
+        return None
+
 
 def make_game(card_type=None, uses=None):
     """Tworzy minimalny stan gry z atrapami procesorów dla testów logiki."""
@@ -90,8 +93,14 @@ def make_game(card_type=None, uses=None):
     game.pending_board_card_delay = None
     game._ai_executor = ThreadPoolExecutor(max_workers=1)
     game._ai_future = None
+    game._ai_best_move = None
+    game._ai_searching = False
+    game._ai_final_result = None
     game._ai_progress_lock = Lock()
     game._ai_generation = 0
+    game._ai_active_generation = None
+    game._ponder_future = None
+    game._ponder_cancel_event = Event()
     game.rng = random.Random(23)
     return game
 
@@ -286,6 +295,10 @@ def test_ai_turn_receives_both_hands_and_applies_legal_action():
     game._ai_future.result(timeout=1)
     assert game.is_ai_thinking
     assert game._ai_best_move == ("Wb8", 1, 2.5)
+    assert game.ai_search_stats.is_searching
+    assert game.ai_search_stats.candidate_move == "Wb8"
+    assert game.ai_search_stats.candidate_score == 2.5
+    assert game.ai_search_stats.candidate_depth == 1
     game.play_ai_turn()
 
     assert game.black_ai.observation.own_color == COLOR.BLACK
@@ -297,6 +310,90 @@ def test_ai_turn_receives_both_hands_and_applies_legal_action():
     assert not hasattr(game.black_ai.observation, "white_cards")
     assert game.current_turn == COLOR.WHITE
     assert game.pieces_locations[action.destination].get_color() == COLOR.BLACK
+    assert not game.ai_search_stats.is_searching
+    assert game.ai_search_stats.final_move == "Wb8"
+    assert game.ai_search_stats.final_score == 2.5
+    assert game.ai_search_stats.completed_depth == 1
+    assert game.ai_search_stats.visited_nodes == 1
+
+
+def test_ai_search_stats_include_cache_and_individual_worker_states():
+    from logic.chess_ai import ChessAI, SearchConfig
+    from logic.search_cache import Bound, CacheEntry
+
+    game = make_game()
+    game.black_ai = ChessAI(
+        SearchConfig(cache_enabled=True, cache_max_entries=4),
+        max_workers=1,
+    )
+    game.black_ai._cache.put(
+        CacheEntry(("diagnostic",), 1, None, 1.0, Bound.EXACT))
+
+    stats = game.ai_search_stats
+
+    assert stats.cache_enabled
+    assert stats.cache_entries == 1
+    assert stats.cache_limit == 4
+    assert stats.cache_evictions == 0
+    assert len(stats.workers) == 1
+    assert stats.workers[0].is_local
+    assert stats.workers[0].state == "idle"
+
+
+def test_ai_starts_pondering_after_its_move():
+    from logic.chess_ai import ChessAI, PonderResult
+
+    class StubAI(ChessAI):
+        def __init__(self):
+            super().__init__(max_workers=1, ponder_cpu_percent=50)
+
+        def ponder(self, state, cancellation_event):
+            self.pondered_state = state
+            return PonderResult(1, 1, 2, "max-depth")
+
+    game = make_game()
+    game.black_ai = StubAI()
+
+    game._start_pondering()
+    result = game._ponder_future.result(timeout=1)
+    game._reap_pondering()
+
+    assert result.stopped_reason == "max-depth"
+    assert game.black_ai.pondered_state.current_turn == COLOR.WHITE
+    assert game._ponder_future is None
+    game._ai_executor.shutdown(wait=True)
+
+
+def test_completed_white_action_cancels_active_pondering():
+    from concurrent.futures import Future
+    from logic.chess_ai import ChessAI
+
+    class StubAI(ChessAI):
+        def __init__(self):
+            super().__init__(max_workers=1)
+            self.cancelled = False
+
+        def cancel_ponder(self):
+            self.cancelled = True
+
+    game = make_game()
+    game.black_ai = StubAI()
+    game._ponder_future = Future()
+    game.pieces_locations[9] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    state = GameState.from_game(game)
+    action = next(
+        candidate
+        for candidate in GameSimulation.available_actions(state)
+        if candidate.action_type == GameActionType.MOVE
+    )
+
+    game._GameLogicLoop__apply_domain_action(action)
+
+    assert game.current_turn == COLOR.BLACK
+    assert game._ponder_cancel_event.is_set()
+    assert game.black_ai.cancelled
+    assert game._ponder_future is None
+    game._ai_executor.shutdown(wait=True)
 
 
 def test_reset_clears_search_cache_and_invalidates_active_generation(monkeypatch):
@@ -306,6 +403,9 @@ def test_reset_clears_search_cache_and_invalidates_active_generation(monkeypatch
     game = make_game()
     game.seed = 23
     game.black_ai = ChessAI(SearchConfig(cache_max_entries=8), max_workers=1)
+    game._ai_best_move = ("Wb8", 2, 1.5)
+    game._ai_searching = True
+    game._ai_final_result = ("Wb8", 2, 1.5, 24)
     game.black_ai._cache.put(CacheEntry(("old",), 1, None, 1.0, Bound.EXACT))
     old_generation = game.black_ai.search_cache_generation()
     monkeypatch.setattr(game.cards_processor, "reset_decks", lambda: None, raising=False)
@@ -315,6 +415,9 @@ def test_reset_clears_search_cache_and_invalidates_active_generation(monkeypatch
 
     assert len(game.black_ai._cache) == 0
     assert game.black_ai.search_cache_generation() != old_generation
+    assert not game.ai_search_stats.is_searching
+    assert game.ai_search_stats.candidate_move is None
+    assert game.ai_search_stats.final_move is None
 
 
 def test_ai_move_notation_uses_polish_piece_symbol_and_capture_marker():

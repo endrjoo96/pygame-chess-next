@@ -157,6 +157,43 @@ def test_search_cache_defaults(monkeypatch, tmp_path):
     assert run_config._load_run_config()[-2:] == (True, 2048)
 
 
+def test_ponder_cpu_percentage_defaults_to_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+    )
+    assert run_config._load_run_config()[6] == 0
+
+
+@pytest.mark.parametrize("value", ["0", "1", "50", "100"])
+def test_ponder_cpu_percentage_accepts_zero_through_one_hundred(
+    monkeypatch, tmp_path, value
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.ponder.cpu_percent": value},
+            tmp_path / "run.properties",
+        ),
+    )
+    assert run_config._load_run_config()[6] == int(value)
+
+
+@pytest.mark.parametrize("value", ["-1", "101", "50.5", "invalid"])
+def test_ponder_cpu_percentage_rejects_invalid_values(
+    monkeypatch, tmp_path, value
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.ponder.cpu_percent": value},
+            tmp_path / "run.properties",
+        ),
+    )
+    with pytest.raises(ValueError, match="ai.search.ponder.cpu_percent"):
+        run_config._load_run_config()
+
+
 @pytest.mark.parametrize(("value", "expected"), [("true", True), ("FALSE", False)])
 def test_search_cache_enabled_configuration(monkeypatch, tmp_path, value, expected):
     monkeypatch.setattr(
@@ -171,6 +208,28 @@ def test_search_cache_enabled_configuration(monkeypatch, tmp_path, value, expect
 
 
 @pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("16384", 16384),
+        ("16k", 16 * 1024),
+        ("2M", 2 * 1024 ** 2),
+        ("1G", 1024 ** 3),
+    ],
+)
+def test_search_cache_max_entries_accepts_binary_suffixes(
+    monkeypatch, tmp_path, value, expected
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.cache.max_entries": value},
+            tmp_path / "run.properties",
+        ),
+    )
+    assert run_config._load_run_config()[-1] == expected
+
+
+@pytest.mark.parametrize(
     ("key", "value"),
     [
         ("ai.search.cache.enabled", "yes"),
@@ -178,6 +237,11 @@ def test_search_cache_enabled_configuration(monkeypatch, tmp_path, value, expect
         ("ai.search.cache.max_entries", "0"),
         ("ai.search.cache.max_entries", "-1"),
         ("ai.search.cache.max_entries", "1.5"),
+        ("ai.search.cache.max_entries", "1.5k"),
+        ("ai.search.cache.max_entries", "1K"),
+        ("ai.search.cache.max_entries", "1m"),
+        ("ai.search.cache.max_entries", "1g"),
+        ("ai.search.cache.max_entries", "k"),
         ("ai.search.cache.max_entries", "invalid"),
     ],
 )
