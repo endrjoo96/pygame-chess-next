@@ -29,6 +29,7 @@ class Piece:
         self.__color: COLOR = color
         self.__type: PIECE_TYPE = piece_type
         self.__starting_position = starting_position
+        self.__has_moved = False
         self.__enchantments: List[Enchantment] = []
         self.__delayed_enchantments: List[Tuple[Enchantment, int]] = []
         self.__stun_effects: List[Tuple[Enchantment, int]] = []
@@ -44,6 +45,7 @@ class Piece:
         copied.__color = self.__color
         copied.__type = self.__type
         copied.__starting_position = self.__starting_position
+        copied.__has_moved = self.__has_moved
         copied.__enchantments = [
             copy.deepcopy(enchantment, memo)
             for enchantment in self.__enchantments
@@ -72,6 +74,13 @@ class Piece:
     def get_starting_position(self) -> Optional[int]:
         """Zwraca pole, z którego figura rozpoczęła grę, jeśli je zapisano."""
         return self.__starting_position
+
+    def has_moved(self) -> bool:
+        """Informuje, czy figura wykonała ruch lub utraciła prawa roszady."""
+        return self.__has_moved
+
+    def set_has_moved(self, has_moved: bool = True):
+        self.__has_moved = has_moved
 
     def can_be_promoted(self) -> bool:
         """Określa, czy typ figury uczestniczy w łańcuchu awansów."""
@@ -220,7 +229,7 @@ class Piece:
 
     def cache_key(self, enchantment_key):
         return (
-            self.__color, self.__type, self.__starting_position,
+            self.__color, self.__type, self.__starting_position, self.__has_moved,
             tuple(enchantment_key(item) for item in self.__enchantments),
             tuple((enchantment_key(item), turn)
                   for item, turn in self.__delayed_enchantments),

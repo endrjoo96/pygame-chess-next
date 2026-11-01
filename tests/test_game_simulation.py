@@ -5,6 +5,7 @@ import pytest
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
+from constants.pos import POS
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
@@ -30,6 +31,21 @@ def empty_state():
         pending_board_card_delay=None,
         random_state=random.Random(_TEST_RANDOM_SEED).getstate(),
     )
+
+
+def add_castling_pieces(state, color):
+    home_rank = 1 if color == COLOR.WHITE else 8
+    king_position = POS["E{}".format(home_rank)].value
+    rook_positions = (
+        POS["A{}".format(home_rank)].value,
+        POS["H{}".format(home_rank)].value,
+    )
+    state.pieces_locations[king_position] = Piece(
+        color, PIECE_TYPE.KING, king_position)
+    for rook_position in rook_positions:
+        state.pieces_locations[rook_position] = Piece(
+            color, PIECE_TYPE.ROOK, rook_position)
+    return king_position, rook_positions
 
 
 def test_game_action_log_string_uses_chess_square_names():
@@ -293,6 +309,69 @@ def test_resurrection_action_restores_matching_captured_piece(empty_state):
     assert empty_state.pieces_locations[2].get_type() == PIECE_TYPE.EMPTY
 
 
+def test_resurrection_collects_board_card_after_consuming_resurrection_card(
+    empty_state,
+):
+    empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    empty_state.captured_black.append(Piece(COLOR.WHITE, PIECE_TYPE.PAWN))
+    empty_state.white_cards = [
+        EnchantmentCardType.PAWN_SWORDSMAN.create()
+        for _ in range(7)
+    ] + [EnchantmentCardType.KING_PAWN_RESURRECTION.create()]
+    board_card = EnchantmentCardType.PIECE_TELEPORT.create()
+    empty_state.board_cards = [(2, board_card)]
+    empty_state.board_card_available = True
+    empty_state.board_card_position = 2
+    empty_state.board_enchantment = board_card
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.RESURRECT
+        and action.destination == 2
+    )
+
+    result = GameSimulation.apply(empty_state, action)
+
+    assert len(result.white_cards) == 8
+    assert result.white_cards[-1].get_card_type() == (
+        EnchantmentCardType.PIECE_TELEPORT)
+    assert result.board_cards == []
+    assert empty_state.white_cards[-1].get_card_type() == (
+        EnchantmentCardType.KING_PAWN_RESURRECTION)
+    assert empty_state.board_cards == [(2, board_card)]
+
+
+def test_board_card_is_destroyed_when_hand_cannot_accept_it(empty_state):
+    empty_state.pieces_locations[1] = Piece(
+        COLOR.WHITE, PIECE_TYPE.ROOK, starting_position=1)
+    empty_state.white_cards = [
+        EnchantmentCardType.PAWN_SWORDSMAN.create()
+        for _ in range(8)
+    ]
+    board_card = EnchantmentCardType.PIECE_TELEPORT.create()
+    empty_state.board_cards = [(2, board_card)]
+    empty_state.board_card_available = True
+    empty_state.board_card_position = 2
+    empty_state.board_enchantment = board_card
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.MOVE
+        and action.source == 1
+        and action.destination == 2
+        and action.card_index == -1
+    )
+
+    result = GameSimulation.apply(empty_state, action)
+
+    assert len(result.white_cards) == 8
+    assert result.board_cards == []
+    assert not result.board_card_available
+    assert result.board_enchantment is None
+    assert all(
+        card.get_card_type() != EnchantmentCardType.PIECE_TELEPORT
+        for card in result.white_cards
+    )
+
+
 def test_double_move_keeps_same_player_to_move_until_second_step(empty_state):
     empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
     empty_state.white_cards.append(EnchantmentCardType.PIECE_DOUBLE_MOVE.create(uses=1))
@@ -493,3 +572,278 @@ def test_board_card_countdown_does_not_advance_in_simulation(empty_state):
     assert after_black_move.board_card_available
     assert after_black_move.pending_board_card_delay == 1
     assert [position for position, _ in after_black_move.board_cards] == [17]
+
+
+@pytest.mark.parametrize(
+    (
+        "moving_color", "pawn_source", "pawn_destination",
+        "capturer_source", "en_passant_destination", "captured_position",
+    ),
+    [
+        (COLOR.WHITE, POS.E2, POS.E4, POS.D4, POS.E3, POS.E4),
+        (COLOR.BLACK, POS.E7, POS.E5, POS.D5, POS.E6, POS.E5),
+    ],
+)
+def test_pawn_can_capture_en_passant_after_a_double_step(
+    empty_state,
+    moving_color,
+    pawn_source,
+    pawn_destination,
+    capturer_source,
+    en_passant_destination,
+    captured_position,
+):
+    empty_state.current_turn = moving_color
+    moving_pawn = Piece(
+        moving_color, PIECE_TYPE.PAWN, pawn_source.value)
+    capturing_color = (
+        COLOR.BLACK if moving_color == COLOR.WHITE else COLOR.WHITE)
+    capturing_pawn = Piece(
+        capturing_color, PIECE_TYPE.PAWN, capturer_source.value)
+    capturing_pawn.set_has_moved()
+    empty_state.pieces_locations[pawn_source.value] = moving_pawn
+    empty_state.pieces_locations[capturer_source.value] = capturing_pawn
+
+    double_step = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == pawn_source.value
+        and action.destination == pawn_destination.value
+        and action.card_index == -1
+    )
+    after_double_step = GameSimulation.apply(empty_state, double_step)
+
+    assert after_double_step.en_passant_target == (
+        POS.E3.value if moving_color == COLOR.WHITE else POS.E6.value
+    )
+    en_passant = next(
+        action for action in GameSimulation.available_actions(after_double_step)
+        if action.source == capturer_source.value
+        and action.destination == en_passant_destination.value
+        and action.card_index == -1
+    )
+    result = GameSimulation.apply(after_double_step, en_passant)
+
+    assert result.pieces_locations[en_passant_destination.value].get_type() == (
+        PIECE_TYPE.PAWN)
+    assert not result.pieces_locations[captured_position.value].exists()
+    assert result.get_captured_for(capturing_color)[0].get_type() == (
+        PIECE_TYPE.PAWN)
+    assert result.en_passant_target is None
+    assert empty_state.en_passant_target is None
+    assert empty_state.pieces_locations[pawn_source.value] is moving_pawn
+
+
+def test_en_passant_right_expires_after_any_opponent_move(empty_state):
+    empty_state.pieces_locations[POS.E2.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.PAWN, POS.E2.value)
+    empty_state.pieces_locations[POS.D4.value] = Piece(
+        COLOR.BLACK, PIECE_TYPE.PAWN, POS.D7.value)
+    empty_state.pieces_locations[POS.D4.value].set_has_moved()
+
+    white_double_step = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == POS.E2.value
+        and action.destination == POS.E4.value
+    )
+    after_white_move = GameSimulation.apply(empty_state, white_double_step)
+    black_move = next(
+        action for action in GameSimulation.available_actions(after_white_move)
+        if action.source == POS.D4.value
+        and action.destination == POS.D3.value
+    )
+
+    result = GameSimulation.apply(after_white_move, black_move)
+
+    assert result.en_passant_target is None
+    assert not any(
+        action.source == POS.D4.value
+        and action.destination == POS.E3.value
+        for action in GameSimulation.available_actions(result)
+    )
+
+
+def test_moved_pawn_cannot_double_step_from_its_starting_rank(empty_state):
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN, POS.E2.value)
+    pawn.set_has_moved()
+    empty_state.pieces_locations[POS.E2.value] = pawn
+
+    assert not any(
+        action.source == POS.E2.value
+        and action.destination == POS.E4.value
+        for action in GameSimulation.available_actions(empty_state)
+    )
+
+
+def test_state_cache_key_distinguishes_en_passant_and_castling_rights(
+    empty_state,
+):
+    king_position, (queenside_rook, _) = add_castling_pieces(
+        empty_state, COLOR.WHITE)
+    original_key = empty_state.cache_key()
+    moved_rook_state = empty_state.clone()
+    moved_rook_state.pieces_locations[queenside_rook].set_has_moved()
+    en_passant_state = empty_state.clone()
+    en_passant_state.en_passant_target = POS.E3.value
+
+    assert moved_rook_state.cache_key() != original_key
+    assert en_passant_state.cache_key() != original_key
+    assert empty_state.pieces_locations[king_position].has_moved() is False
+
+
+@pytest.mark.parametrize(
+    ("color", "castle_destination", "rook_destination", "rook_source"),
+    [
+        (COLOR.WHITE, POS.G1, POS.F1, POS.H1),
+        (COLOR.WHITE, POS.C1, POS.D1, POS.A1),
+        (COLOR.BLACK, POS.G8, POS.F8, POS.H8),
+        (COLOR.BLACK, POS.C8, POS.D8, POS.A8),
+    ],
+)
+def test_castling_moves_king_and_rook_and_consumes_rights(
+    empty_state, color, castle_destination, rook_destination, rook_source,
+):
+    empty_state.current_turn = color
+    king_position, _ = add_castling_pieces(empty_state, color)
+
+    castle = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == king_position
+        and action.destination == castle_destination.value
+        and action.card_index == -1
+    )
+    result = GameSimulation.apply(empty_state, castle)
+
+    assert result.pieces_locations[castle_destination.value].get_type() == (
+        PIECE_TYPE.KING)
+    assert result.pieces_locations[rook_destination.value].get_type() == (
+        PIECE_TYPE.ROOK)
+    assert not result.pieces_locations[king_position].exists()
+    assert not result.pieces_locations[rook_source.value].exists()
+    assert result.pieces_locations[castle_destination.value].has_moved()
+    assert result.pieces_locations[rook_destination.value].has_moved()
+    assert empty_state.pieces_locations[king_position].get_type() == (
+        PIECE_TYPE.KING)
+    assert empty_state.pieces_locations[rook_source.value].get_type() == (
+        PIECE_TYPE.ROOK)
+
+
+@pytest.mark.parametrize(
+    ("attacker_position", "attacker_type", "castle_destination"),
+    [
+        (POS.E8, PIECE_TYPE.ROOK, POS.C1),
+        (POS.F8, PIECE_TYPE.ROOK, POS.G1),
+        (POS.G8, PIECE_TYPE.ROOK, POS.G1),
+        (POS.H2, PIECE_TYPE.PAWN, POS.G1),
+    ],
+)
+def test_castling_is_allowed_regardless_of_attacked_king_squares(
+    empty_state, attacker_position, attacker_type, castle_destination,
+):
+    king_position, _ = add_castling_pieces(empty_state, COLOR.WHITE)
+    empty_state.pieces_locations[attacker_position.value] = Piece(
+        COLOR.BLACK, attacker_type, attacker_position.value)
+
+    castle_destinations = {
+        action.destination for action in GameSimulation.available_actions(
+            empty_state)
+        if action.source == king_position
+    }
+
+    assert castle_destination.value in castle_destinations
+
+
+@pytest.mark.parametrize(
+    ("blocking_piece", "forbidden_destination", "available_destination"),
+    [
+        (POS.F1, POS.G1, POS.C1),
+        (POS.B1, POS.C1, POS.G1),
+    ],
+)
+def test_castling_requires_every_square_between_king_and_rook_to_be_empty(
+    empty_state, blocking_piece, forbidden_destination, available_destination,
+):
+    king_position, _ = add_castling_pieces(empty_state, COLOR.WHITE)
+    empty_state.pieces_locations[blocking_piece.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.KNIGHT, blocking_piece.value)
+
+    castle_destinations = {
+        action.destination for action in GameSimulation.available_actions(
+            empty_state)
+        if action.source == king_position
+    }
+
+    assert forbidden_destination.value not in castle_destinations
+    assert available_destination.value in castle_destinations
+
+
+def test_castling_right_is_lost_after_king_moves_away_and_back(empty_state):
+    king_position, (queenside_rook, kingside_rook) = add_castling_pieces(
+        empty_state, COLOR.WHITE)
+    empty_state.pieces_locations[POS.A8.value] = Piece(
+        COLOR.BLACK, PIECE_TYPE.KNIGHT, POS.A8.value)
+    king_move = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == king_position and action.destination == POS.E2.value
+    )
+    after_king_move = GameSimulation.apply(empty_state, king_move)
+    black_move = next(
+        action for action in GameSimulation.available_actions(after_king_move)
+        if action.source == POS.A8.value and action.destination == POS.B6.value
+    )
+    after_black_move = GameSimulation.apply(after_king_move, black_move)
+    king_return = next(
+        action for action in GameSimulation.available_actions(after_black_move)
+        if action.source == POS.E2.value and action.destination == king_position
+    )
+    returned = GameSimulation.apply(after_black_move, king_return)
+    black_return_move = next(
+        action for action in GameSimulation.available_actions(returned)
+        if action.source == POS.B6.value and action.destination == POS.C4.value
+    )
+    returned = GameSimulation.apply(returned, black_return_move)
+
+    assert returned.pieces_locations[king_position].has_moved()
+    assert not any(
+        action.source == king_position
+        and action.destination in (POS.C1.value, POS.G1.value)
+        for action in GameSimulation.available_actions(returned)
+    )
+
+
+def test_castling_right_is_lost_after_rook_moves_away_and_back(empty_state):
+    king_position, (_, kingside_rook) = add_castling_pieces(
+        empty_state, COLOR.WHITE)
+    empty_state.pieces_locations[POS.A8.value] = Piece(
+        COLOR.BLACK, PIECE_TYPE.KNIGHT, POS.A8.value)
+    rook_move = next(
+        action for action in GameSimulation.available_actions(empty_state)
+            if action.source == kingside_rook
+        and action.destination == POS.H2.value
+    )
+    after_rook_move = GameSimulation.apply(empty_state, rook_move)
+    black_move = next(
+        action for action in GameSimulation.available_actions(after_rook_move)
+        if action.source == POS.A8.value and action.destination == POS.B6.value
+    )
+    after_black_move = GameSimulation.apply(after_rook_move, black_move)
+    rook_return = next(
+        action for action in GameSimulation.available_actions(after_black_move)
+        if action.source == POS.H2.value
+        and action.destination == kingside_rook
+    )
+    returned = GameSimulation.apply(after_black_move, rook_return)
+    black_return_move = next(
+        action for action in GameSimulation.available_actions(returned)
+        if action.source == POS.B6.value and action.destination == POS.C4.value
+    )
+    returned = GameSimulation.apply(returned, black_return_move)
+
+    castle_destinations = {
+        action.destination for action in GameSimulation.available_actions(
+            returned)
+        if action.source == king_position
+    }
+
+    assert returned.pieces_locations[kingside_rook].has_moved()
+    assert POS.G1.value not in castle_destinations
+    assert POS.C1.value in castle_destinations

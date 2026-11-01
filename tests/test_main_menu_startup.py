@@ -1,5 +1,6 @@
 from concurrent.futures import Future
 from threading import Event, Lock
+from types import SimpleNamespace
 
 import pygame
 
@@ -204,6 +205,39 @@ def test_loading_screen_renders_worker_progress_bar():
     game.draw_loading_screen()
 
     assert game.screen.get_at((200, 312)) == (80, 190, 110, 255)
+
+
+def test_winner_screen_keeps_the_board_visible_under_a_translucent_overlay(
+    monkeypatch,
+):
+    if not pygame.font.get_init():
+        pygame.font.init()
+    game = make_game()
+    game.screen = pygame.Surface((1240, 880))
+    game.board_img = pygame.Surface((640, 640))
+    game.board_img.fill((40, 90, 140))
+
+    class FakeChess:
+        draw_calls = 0
+
+        def draw_pieces(self):
+            self.draw_calls += 1
+
+    game.chess = FakeChess()
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.utils.left_click_event", lambda: False)
+    monkeypatch.setattr(
+        pygame.key, "get_pressed", lambda: {pygame.K_RETURN: False})
+    winner = SimpleNamespace(value="black")
+
+    game.declare_winner(winner)
+    board_pixel = game.screen.get_at((350, 130))
+    game.declare_winner(winner)
+
+    assert board_pixel[:3] != (40, 90, 140)
+    assert board_pixel[:3] != (255, 255, 255)
+    assert game.screen.get_at((350, 130)) == board_pixel
+    assert game.chess.draw_calls == 2
 
 
 def test_pause_menu_has_requested_actions_and_toggles_debug_window(monkeypatch):

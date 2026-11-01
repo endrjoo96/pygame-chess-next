@@ -75,7 +75,11 @@ def __add_pawn_moves(positions, piece, xy_coord, pieces_locations):
         positions.append([x, next_y])
         starting_row = 1 if piece.get_color() == COLOR.WHITE else 6
         double_y = y + 2 * direction
-        if y == starting_row and not pieces_locations[xy_to_id(x, double_y)].exists():
+        if (
+            y == starting_row
+            and not piece.has_moved()
+            and not pieces_locations[xy_to_id(x, double_y)].exists()
+        ):
             positions.append([x, double_y])
     __add_diag_hit_moves(positions, piece.get_color(), xy_coord, pieces_locations)
 

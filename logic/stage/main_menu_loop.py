@@ -564,10 +564,17 @@ class Game:
     def declare_winner(self, winner):
         """Wyświetla zwycięzcę i obsługuje rozpoczęcie nowej partii."""
         context = GameContext()
-        # background color
-        bg_color = (255, 255, 255)
-        # set background color
-        self.screen.fill(bg_color)
+        self.screen.fill((0, 0, 0))
+        self.screen.blit(self.board_img, context.board_starting_point)
+        self.chess.draw_pieces()
+
+        overlay = getattr(self, "_winner_overlay", None)
+        if overlay is None or overlay.get_size() != self.screen.get_size():
+            overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            overlay.fill((255, 255, 255, 96))
+            self._winner_overlay = overlay
+        self.screen.blit(overlay, (0, 0))
+
         # black color
         black_color = (0, 0, 0)
         # coordinates for play again button

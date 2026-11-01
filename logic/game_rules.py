@@ -79,10 +79,20 @@ class GameRules:
             if action.card_index >= 0 else None
         )
 
+        if action.action_type != GameActionType.MOVE:
+            state.en_passant_target = None
+
         if action.action_type == GameActionType.MOVE:
             target = state.pieces_locations[action.destination]
             if target.exists() and not cls._is_rook_tower_throw_selected(state):
                 cls._capture_piece(state, target)
+            else:
+                captured_position = cls.en_passant_capture_position(
+                    state, action.source, action.destination)
+                if captured_position is not None:
+                    captured_pawn = state.pieces_locations[captured_position]
+                    cls._capture_piece(state, captured_pawn)
+                    state.pieces_locations[captured_position] = Piece()
             cls._move_piece(
                 state, action.destination, rng, advance_board_card_clock)
         elif action.action_type == GameActionType.APPLY_PASSIVE:
@@ -91,10 +101,12 @@ class GameRules:
         elif action.action_type == GameActionType.PROMOTE:
             cls._promote_piece(state, action.source)
         elif action.action_type == GameActionType.TELEPORT:
-            state.pieces_locations[action.source], state.pieces_locations[action.destination] = (
-                state.pieces_locations[action.destination],
-                state.pieces_locations[action.source],
-            )
+            source_piece = state.pieces_locations[action.source]
+            destination_piece = state.pieces_locations[action.destination]
+            source_piece.set_has_moved()
+            destination_piece.set_has_moved()
+            state.pieces_locations[action.source] = destination_piece
+            state.pieces_locations[action.destination] = source_piece
             cls._discard_selected_card(state)
             state.selected_card = None
             state.selected_piece_position = 0
@@ -107,6 +119,7 @@ class GameRules:
             state.pieces_locations[action.destination] = piece
             cls._discard_selected_card(state)
             state.selected_card = None
+            cls._collect_board_card(state, action.destination, state.current_turn)
             state.selected_captured_piece = None
             state.resurrection_moves = []
             state.selected_piece_position = 0
@@ -196,6 +209,7 @@ class GameRules:
 
     @staticmethod
     def _capture_piece(state, piece):
+        piece.set_has_moved()
         piece.clear_effects()
         captured = (
             state.captured_black
@@ -210,6 +224,10 @@ class GameRules:
             return
 
         moving_color = state.current_turn
+        piece = state.pieces_locations[source_position]
+        en_passant_target = cls._en_passant_target_after_pawn_move(
+            piece, moving_color, source_position, destination)
+        state.en_passant_target = None
         first_double_move = (
             cls._selected_card_is_double_move(state) and state.double_move_step == 0
         )
@@ -217,7 +235,20 @@ class GameRules:
             cls._advance_stun_effects(state, moving_color)
 
         _, card_index, card_deck, used_card = cls._get_used_card(state, moving_color)
-        piece = state.pieces_locations[source_position]
+        castling_rook_positions = (
+            cls.castling_rook_positions(state, source_position, destination)
+            if used_card is None and state.double_move_step == 0 else None
+        )
+        collected_rook_card = False
+        if castling_rook_positions is not None:
+            rook_source, rook_destination = castling_rook_positions
+            rook = state.pieces_locations[rook_source]
+            state.pieces_locations[rook_source] = Piece()
+            state.pieces_locations[rook_destination] = rook
+            rook.set_has_moved()
+            collected_rook_card = cls._collect_board_card(
+                state, rook_destination, moving_color)
+
         if (
             used_card is not None
             and used_card.get_card_type() == EnchantmentCardType.ROOK_TOWER_THROW
@@ -226,7 +257,11 @@ class GameRules:
 
         state.pieces_locations[source_position] = Piece()
         state.pieces_locations[destination] = piece
-        collected_board_card = cls._collect_board_card(state, destination, moving_color)
+        piece.set_has_moved()
+        collected_board_card = (
+            cls._collect_board_card(state, destination, moving_color)
+            or collected_rook_card
+        )
 
         if not first_double_move and used_card is not None and used_card.consume_use() == 0:
             card_deck.pop(card_index)
@@ -243,6 +278,104 @@ class GameRules:
 
         cls._finish_piece_move(
             state, collected_board_card, rng, advance_board_card_clock)
+        state.en_passant_target = en_passant_target
+
+    @staticmethod
+    def _en_passant_target_after_pawn_move(
+        piece, moving_color, source_position, destination,
+    ):
+        if piece.get_type() != PIECE_TYPE.PAWN or piece.has_moved():
+            return None
+        source_x, source_y = id_to_xy(source_position)
+        destination_x, destination_y = id_to_xy(destination)
+        starting_row = 1 if moving_color == COLOR.WHITE else 6
+        direction = 1 if moving_color == COLOR.WHITE else -1
+        if (
+            source_x != destination_x
+            or source_y != starting_row
+            or destination_y != source_y + 2 * direction
+        ):
+            return None
+        return xy_to_id(source_x, source_y + direction)
+
+    @staticmethod
+    def en_passant_capture_position(state, source, destination):
+        if state.en_passant_target != destination:
+            return None
+        if not (1 <= source <= 64 and 1 <= destination <= 64):
+            return None
+        piece = state.pieces_locations[source]
+        if (
+            not piece.exists()
+            or piece.get_color() != state.current_turn
+            or piece.get_type() != PIECE_TYPE.PAWN
+            or state.pieces_locations[destination].exists()
+        ):
+            return None
+
+        source_x, source_y = id_to_xy(source)
+        destination_x, destination_y = id_to_xy(destination)
+        direction = 1 if state.current_turn == COLOR.WHITE else -1
+        if (
+            abs(destination_x - source_x) != 1
+            or destination_y != source_y + direction
+        ):
+            return None
+
+        captured_position = xy_to_id(destination_x, source_y)
+        captured_piece = state.pieces_locations[captured_position]
+        if (
+            not captured_piece.exists()
+            or captured_piece.get_type() != PIECE_TYPE.PAWN
+            or captured_piece.get_color() == state.current_turn
+        ):
+            return None
+        return captured_position
+
+    @staticmethod
+    def castling_rook_positions(state, source, destination):
+        king = state.pieces_locations.get(source)
+        if (
+            king is None
+            or not king.exists()
+            or king.get_type() != PIECE_TYPE.KING
+            or king.get_color() != state.current_turn
+            or king.has_moved()
+        ):
+            return None
+
+        home_row = 0 if state.current_turn == COLOR.WHITE else 7
+        if (
+            source != xy_to_id(4, home_row)
+            or king.get_starting_position() != source
+        ):
+            return None
+        if destination == xy_to_id(6, home_row):
+            rook_source_x, rook_destination_x = 7, 5
+            path = (5, 6)
+        elif destination == xy_to_id(2, home_row):
+            rook_source_x, rook_destination_x = 0, 3
+            path = (1, 2, 3)
+        else:
+            return None
+
+        rook_source = xy_to_id(rook_source_x, home_row)
+        rook_destination = xy_to_id(rook_destination_x, home_row)
+        rook = state.pieces_locations[rook_source]
+        if (
+            not rook.exists()
+            or rook.get_color() != state.current_turn
+            or rook.get_type() != PIECE_TYPE.ROOK
+            or rook.has_moved()
+            or rook.get_starting_position() != rook_source
+        ):
+            return None
+        if any(
+            state.pieces_locations[xy_to_id(x, home_row)].exists()
+            for x in path
+        ):
+            return None
+        return rook_source, rook_destination
 
     @staticmethod
     def _get_used_card(state, moving_color):

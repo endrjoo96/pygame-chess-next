@@ -29,10 +29,11 @@ def _position_key(state):
         state.current_turn,
         tuple(sorted(state.turns_started.items(), key=lambda item: item[0].value)),
         tuple(
-            (position, piece.get_color(), piece.get_type())
+            (position, piece.get_color(), piece.get_type(), piece.has_moved())
             for position, piece in sorted(state.pieces_locations.items())
             if piece.exists()
         ),
+        state.en_passant_target,
     )
 
 

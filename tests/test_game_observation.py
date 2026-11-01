@@ -72,3 +72,17 @@ def test_full_state_maps_hands_correctly_when_ai_is_white():
 
     assert result.white_cards[0].get_card_type() == EnchantmentCardType.PAWN_SWORDSMAN
     assert result.black_cards[0].get_card_type() == EnchantmentCardType.PIECE_TELEPORT
+
+
+def test_observation_preserves_en_passant_and_castling_rights():
+    state = make_game_state()
+    state.en_passant_target = 45
+    state.pieces_locations[57].set_has_moved()
+
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    restored = observation.to_state()
+
+    assert restored.en_passant_target == 45
+    assert restored.pieces_locations[57].has_moved()
+    restored.pieces_locations[57].set_has_moved(False)
+    assert state.pieces_locations[57].has_moved()

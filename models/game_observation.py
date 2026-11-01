@@ -32,6 +32,7 @@ class GameObservation:
     resurrection_moves: List[int]
     random_state: tuple
     board_cards: List[Tuple[int, Enchantment]] = field(default_factory=list)
+    en_passant_target: Optional[int] = None
 
     @classmethod
     def from_state(cls, state: GameState, own_color: COLOR):
@@ -58,6 +59,7 @@ class GameObservation:
             resurrection_moves=state.resurrection_moves,
             random_state=state.random_state,
             board_cards=state.board_cards,
+            en_passant_target=state.en_passant_target,
         )
         return copy.deepcopy(observation)
 
@@ -94,4 +96,5 @@ class GameObservation:
             resurrection_moves=copy.deepcopy(self.resurrection_moves, memo),
             random_state=self.random_state,
             board_cards=copy.deepcopy(self.board_cards, memo),
+            en_passant_target=self.en_passant_target,
         )

@@ -72,6 +72,13 @@ class GameSimulation:
 
             if in_double_move:
                 continue
+            if can_move:
+                for destination in cls.special_move_destinations(state, source):
+                    actions.append(GameAction(
+                        GameActionType.MOVE,
+                        source,
+                        destination,
+                    ))
 
             for card_index, card in enumerate(cards):
                 card_type = card.get_card_type()
@@ -138,6 +145,46 @@ class GameSimulation:
                         state, source, card_index, card_type.resurrected_piece_type))
 
         return actions
+
+    @classmethod
+    def special_move_destinations(cls, state, source):
+        """Zwraca pola bicia w przelocie i roszady dla zwykłego ruchu."""
+        if state.double_move_step > 0 or not 1 <= source <= 64:
+            return ()
+        piece = state.pieces_locations[source]
+        if (
+            not piece.exists()
+            or piece.get_color() != state.current_turn
+            or not piece.can_receive_enchantment()
+        ):
+            return ()
+
+        destinations = []
+        if state.en_passant_target is not None:
+            en_passant_capture = GameRules.en_passant_capture_position(
+                state, source, state.en_passant_target)
+            if en_passant_capture is not None:
+                destinations.append(state.en_passant_target)
+
+        if piece.get_type() != PIECE_TYPE.KING:
+            return tuple(destinations)
+
+        for destination in cls._castling_destinations(state, source):
+            destinations.append(destination)
+        return tuple(destinations)
+
+    @classmethod
+    def _castling_destinations(cls, state, source):
+        home_row = 0 if state.current_turn == COLOR.WHITE else 7
+        destinations = []
+        for destination_x in (6, 2):
+            destination = xy_to_id(destination_x, home_row)
+            rook_positions = GameRules.castling_rook_positions(
+                state, source, destination)
+            if rook_positions is None:
+                continue
+            destinations.append(destination)
+        return tuple(destinations)
 
     @staticmethod
     def _return_targets(state, source):

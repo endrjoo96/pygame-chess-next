@@ -1,8 +1,8 @@
+import heapq
 import math
 import multiprocessing
 import os
 import time
-from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, replace
 from threading import Event, Lock
@@ -77,6 +77,7 @@ _WORKER_STATUS_VALUES: Any = None
 _WORKER_STATUS_PIDS: Any = None
 _WORKER_MODE_VALUES: Any = None
 _WORKER_ROOT_VALUES: Any = None
+_WORKER_DEPTH_VALUES: Any = None
 _WORKER_CACHE_ENTRY_VALUES: Any = None
 _WORKER_NODE_VALUES: Any = None
 _WORKER_STATUS_LOCK: Any = None
@@ -140,10 +141,14 @@ class SearchResult:
 
 @dataclass(frozen=True)
 class PonderResult:
-    completed_depth: int
+    max_branch_depth: int
     root_branches: int
     visited_nodes: int
     stopped_reason: str
+
+    @property
+    def completed_depth(self):
+        return self.max_branch_depth
 
 
 class _SearchTimeout(Exception):
@@ -167,7 +172,7 @@ class _RootEvaluation:
 
 
 def _set_current_worker_status(
-    status, mode=_WORKER_MODE_NONE, root_position=0
+    status, mode=_WORKER_MODE_NONE, root_position=0, search_depth=None
 ):
     if (
         _WORKER_STATUS_VALUES is None
@@ -187,6 +192,14 @@ def _set_current_worker_status(
                     and isinstance(root_position, int)
                     and 1 <= root_position <= 64
                 )
+                else 0
+            )
+        if _WORKER_DEPTH_VALUES is not None:
+            _WORKER_DEPTH_VALUES[_WORKER_STATUS_INDEX] = (
+                search_depth
+                if mode == _WORKER_MODE_SEARCH
+                and isinstance(search_depth, int)
+                and search_depth > 0
                 else 0
             )
 
@@ -216,13 +229,14 @@ def _set_current_worker_visited_nodes(visited_nodes):
 def _initialize_search_worker(
     ready_count, probe_started_count, probe_release_event, search_cancel_event,
     worker_status_values, worker_status_pids, worker_mode_values,
-    worker_root_values, worker_cache_entry_values, worker_node_values,
+    worker_root_values, worker_depth_values, worker_cache_entry_values,
+    worker_node_values,
     worker_status_lock,
 ):
     global _WORKER_PROBE_RELEASE_EVENT, _WORKER_PROBE_STARTED_COUNT
     global _WORKER_SEARCH_CANCEL_EVENT
     global _WORKER_STATUS_VALUES, _WORKER_STATUS_PIDS
-    global _WORKER_MODE_VALUES, _WORKER_ROOT_VALUES
+    global _WORKER_MODE_VALUES, _WORKER_ROOT_VALUES, _WORKER_DEPTH_VALUES
     global _WORKER_CACHE_ENTRY_VALUES, _WORKER_NODE_VALUES
     global _WORKER_STATUS_LOCK
     global _WORKER_STATUS_INDEX
@@ -233,6 +247,7 @@ def _initialize_search_worker(
     _WORKER_STATUS_PIDS = worker_status_pids
     _WORKER_MODE_VALUES = worker_mode_values
     _WORKER_ROOT_VALUES = worker_root_values
+    _WORKER_DEPTH_VALUES = worker_depth_values
     _WORKER_CACHE_ENTRY_VALUES = worker_cache_entry_values
     _WORKER_NODE_VALUES = worker_node_values
     _WORKER_STATUS_LOCK = worker_status_lock
@@ -250,6 +265,7 @@ def _initialize_search_worker(
         _WORKER_STATUS_PIDS[_WORKER_STATUS_INDEX] = os.getpid()
         _WORKER_MODE_VALUES[_WORKER_STATUS_INDEX] = _WORKER_MODE_NONE
         _WORKER_ROOT_VALUES[_WORKER_STATUS_INDEX] = 0
+        _WORKER_DEPTH_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_CACHE_ENTRY_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_NODE_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_STATUS_VALUES[_WORKER_STATUS_INDEX] = _WORKER_STARTING
@@ -287,7 +303,15 @@ def _evaluate_root_action(
     _set_current_worker_cache_entries(0)
     node_progress_callback(0)
     _set_current_worker_status(
-        _WORKER_BUSY, _WORKER_MODE_SEARCH, action.source)
+        _WORKER_BUSY, _WORKER_MODE_SEARCH, action.source, depth)
+    worker_pid = os.getpid()
+    task_status = "failed"
+    worker = None
+    if is_enabled("DEBUG"):
+        log_debug(
+            "AI worker PID {} started search task (depth {}): {}".format(
+                worker_pid, depth, action)
+        )
     root_bound = None
     reliable = False
     try:
@@ -324,15 +348,29 @@ def _evaluate_root_action(
         except _SearchTimeout:
             score = None
             reliable = False
+            task_status = "timeout"
         entries = (
             worker._cache.snapshot(_WORKER_CACHE_LIMIT, touched_only=True)
             if worker._cache is not None else ()
         )
+        if task_status != "timeout":
+            task_status = "completed" if reliable else "incomplete"
         return _RootEvaluation(
             score, worker._nodes, entries, worker._cache_hits,
             worker._cache_score_hits, worker._cache_hints,
             root_bound, reliable)
     finally:
+        if is_enabled("DEBUG"):
+            log_debug(
+                "AI worker PID {} finished search task "
+                "(depth {}, status={}, nodes={}): {}".format(
+                    worker_pid,
+                    depth,
+                    task_status,
+                    getattr(worker, "_nodes", 0) if worker is not None else 0,
+                    action,
+                )
+            )
         cache_size_callback(0)
         node_progress_callback(0)
         _set_current_worker_status(_WORKER_IDLE)
@@ -340,11 +378,18 @@ def _evaluate_root_action(
 
 def _expand_ponder_white_action(state, action):
     """Expand one white action into every completed white-turn root below it."""
+    worker_pid = os.getpid()
+    roots = []
+    task_status = "failed"
     _set_current_worker_status(
         _WORKER_BUSY, _WORKER_MODE_PREPARE, action.source)
+    if is_enabled("DEBUG"):
+        log_debug(
+            "AI worker PID {} started ponder preparation task: {}".format(
+                worker_pid, action)
+        )
     try:
         first_child = GameSimulation._apply_generated_action(state, action)
-        roots = []
         frontier = [first_child]
         while frontier:
             if (
@@ -369,8 +414,22 @@ def _expand_ponder_white_action(state, action):
                 children.append(GameSimulation._apply_generated_action(
                     current_state, next_action))
             frontier.extend(reversed(children))
+        task_status = (
+            "cancelled"
+            if (
+                _WORKER_SEARCH_CANCEL_EVENT is not None
+                and _WORKER_SEARCH_CANCEL_EVENT.is_set()
+            )
+            else "completed"
+        )
         return tuple(roots)
     finally:
+        if is_enabled("DEBUG"):
+            log_debug(
+                "AI worker PID {} finished ponder preparation task "
+                "(status={}, roots={}): {}".format(
+                    worker_pid, task_status, len(roots), action)
+            )
         _set_current_worker_status(_WORKER_IDLE)
 
 
@@ -407,6 +466,13 @@ class ChessAI:
         self._current_search_depth = 0
         self._completed_search_depth = 0
         self._reported_search_nodes = 0
+        self._ponder_white_actions_completed = None
+        self._ponder_white_actions_total = None
+        self._ponder_branches_generated = None
+        self._ponder_root_actions_completed = None
+        self._ponder_root_actions_discovered = None
+        self._ponder_depth_counts = ()
+        self._ponder_max_branch_depth = None
         self._cache = SearchCache(config.cache_max_entries) if config.cache_enabled else None
         self._cache_lock = Lock()
         self._cache_generation = 0
@@ -424,6 +490,7 @@ class ChessAI:
         self._worker_status_pids = None
         self._worker_mode_values = None
         self._worker_root_values = None
+        self._worker_depth_values = None
         self._worker_cache_entry_values = None
         self._worker_node_values = None
         self._worker_status_process_lock = None
@@ -431,6 +498,7 @@ class ChessAI:
         self._local_worker_busy = False
         self._local_worker_mode = _WORKER_MODE_NONE
         self._local_worker_root_position = 0
+        self._local_worker_search_depth = None
         self._local_worker_cache_entries = 0
         self._local_worker_visited_nodes = 0
         self._ponder_state_lock = Lock()
@@ -476,6 +544,7 @@ class ChessAI:
             worker_status_pids = context.RawArray("i", self.max_workers)
             worker_mode_values = context.RawArray("i", self.max_workers)
             worker_root_values = context.RawArray("i", self.max_workers)
+            worker_depth_values = context.RawArray("i", self.max_workers)
             worker_cache_entry_values = context.RawArray("i", self.max_workers)
             worker_node_values = context.RawArray("q", self.max_workers)
             worker_status_lock = context.Lock()
@@ -492,6 +561,7 @@ class ChessAI:
                     worker_status_pids,
                     worker_mode_values,
                     worker_root_values,
+                    worker_depth_values,
                     worker_cache_entry_values,
                     worker_node_values,
                     worker_status_lock,
@@ -507,6 +577,7 @@ class ChessAI:
                 self._worker_status_pids = worker_status_pids
                 self._worker_mode_values = worker_mode_values
                 self._worker_root_values = worker_root_values
+                self._worker_depth_values = worker_depth_values
                 self._worker_cache_entry_values = worker_cache_entry_values
                 self._worker_node_values = worker_node_values
                 self._worker_status_process_lock = worker_status_lock
@@ -665,11 +736,22 @@ class ChessAI:
                 self._reported_search_nodes,
                 self._nodes + active_worker_nodes,
             )
+            reported_nodes = self._reported_search_nodes
+            ponder_progress = (
+                self._ponder_white_actions_completed,
+                self._ponder_white_actions_total,
+                self._ponder_branches_generated,
+                self._ponder_root_actions_completed,
+                self._ponder_root_actions_discovered,
+                self._ponder_depth_counts,
+                self._ponder_max_branch_depth,
+            )
         return (
             phase,
             current_depth,
             completed_depth,
-            self._reported_search_nodes,
+            reported_nodes,
+            *ponder_progress,
         )
 
     def _begin_search_progress(self, phase):
@@ -679,10 +761,55 @@ class ChessAI:
             self._completed_search_depth = 0
             self._nodes = 0
             self._reported_search_nodes = 0
+            self._ponder_white_actions_completed = None
+            self._ponder_white_actions_total = None
+            self._ponder_branches_generated = None
+            self._ponder_root_actions_completed = None
+            self._ponder_root_actions_discovered = None
+            self._ponder_depth_counts = ()
+            self._ponder_max_branch_depth = None
 
     def _set_current_search_depth(self, depth):
         with self._search_progress_lock:
             self._current_search_depth = depth
+            if self._search_phase == "pondering":
+                self._ponder_root_actions_completed = 0
+                self._ponder_root_actions_discovered = 0
+                self._ponder_depth_counts = ()
+                self._ponder_max_branch_depth = 0
+
+    def _set_ponder_depth_progress(self, branch_depths):
+        depth_counts = {}
+        for depth in branch_depths:
+                depth_counts[depth] = depth_counts.get(depth, 0) + 1
+        with self._search_progress_lock:
+                if self._search_phase != "pondering":
+                    return
+                self._ponder_depth_counts = tuple(sorted(depth_counts.items()))
+                self._ponder_max_branch_depth = max(depth_counts, default=0)
+
+    def _begin_ponder_progress(self, white_actions_total):
+        with self._search_progress_lock:
+            self._ponder_white_actions_completed = 0
+            self._ponder_white_actions_total = white_actions_total
+            self._ponder_branches_generated = 0
+            self._ponder_root_actions_completed = 0
+            self._ponder_root_actions_discovered = 0
+
+    def _record_ponder_progress(
+        self,
+        white_actions_completed=0,
+        branches_generated=0,
+        root_actions_completed=0,
+        root_actions_discovered=0,
+    ):
+        with self._search_progress_lock:
+            if self._search_phase != "pondering":
+                return
+            self._ponder_white_actions_completed += white_actions_completed
+            self._ponder_branches_generated += branches_generated
+            self._ponder_root_actions_completed += root_actions_completed
+            self._ponder_root_actions_discovered += root_actions_discovered
 
     def _set_completed_search_depth(self, depth):
         with self._search_progress_lock:
@@ -703,6 +830,7 @@ class ChessAI:
             status_pids = self._worker_status_pids
             mode_values = self._worker_mode_values
             root_values = self._worker_root_values
+            depth_values = self._worker_depth_values
             cache_entry_values = self._worker_cache_entry_values
             node_values = self._worker_node_values
             process_lock = self._worker_status_process_lock
@@ -710,6 +838,7 @@ class ChessAI:
             local_worker_busy = self._local_worker_busy
             local_worker_mode = self._local_worker_mode
             local_worker_root_position = self._local_worker_root_position
+            local_worker_search_depth = self._local_worker_search_depth
             local_worker_cache_entries = self._local_worker_cache_entries
             local_worker_visited_nodes = self._local_worker_visited_nodes
 
@@ -727,6 +856,12 @@ class ChessAI:
                         root=_root_square_notation(
                             local_worker_root_position)
                         if local_worker_busy else "-",
+                        search_depth=(
+                            local_worker_search_depth
+                            if local_worker_busy
+                            and local_worker_mode == _WORKER_MODE_SEARCH
+                            else None
+                        ),
                     ),
                 )
             status = "starting" if pool_state == "starting" else "not-started"
@@ -746,6 +881,11 @@ class ChessAI:
                             local_worker_mode, "-"),
                         root=_root_square_notation(
                             local_worker_root_position),
+                        search_depth=(
+                            local_worker_search_depth
+                            if local_worker_mode == _WORKER_MODE_SEARCH
+                            else None
+                        ),
                     ),
                 )
             return workers
@@ -765,6 +905,7 @@ class ChessAI:
                         if mode_values is not None else _WORKER_MODE_NONE
                     ),
                     root_values[index] if root_values is not None else 0,
+                    depth_values[index] if depth_values is not None else 0,
                 )
                 for index in range(self.max_workers)
             )
@@ -772,7 +913,7 @@ class ChessAI:
         workers = []
         for index, (
             status_code, worker_pid, cache_entries, visited_nodes,
-            mode_code, root_position,
+            mode_code, root_position, search_depth,
         ) in enumerate(
             process_states
         ):
@@ -781,6 +922,7 @@ class ChessAI:
                 worker_pid = None
                 mode_code = _WORKER_MODE_NONE
                 root_position = 0
+                search_depth = 0
             else:
                 status = _WORKER_STATUS_NAMES.get(status_code, "unknown")
             workers.append(AIWorkerStats(
@@ -788,7 +930,12 @@ class ChessAI:
                 cache_entries=cache_entries,
                 visited_nodes=visited_nodes,
                 mode=_WORKER_MODE_NAMES.get(mode_code, "-"),
-                root=_root_square_notation(root_position)))
+                root=_root_square_notation(root_position),
+                search_depth=(
+                    search_depth
+                    if mode_code == _WORKER_MODE_SEARCH and search_depth > 0
+                    else None
+                )))
         if local_worker_busy:
             workers.append(
                 AIWorkerStats(
@@ -799,17 +946,31 @@ class ChessAI:
                     visited_nodes=local_worker_visited_nodes,
                     mode=_WORKER_MODE_NAMES.get(local_worker_mode, "-"),
                     root=_root_square_notation(local_worker_root_position),
+                    search_depth=(
+                        local_worker_search_depth
+                        if local_worker_mode == _WORKER_MODE_SEARCH
+                        else None
+                    ),
                 ))
         return tuple(workers)
 
     def _set_local_worker_busy(
-        self, is_busy, mode=_WORKER_MODE_NONE, root_position=0
+        self, is_busy, mode=_WORKER_MODE_NONE, root_position=0,
+        search_depth=None,
     ):
         with self._worker_metrics_lock:
             self._local_worker_busy = is_busy
             self._local_worker_mode = mode if is_busy else _WORKER_MODE_NONE
             self._local_worker_root_position = (
                 root_position if is_busy else 0)
+            self._local_worker_search_depth = (
+                search_depth
+                if is_busy
+                and mode == _WORKER_MODE_SEARCH
+                and isinstance(search_depth, int)
+                and search_depth > 0
+                else None
+            )
             if not is_busy:
                 self._local_worker_cache_entries = 0
                 self._local_worker_visited_nodes = 0
@@ -989,7 +1150,7 @@ class ChessAI:
                 if executor is None:
                     for action_index, action in enumerate(ordered_actions):
                         self._set_local_worker_busy(
-                            True, _WORKER_MODE_SEARCH, action.source)
+                            True, _WORKER_MODE_SEARCH, action.source, depth)
                         try:
                             result = _evaluate_root_action(
                                 state, action, depth, self.config, self._deadline,
@@ -1225,150 +1386,156 @@ class ChessAI:
             return PonderResult(0, 0, 0, "cancelled")
         if not white_actions:
             return PonderResult(0, 0, 0, "no-legal-replies")
+
         root_states = []
-        task_groups = []
+        root_priorities = []
+        root_order_keys = []
+        root_branches = []
+        task_groups = {}
         task_count = 0
+        next_expansion_dispatch = 0
+        next_task = 0
+        pending = {}
+        ready_branches = []
+        active_branches = set()
+        total_nodes = 0
+        stopped_reason = "max-depth"
+        capacity_reached = False
+        cache_reset = False
+        task_worker_count = self._ponder_worker_count_for_tasks(
+            self.max_workers)
 
         def task_group_for(root_index):
             nonlocal task_count
-            if root_index == len(task_groups):
+            if root_index not in task_groups:
                 root_state = root_states[root_index]
                 root_key = root_state.cache_key()
                 actions = self._order_actions(
                     root_state, GameSimulation.available_actions(root_state))
-                task_groups.append((root_key, tuple(actions)))
+                task_groups[root_index] = (root_key, tuple(actions))
                 task_count += len(actions)
             root_key, actions = task_groups[root_index]
+            if root_index not in discovered_root_indexes:
+                discovered_root_indexes.add(root_index)
+                self._record_ponder_progress(
+                    root_actions_discovered=len(actions))
             return root_states[root_index], root_key, actions
 
+        def update_depth_progress():
+            self._set_ponder_depth_progress(
+                branch["completed_depth"] for branch in root_branches)
+
+        def queue_branch(root_index):
+            branch = root_branches[root_index]
+            if (
+                root_index not in active_branches
+                or branch["in_flight"]
+                or branch["terminal"]
+                or branch["current_depth"] > self.config.max_depth
+            ):
+                return
+            action_index, branch_index = root_order_keys[root_index]
+            heapq.heappush(
+                ready_branches,
+                (
+                    root_priorities[root_index],
+                    action_index,
+                    branch_index,
+                    root_index,
+                ),
+            )
+
+        def merge_result_entries(branch_root_key, branch_action, entries):
+            nonlocal capacity_reached, cache_reset
+            scoped_entries = self._entries_for_root_scope(
+                branch_root_key, branch_action, entries, cache_generation)
+            for entry in scoped_entries:
+                with self._cache_lock:
+                    if (
+                        self._cache_generation != cache_generation
+                        or self._cache is not cache
+                    ):
+                        cache_reset = True
+                        return
+                    is_new_entry = not cache.contains(entry.key, entry.depth)
+                    if is_new_entry and len(cache) >= cache_limit:
+                        capacity_reached = True
+                        return
+                    cache.put(entry)
+                    if len(cache) >= cache_limit:
+                        capacity_reached = True
+
+        def all_work_complete():
+            return (
+                next_expansion_dispatch == len(white_actions)
+                and not active_branches
+                and not ready_branches
+                and not pending
+            )
+
         log_info(
-            "AI pondering started: generating player-turn branches, workers={}".format(
-                self._ponder_worker_count_for_tasks(self.max_workers),
+            "AI pondering started: {} white actions, workers={}".format(
+                len(white_actions),
+                task_worker_count,
             )
         )
         self._begin_search_progress("pondering")
-        total_nodes = 0
-        completed_depth = 0
-        stopped_reason = "max-depth"
+        self._begin_ponder_progress(len(white_actions))
         executor = self._worker_pool
+        discovered_root_indexes = set()
         with self._ponder_state_lock:
             self._ponder_active = True
         try:
-            for depth in range(1, self.config.max_depth + 1):
+            while not all_work_complete():
                 if cancellation_event.is_set():
                     stopped_reason = "cancelled"
+                    if worker_cancel_event is not None:
+                        worker_cancel_event.set()
+                    for future in pending:
+                        future.cancel()
                     break
-                self._set_current_search_depth(depth)
+
                 with self._cache_lock:
                     if (
                         self._cache_generation != cache_generation
                         or self._cache is not cache
                     ):
                         stopped_reason = "cache-reset"
+                        cache_reset = True
                         break
                     if len(cache) >= cache_limit:
                         stopped_reason = "cache-full"
+                        capacity_reached = True
                         break
-                    snapshot = cache.snapshot(_WORKER_CACHE_LIMIT)
+                while len(pending) < task_worker_count:
+                    while ready_branches:
+                        _, _, _, root_index = heapq.heappop(ready_branches)
+                        if root_index in active_branches:
+                            break
+                    else:
+                        root_index = None
 
-                pending = {}
-                outcomes = {}
-                expansion_outcomes = {}
-                next_task = 0
-                next_merge = 0
-                next_root_index = 0
-                next_expansion_dispatch = 0 if depth == 1 else len(white_actions)
-                next_expansion_merge = 0 if depth == 1 else len(white_actions)
-                active_branches = {}
-                ready_branches = deque()
-                depth_complete = True
-                capacity_reached = False
-                cache_reset = False
-                task_worker_count = self._ponder_worker_count_for_tasks(
-                    self.max_workers)
-
-                def merge_result_entries(branch_root_key, branch_action, entries):
-                    nonlocal capacity_reached, cache_reset
-                    scoped_entries = self._entries_for_root_scope(
-                        branch_root_key, branch_action, entries, cache_generation)
-                    for entry in scoped_entries:
+                    if root_index is not None:
+                        branch = root_branches[root_index]
+                        root_state, root_key, actions = task_group_for(root_index)
+                        if not actions:
+                            branch["terminal"] = True
+                            active_branches.remove(root_index)
+                            update_depth_progress()
+                            continue
+                        if branch["in_flight"]:
+                            continue
                         with self._cache_lock:
                             if (
                                 self._cache_generation != cache_generation
                                 or self._cache is not cache
                             ):
                                 cache_reset = True
-                                return
-                            is_new_entry = not cache.contains(entry.key, entry.depth)
-                            if is_new_entry and len(cache) >= cache_limit:
-                                capacity_reached = True
-                                return
-                            cache.put(entry)
+                                break
                             if len(cache) >= cache_limit:
                                 capacity_reached = True
-
-                def load_branches():
-                    nonlocal next_root_index
-                    while (
-                        len(active_branches) < task_worker_count
-                        and next_root_index < len(root_states)
-                    ):
-                        root_index = next_root_index
-                        next_root_index += 1
-                        _, _, actions = task_group_for(root_index)
-                        if not actions:
-                            continue
-                        active_branches[root_index] = {
-                            "next_action": 0,
-                            "root_alpha": -math.inf,
-                            "in_flight": False,
-                        }
-                        ready_branches.append(root_index)
-
-                def expansion_complete():
-                    return (
-                        depth > 1
-                        or (
-                            next_expansion_dispatch == len(white_actions)
-                            and next_expansion_merge == len(white_actions)
-                            and not expansion_outcomes
-                            and not any(
-                                task_info[0] == "expand"
-                                for task_info in pending.values()
-                            )
-                        )
-                    )
-
-                def all_tasks_complete():
-                    return (
-                        expansion_complete()
-                        and next_root_index == len(root_states)
-                        and len(task_groups) == len(root_states)
-                        and not active_branches
-                        and not ready_branches
-                        and not pending
-                        and not outcomes
-                    )
-
-                while not all_tasks_complete():
-                    if cancellation_event.is_set():
-                        stopped_reason = "cancelled"
-                        depth_complete = False
-                        if worker_cancel_event is not None:
-                            worker_cancel_event.set()
-                        for future in pending:
-                            future.cancel()
-                        break
-                    while next_expansion_merge in expansion_outcomes:
-                        expanded_roots = expansion_outcomes.pop(
-                            next_expansion_merge)
-                        root_states.extend(expanded_roots)
-                        next_expansion_merge += 1
-                    load_branches()
-                    while len(pending) < task_worker_count and ready_branches:
-                        root_index = ready_branches.popleft()
-                        branch = active_branches[root_index]
-                        root_state, root_key, actions = task_group_for(root_index)
+                                break
+                            snapshot = cache.snapshot(_WORKER_CACHE_LIMIT)
                         action = actions[branch["next_action"]]
                         branch["next_action"] += 1
                         branch["in_flight"] = True
@@ -1378,7 +1545,7 @@ class ChessAI:
                             _evaluate_root_action,
                             root_state,
                             action,
-                            depth,
+                            branch["current_depth"],
                             self.config,
                             math.inf,
                             snapshot,
@@ -1388,16 +1555,15 @@ class ChessAI:
                             "search",
                             task_index,
                             root_index,
+                            branch["current_depth"],
                             root_state,
                             action,
                             root_key,
                             branch["root_alpha"],
                         )
-                    while (
-                        len(pending) < task_worker_count
-                        and depth == 1
-                        and next_expansion_dispatch < len(white_actions)
-                    ):
+                        continue
+
+                    if next_expansion_dispatch < len(white_actions):
                         expansion_index = next_expansion_dispatch
                         next_expansion_dispatch += 1
                         future = executor.submit(
@@ -1406,121 +1572,124 @@ class ChessAI:
                             white_actions[expansion_index],
                         )
                         pending[future] = ("expand", expansion_index)
-                    if not pending:
-                        if all_tasks_complete():
-                            break
-                        depth_complete = False
+                        continue
+                    break
+
+                if cache_reset or capacity_reached:
+                    stopped_reason = (
+                        "cache-reset" if cache_reset else "cache-full")
+                    if worker_cancel_event is not None:
+                        worker_cancel_event.set()
+                    for future in pending:
+                        future.cancel()
+                    break
+
+                if not pending:
+                    if all_work_complete():
                         break
-                    done, _ = wait(
-                        set(pending), timeout=0.05, return_when=FIRST_COMPLETED)
-                    for future in sorted(
-                        done,
-                        key=lambda item: (
-                            pending[item][0], pending[item][1])):
-                        task_info = pending.pop(future)
-                        result = future.result()
-                        if task_info[0] == "expand":
-                            expansion_outcomes[task_info[1]] = result
-                        else:
-                            outcomes[task_info[1]] = (task_info, result)
+                    stopped_reason = (
+                        "no-legal-replies" if task_count == 0 else "incomplete")
+                    break
 
-                    while next_merge in outcomes:
-                        task_info, result = outcomes.pop(next_merge)
-                        (
-                            _, _, root_index, _, action, root_key, root_alpha,
-                        ) = task_info
-                        next_merge += 1
-                        total_nodes += result.nodes
-                        self._add_completed_nodes(result.nodes)
-                        merge_result_entries(root_key, action, result.entries)
-                        if result.score is None:
-                            depth_complete = False
-                            break
+                done, _ = wait(
+                    set(pending), timeout=0.05, return_when=FIRST_COMPLETED)
+                for future in sorted(
+                    done,
+                    key=lambda item: (
+                        pending[item][0], pending[item][1]),
+                ):
+                    task_info = pending.pop(future)
+                    result = future.result()
+                    if task_info[0] == "expand":
+                        expansion_index = task_info[1]
+                        for branch_index, root_state in enumerate(result):
+                            root_index = len(root_branches)
+                            root_states.append(root_state)
+                            root_priorities.append(self.evaluate(root_state))
+                            root_order_keys.append(
+                                (expansion_index, branch_index))
+                            root_branches.append({
+                                "completed_depth": 0,
+                                "current_depth": 1,
+                                "next_action": 0,
+                                "root_alpha": -math.inf,
+                                "in_flight": False,
+                                "terminal": False,
+                            })
+                            active_branches.add(root_index)
+                            queue_branch(root_index)
+                        self._record_ponder_progress(
+                            white_actions_completed=1,
+                            branches_generated=len(result),
+                        )
+                        update_depth_progress()
+                        continue
 
-                        branch = active_branches[root_index]
-                        if (
-                            result.bound == Bound.UPPER
-                            and result.reliable
-                            and result.score < root_alpha
-                        ):
-                            pass
-                        elif (
-                            result.bound == Bound.EXACT
-                            and result.reliable
-                        ):
-                            branch["root_alpha"] = max(
-                                branch["root_alpha"], result.score)
-                        else:
-                            raise RuntimeError(
-                                "Ponder root action search returned an "
-                                "unverified score")
-
-                        branch["in_flight"] = False
-                        _, _, actions = task_group_for(root_index)
-                        if branch["next_action"] < len(actions):
-                            ready_branches.append(root_index)
-                        else:
-                            del active_branches[root_index]
-                        if capacity_reached or cache_reset:
-                            break
-
-                    if cache_reset:
-                        stopped_reason = "cache-reset"
-                        depth_complete = False
-                        if worker_cancel_event is not None:
-                            worker_cancel_event.set()
-                        for future in pending:
-                            future.cancel()
-                        break
-                    if capacity_reached:
-                        stopped_reason = "cache-full"
-                        depth_complete = all_tasks_complete()
-                        if worker_cancel_event is not None:
-                            worker_cancel_event.set()
-                        for future in pending:
-                            future.cancel()
-                        break
-                    if not depth_complete:
+                    (
+                        _, _, root_index, search_depth, _, action,
+                        root_key, root_alpha,
+                    ) = task_info
+                    total_nodes += result.nodes
+                    self._add_completed_nodes(result.nodes)
+                    merge_result_entries(root_key, action, result.entries)
+                    if result.score is None:
                         stopped_reason = "cancelled"
                         if worker_cancel_event is not None:
                             worker_cancel_event.set()
-                        for future in pending:
-                            future.cancel()
                         break
 
-                remaining_results = [
-                    (task_index, task_info, result)
-                    for task_index, (task_info, result) in outcomes.items()
-                ]
-                outcomes.clear()
-                if pending:
-                    for future, task_info in sorted(
-                        pending.items(),
-                        key=lambda item: (item[1][0], item[1][1])):
-                        if not future.cancelled():
-                            result = future.result()
-                            if task_info[0] == "search":
-                                remaining_results.append(
-                                    (task_info[1], task_info, result))
-                for _, task_info, result in sorted(remaining_results):
-                    total_nodes += result.nodes
-                    self._add_completed_nodes(result.nodes)
-                    _, _, _, _, action, root_key, _ = task_info
-                    merge_result_entries(root_key, action, result.entries)
-                if (
-                    depth == 1
-                    and task_count == 0
-                    and expansion_complete()
-                ):
-                    stopped_reason = "no-legal-replies"
+                    branch = root_branches[root_index]
+                    if (
+                        result.bound == Bound.UPPER
+                        and result.reliable
+                        and result.score < root_alpha
+                    ):
+                        pass
+                    elif (
+                        result.bound == Bound.EXACT
+                        and result.reliable
+                    ):
+                        branch["root_alpha"] = max(
+                            branch["root_alpha"], result.score)
+                    else:
+                        raise RuntimeError(
+                            "Ponder root action search returned an "
+                            "unverified score")
+
+                    self._record_ponder_progress(root_actions_completed=1)
+                    branch["in_flight"] = False
+                    _, _, actions = task_group_for(root_index)
+                    if branch["next_action"] < len(actions):
+                        queue_branch(root_index)
+                    else:
+                        branch["completed_depth"] = search_depth
+                        if search_depth >= self.config.max_depth:
+                            active_branches.remove(root_index)
+                        else:
+                            branch["current_depth"] = search_depth + 1
+                            branch["next_action"] = 0
+                            branch["root_alpha"] = -math.inf
+                            queue_branch(root_index)
+                        update_depth_progress()
+
+                    if capacity_reached or cache_reset:
+                        break
+
+                if cancellation_event.is_set():
+                    stopped_reason = "cancelled"
+                if cache_reset or capacity_reached or stopped_reason != "max-depth":
+                    if cache_reset:
+                        stopped_reason = "cache-reset"
+                    elif capacity_reached:
+                        stopped_reason = "cache-full"
+                    if worker_cancel_event is not None:
+                        worker_cancel_event.set()
+                    for future in pending:
+                        future.cancel()
                     break
-                if not depth_complete:
-                    break
-                completed_depth = depth
-                self._set_completed_search_depth(completed_depth)
-                log_logic("AI pondering completed depth {}".format(depth))
-                if capacity_reached:
-                    break
+
+            if task_count == 0 and stopped_reason == "max-depth":
+                stopped_reason = "no-legal-replies"
         except Exception:
             if worker_cancel_event is not None:
                 worker_cancel_event.set()
@@ -1528,20 +1697,39 @@ class ChessAI:
                 self._discard_worker_pool(executor)
             raise
         finally:
+            for future, task_info in sorted(
+                pending.items(),
+                key=lambda item: (
+                    item[1][0], item[1][1]),
+            ):
+                if future.cancelled():
+                    continue
+                result = future.result()
+                if task_info[0] == "search":
+                    _, _, _, _, _, action, root_key, _ = task_info
+                    total_nodes += result.nodes
+                    self._add_completed_nodes(result.nodes)
+                    if result.score is not None and result.reliable:
+                        self._record_ponder_progress(root_actions_completed=1)
+                    merge_result_entries(root_key, action, result.entries)
             self._finish_search_progress()
             with self._ponder_state_lock:
                 if worker_cancel_event is not None:
                     worker_cancel_event.clear()
                 self._ponder_active = False
 
+        max_branch_depth = max(
+            (branch["completed_depth"] for branch in root_branches),
+            default=0,
+        )
         log_info(
-            "AI pondering finished: completed_depth={}, branches={}, "
+            "AI pondering finished: max_branch_depth={}, branches={}, "
             "root_actions={}, nodes={}, reason={}".format(
-                completed_depth, len(root_states), task_count, total_nodes,
+                max_branch_depth, len(root_states), task_count, total_nodes,
                 stopped_reason)
         )
         return PonderResult(
-            completed_depth, len(root_states), total_nodes, stopped_reason)
+            max_branch_depth, len(root_states), total_nodes, stopped_reason)
 
     def _ponder_worker_count_for_tasks(self, task_count):
         if self.ponder_cpu_percent == 0 or task_count <= 0:

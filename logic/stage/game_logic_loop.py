@@ -81,6 +81,7 @@ class GameLogicLoop(object):
         self.board_enchantment = None
         self.board_cards = []
         self.pending_board_card_delay = None
+        self.en_passant_target = None
         card_image = pygame.image.load(self.context.card_on_board_src).convert_alpha()
         self.board_card_image = pygame.transform.scale(
             card_image, (self.context.square_length, self.context.square_length))
@@ -114,6 +115,7 @@ class GameLogicLoop(object):
         self.board_enchantment = None
         self.board_cards = []
         self.pending_board_card_delay = None
+        self.en_passant_target = None
         if self._ai_future is not None:
             self._ai_future.cancel()
             self._ai_future = None
@@ -315,7 +317,8 @@ class GameLogicLoop(object):
         cache_stats = None
         cache_deepest_entry_depth = None
         workers = ()
-        progress_stats = (None, None, None, None)
+        progress_stats = (
+            None, None, None, None, None, None, None, None, None, (), None)
         if isinstance(self.black_ai, ChessAI):
             cache_stats = self.black_ai.cache_diagnostics()
             cache_deepest_entry_depth = cache_stats[4]
@@ -344,6 +347,13 @@ class GameLogicLoop(object):
             current_depth=progress_stats[1],
             completed_search_depth=progress_stats[2],
             live_visited_nodes=progress_stats[3],
+            ponder_white_actions_completed=progress_stats[4],
+            ponder_white_actions_total=progress_stats[5],
+            ponder_branches_generated=progress_stats[6],
+            ponder_root_actions_completed=progress_stats[7],
+            ponder_root_actions_discovered=progress_stats[8],
+            ponder_depth_counts=progress_stats[9],
+            ponder_max_branch_depth=progress_stats[10],
         )
 
     def draw_ai_thinking_overlay(self):
@@ -466,6 +476,7 @@ class GameLogicLoop(object):
         self.board_enchantment = result.board_enchantment
         self.board_cards = result.board_cards
         self.pending_board_card_delay = result.pending_board_card_delay
+        self.en_passant_target = result.en_passant_target
         self.selected_card = result.selected_card
         self.selected_piece_position = result.selected_piece_position
         self.selected_captured_piece = result.selected_captured_piece
@@ -777,6 +788,13 @@ class GameLogicLoop(object):
         self.moves = GameSimulation.destinations_for(
             piece, position, self.pieces_locations,
             None if self.__selected_card_is_piece_double_move() else active_enchantment)
+        if self.selected_card is None and self.double_move_step == 0:
+            state = GameState.from_game(self)
+            self.moves.extend(
+                id_to_xy(destination)
+                for destination in GameSimulation.special_move_destinations(
+                    state, position)
+            )
 
     def __get_selected_enchantment(self):
         """Zwraca aktualnie wybraną kartę albo None, jeśli nie ma prawidłowej selekcji."""

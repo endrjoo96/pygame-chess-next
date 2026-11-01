@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
+from constants.pos import POS, id_to_xy
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from logic.stage.game_logic_loop import GameLogicLoop
@@ -91,6 +92,7 @@ def make_game(card_type=None, uses=None):
     game.board_card_position = 36
     game.board_enchantment = None
     game.pending_board_card_delay = None
+    game.en_passant_target = None
     game._ai_executor = ThreadPoolExecutor(max_workers=1)
     game._ai_future = None
     game._ai_best_move = None
@@ -112,6 +114,38 @@ def click_board(game, position, monkeypatch):
         lambda: position,
     )
     game.process_player_turn()
+
+
+def test_player_selection_highlights_en_passant_and_castling_moves():
+    game = make_game()
+    game.current_turn = COLOR.BLACK
+    game.en_passant_target = POS.E3.value
+    game.pieces_locations[POS.D4.value] = Piece(
+        COLOR.BLACK, PIECE_TYPE.PAWN, POS.D7.value)
+    game.pieces_locations[POS.D4.value].set_has_moved()
+    game.pieces_locations[POS.E4.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.PAWN, POS.E2.value)
+
+    game._GameLogicLoop__select_piece_for_movement(
+        POS.D4.value, game.pieces_locations[POS.D4.value])
+
+    assert id_to_xy(POS.E3.value) in game.moves
+
+    castling_game = make_game()
+    castling_game.pieces_locations[POS.E1.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.KING, POS.E1.value)
+    castling_game.pieces_locations[POS.A1.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.ROOK, POS.A1.value)
+    castling_game.pieces_locations[POS.H1.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.ROOK, POS.H1.value)
+
+    castling_game._GameLogicLoop__select_piece_for_movement(
+        POS.E1.value, castling_game.pieces_locations[POS.E1.value])
+
+    assert id_to_xy(POS.C1.value) in castling_game.moves
+    assert id_to_xy(POS.G1.value) in castling_game.moves
+    game._ai_executor.shutdown(wait=True)
+    castling_game._ai_executor.shutdown(wait=True)
 
 
 def test_upgrade_uses_selected_target_and_applies_card_stun(monkeypatch):
@@ -184,6 +218,11 @@ def test_resurrection_places_captured_piece_next_to_king(monkeypatch):
     game.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
     pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
     game.capture_processor.captured_black.append(pawn)
+    board_card = EnchantmentCardType.PIECE_TELEPORT.create()
+    game.board_cards = [(2, board_card)]
+    game.board_card_available = True
+    game.board_card_position = 2
+    game.board_enchantment = board_card
     monkeypatch.setattr(
         "logic.stage.game_logic_loop.input_processor.get_clicked_chessboard_field_id",
         lambda: None,
@@ -201,7 +240,11 @@ def test_resurrection_places_captured_piece_next_to_king(monkeypatch):
 
     assert game.pieces_locations[2].get_type() == PIECE_TYPE.PAWN
     assert game.capture_processor.captured_black == []
-    assert game.cards_processor.get_cards_for(COLOR.WHITE) == []
+    assert [
+        card.get_card_type()
+        for card in game.cards_processor.get_cards_for(COLOR.WHITE)
+    ] == [EnchantmentCardType.PIECE_TELEPORT]
+    assert game.board_cards == []
     assert game.current_turn == COLOR.BLACK
 
 
@@ -332,6 +375,14 @@ def test_ai_search_stats_include_cache_and_individual_worker_states():
     game.black_ai._set_current_search_depth(4)
     game.black_ai._set_completed_search_depth(3)
     game.black_ai._add_completed_nodes(900)
+    game.black_ai._begin_ponder_progress(12)
+    game.black_ai._record_ponder_progress(
+        white_actions_completed=4,
+        branches_generated=7,
+        root_actions_completed=8,
+        root_actions_discovered=10,
+    )
+    game.black_ai._set_ponder_depth_progress([0, 2, 2])
 
     stats = game.ai_search_stats
 
@@ -347,6 +398,13 @@ def test_ai_search_stats_include_cache_and_individual_worker_states():
     assert stats.current_depth == 4
     assert stats.completed_search_depth == 3
     assert stats.live_visited_nodes == 900
+    assert stats.ponder_white_actions_completed == 4
+    assert stats.ponder_white_actions_total == 12
+    assert stats.ponder_branches_generated == 7
+    assert stats.ponder_root_actions_completed == 8
+    assert stats.ponder_root_actions_discovered == 10
+    assert stats.ponder_depth_counts == ((0, 1), (2, 2))
+    assert stats.ponder_max_branch_depth == 2
 
 
 def test_ai_starts_pondering_after_its_move():

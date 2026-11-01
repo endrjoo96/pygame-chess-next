@@ -651,6 +651,177 @@ def test_ponder_shares_alpha_sequentially_within_each_branch(monkeypatch):
             assert entry.root_scope_ids == frozenset((scope_id,))
 
 
+def test_ponder_prioritizes_best_white_positions_without_pruning(monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, function, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(function(*args, **kwargs))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    ai = ChessAI(
+        SearchConfig(max_depth=1, cache_max_entries=16),
+        max_workers=2,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    white_actions = [
+        GameAction(GameActionType.MOVE, 1, 2),
+        GameAction(GameActionType.MOVE, 1, 3),
+    ]
+    roots = {}
+    for position in (5, 6):
+        root = state.clone()
+        root.current_turn = COLOR.BLACK
+        root.selected_piece_position = position
+        roots[position] = root
+    black_actions = {
+        5: [
+            GameAction(GameActionType.MOVE, 5, 7),
+            GameAction(GameActionType.MOVE, 5, 8),
+        ],
+        6: [
+            GameAction(GameActionType.MOVE, 6, 7),
+            GameAction(GameActionType.MOVE, 6, 8),
+        ],
+    }
+    monkeypatch.setattr(
+        "logic.chess_ai._expand_ponder_white_action",
+        lambda _state, action: (
+            roots[5] if action == white_actions[0] else roots[6],
+        ),
+    )
+    monkeypatch.setattr(
+        GameSimulation,
+        "available_actions",
+        lambda current_state: (
+            white_actions
+            if current_state.current_turn == COLOR.WHITE
+            else black_actions[current_state.selected_piece_position]
+        ),
+    )
+    monkeypatch.setattr(ai, "_order_actions", lambda _state, actions: actions)
+    monkeypatch.setattr(
+        ai,
+        "evaluate",
+        lambda root: {5: 10.0, 6: -10.0}[root.selected_piece_position],
+    )
+    evaluated = []
+
+    def evaluate_root_action(
+        root, action, _depth, _config, _deadline, _snapshot,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
+    ):
+        evaluated.append((root.selected_piece_position, action))
+        return _RootEvaluation(0.0, 1)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+
+    result = ai.ponder(state, Event())
+
+    assert result.completed_depth == 1
+    assert evaluated == [
+        (6, black_actions[6][0]),
+        (5, black_actions[5][0]),
+        (6, black_actions[6][1]),
+        (5, black_actions[5][1]),
+    ]
+
+
+def test_ponder_deepens_priority_branch_to_limit_before_next_branch(monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, function, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(function(*args, **kwargs))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    ai = ChessAI(
+        SearchConfig(max_depth=2, cache_max_entries=32),
+        max_workers=1,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    white_action = GameAction(GameActionType.MOVE, 1, 2)
+    roots = {}
+    for position in (5, 6):
+        root = state.clone()
+        root.current_turn = COLOR.BLACK
+        root.selected_piece_position = position
+        roots[position] = root
+    black_actions = {
+        5: [
+            GameAction(GameActionType.MOVE, 5, 7),
+            GameAction(GameActionType.MOVE, 5, 8),
+        ],
+        6: [
+            GameAction(GameActionType.MOVE, 6, 7),
+            GameAction(GameActionType.MOVE, 6, 8),
+        ],
+    }
+    monkeypatch.setattr(
+        "logic.chess_ai._expand_ponder_white_action",
+        lambda _state, _action: (roots[5], roots[6]),
+    )
+    monkeypatch.setattr(
+        GameSimulation,
+        "available_actions",
+        lambda current_state: (
+            [white_action]
+            if current_state.current_turn == COLOR.WHITE
+            else black_actions[current_state.selected_piece_position]
+        ),
+    )
+    monkeypatch.setattr(ai, "_order_actions", lambda _state, actions: actions)
+    monkeypatch.setattr(
+        ai,
+        "evaluate",
+        lambda root: {5: 10.0, 6: -10.0}[root.selected_piece_position],
+    )
+    evaluated = []
+
+    def evaluate_root_action(
+        root, action, depth, _config, _deadline, _snapshot,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
+    ):
+        evaluated.append((root.selected_piece_position, depth, action))
+        return _RootEvaluation(0.0, 1)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+
+    result = ai.ponder(state, Event())
+
+    assert result.max_branch_depth == 2
+    assert result.root_branches == 2
+    assert evaluated == [
+        (6, 1, black_actions[6][0]),
+        (6, 1, black_actions[6][1]),
+        (6, 2, black_actions[6][0]),
+        (6, 2, black_actions[6][1]),
+        (5, 1, black_actions[5][0]),
+        (5, 1, black_actions[5][1]),
+        (5, 2, black_actions[5][0]),
+        (5, 2, black_actions[5][1]),
+    ]
+    assert ai.search_progress_stats()[9:] == (((2, 2),), 2)
+
+
 def test_ponder_dispatches_search_before_all_expansions_finish(monkeypatch):
     import logic.chess_ai as chess_ai
 
@@ -840,7 +1011,7 @@ def test_ponder_generates_later_task_groups_only_when_needed(monkeypatch):
     assert generated_roots == [first_root]
 
 
-def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
+def test_ponder_reports_live_nodes_and_branch_depth_progress(monkeypatch):
     import logic.chess_ai as chess_ai
 
     class ImmediateExecutor:
@@ -862,17 +1033,20 @@ def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
     ai.prepare_workers = lambda **kwargs: None
     status_values = [chess_ai._WORKER_IDLE]
     status_pids = [123]
+    depth_values = [0]
     cache_entry_values = [0]
     node_values = [0]
     status_lock = Lock()
     ai._worker_status_values = status_values
     ai._worker_status_pids = status_pids
+    ai._worker_depth_values = depth_values
     ai._worker_cache_entry_values = cache_entry_values
     ai._worker_node_values = node_values
     ai._worker_status_process_lock = status_lock
     ai._worker_pool_state = "ready"
     monkeypatch.setattr(chess_ai, "_WORKER_STATUS_VALUES", status_values)
     monkeypatch.setattr(chess_ai, "_WORKER_STATUS_PIDS", status_pids)
+    monkeypatch.setattr(chess_ai, "_WORKER_DEPTH_VALUES", depth_values)
     monkeypatch.setattr(
         chess_ai, "_WORKER_CACHE_ENTRY_VALUES", cache_entry_values)
     monkeypatch.setattr(chess_ai, "_WORKER_NODE_VALUES", node_values)
@@ -911,8 +1085,11 @@ def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
     result = ai.ponder(state, Event())
 
     assert result.visited_nodes == 128
-    assert observed_progress == [("pondering", 1, 0, 128)]
-    assert ai.search_progress_stats() == ("idle", 0, 1, 128)
+    assert observed_progress == [
+        ("pondering", 0, 0, 128, 1, 1, 1, 0, 1, ((0, 1),), 0)
+    ]
+    assert ai.search_progress_stats() == (
+        "idle", 0, 0, 128, 1, 1, 1, 1, 1, ((1, 1),), 1)
 
 
 def test_pondering_is_disabled_when_ponder_percent_is_zero():
@@ -1047,6 +1224,7 @@ def test_worker_stats_reports_active_mode_and_root(monkeypatch):
     status_pids = [101, 202]
     mode_values = [chess_ai_module._WORKER_MODE_NONE] * 2
     root_values = [0, 0]
+    depth_values = [0, 0]
     cache_entry_values = [0, 0]
     node_values = [0, 0]
 
@@ -1054,12 +1232,14 @@ def test_worker_stats_reports_active_mode_and_root(monkeypatch):
     ai._worker_status_pids = status_pids
     ai._worker_mode_values = mode_values
     ai._worker_root_values = root_values
+    ai._worker_depth_values = depth_values
     ai._worker_cache_entry_values = cache_entry_values
     ai._worker_node_values = node_values
     ai._worker_status_process_lock = shared_lock
     monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_VALUES", status_values)
     monkeypatch.setattr(chess_ai_module, "_WORKER_MODE_VALUES", mode_values)
     monkeypatch.setattr(chess_ai_module, "_WORKER_ROOT_VALUES", root_values)
+    monkeypatch.setattr(chess_ai_module, "_WORKER_DEPTH_VALUES", depth_values)
     monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_LOCK", shared_lock)
     monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_INDEX", 0)
 
@@ -1067,9 +1247,12 @@ def test_worker_stats_reports_active_mode_and_root(monkeypatch):
         chess_ai_module._WORKER_BUSY,
         chess_ai_module._WORKER_MODE_SEARCH,
         POS.C2.value,
+        3,
     )
     worker = ai.worker_stats()[0]
-    assert (worker.state, worker.mode, worker.root) == ("busy", "search", "C2")
+    assert (
+        worker.state, worker.mode, worker.root, worker.search_depth
+    ) == ("busy", "search", "C2", 3)
 
     chess_ai_module._set_current_worker_status(
         chess_ai_module._WORKER_BUSY,
@@ -1079,21 +1262,29 @@ def test_worker_stats_reports_active_mode_and_root(monkeypatch):
     worker = ai.worker_stats()[0]
     assert (worker.state, worker.mode, worker.root) == (
         "busy", "prepare", "D2")
+    assert worker.search_depth is None
 
     chess_ai_module._set_current_worker_status(chess_ai_module._WORKER_IDLE)
     worker = ai.worker_stats()[0]
     assert (worker.state, worker.mode, worker.root) == ("idle", "-", "-")
+    assert worker.search_depth is None
 
 
 def test_worker_tasks_publish_and_clear_their_mode(monkeypatch):
     import logic.chess_ai as chess_ai_module
 
     status_calls = []
+    debug_logs = []
+    monkeypatch.setattr(
+        "logic.chess_ai.is_enabled",
+        lambda level: level == "DEBUG",
+    )
+    monkeypatch.setattr("logic.chess_ai.log_debug", debug_logs.append)
     monkeypatch.setattr(
         chess_ai_module,
         "_set_current_worker_status",
-        lambda status, mode=0, root_position=0: status_calls.append(
-            (status, mode, root_position)),
+        lambda status, mode=0, root_position=0, search_depth=None:
+            status_calls.append((status, mode, root_position, search_depth)),
     )
     monkeypatch.setattr(
         GameSimulation,
@@ -1122,11 +1313,13 @@ def test_worker_tasks_publish_and_clear_their_mode(monkeypatch):
             chess_ai_module._WORKER_BUSY,
             chess_ai_module._WORKER_MODE_SEARCH,
             POS.C2.value,
+            1,
         ),
         (
             chess_ai_module._WORKER_IDLE,
             chess_ai_module._WORKER_MODE_NONE,
             0,
+            None,
         ),
     ]
 
@@ -1153,11 +1346,13 @@ def test_worker_tasks_publish_and_clear_their_mode(monkeypatch):
             chess_ai_module._WORKER_BUSY,
             chess_ai_module._WORKER_MODE_PREPARE,
             POS.D2.value,
+            None,
         ),
         (
             chess_ai_module._WORKER_IDLE,
             chess_ai_module._WORKER_MODE_NONE,
             0,
+            None,
         ),
     ]
 
@@ -1191,6 +1386,22 @@ def test_worker_tasks_publish_and_clear_their_mode(monkeypatch):
         chess_ai_module._WORKER_IDLE,
     ]
 
+    task_logs = [
+        message for message in debug_logs
+        if message.startswith("AI worker PID ")
+    ]
+    assert len(task_logs) == 8
+    assert "started search task" in task_logs[0]
+    assert "finished search task" in task_logs[1]
+    assert "status=completed" in task_logs[1]
+    assert "started ponder preparation task" in task_logs[2]
+    assert "finished ponder preparation task" in task_logs[3]
+    assert "status=completed" in task_logs[3]
+    assert "finished search task" in task_logs[5]
+    assert "status=failed" in task_logs[5]
+    assert "finished ponder preparation task" in task_logs[7]
+    assert "status=failed" in task_logs[7]
+
 
 def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
     ai = ChessAI(
@@ -1215,6 +1426,7 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
             worker.visited_nodes,
             action.source,
             ai.search_progress_stats(),
+            worker.search_depth,
         ))
         return _RootEvaluation(0.0, 128)
 
@@ -1231,19 +1443,20 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
             "busy", "search", POS(value[5]).name, 7, 128)
         for value in observed_cache_sizes
     )
-    assert observed_cache_sizes[0][6] == ("searching", 1, 0, 128)
+    assert observed_cache_sizes[0][6][:4] == ("searching", 1, 0, 128)
+    assert all(value[7] == 1 for value in observed_cache_sizes)
     assert all(
         phase == "searching"
         and current_depth == 1
         and completed_depth == 0
         and visited_nodes >= 128
         for phase, current_depth, completed_depth, visited_nodes
-        in (value[6] for value in observed_cache_sizes)
+        in (value[6][:4] for value in observed_cache_sizes)
     )
     assert ai.worker_stats()[0].cache_entries == 0
     assert ai.worker_stats()[0].visited_nodes == 0
     phase, current_depth, completed_depth, visited_nodes = (
-        ai.search_progress_stats())
+        ai.search_progress_stats()[:4])
     assert phase == "idle"
     assert current_depth == 0
     assert completed_depth == 1

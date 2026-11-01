@@ -37,6 +37,7 @@ class GameState:
     resurrection_moves: List[int] = field(default_factory=list)
     random_state: tuple = field(default_factory=_initial_random_state)
     board_cards: List[Tuple[int, Enchantment]] = field(default_factory=list)
+    en_passant_target: Optional[int] = None
 
     @classmethod
     def from_game(cls, game) -> "GameState":
@@ -68,6 +69,7 @@ class GameState:
                     else []
                 )
             ),
+            en_passant_target=getattr(game, "en_passant_target", None),
             random_state=(
                 game.rng.getstate()
                 if hasattr(game, "rng")
@@ -105,6 +107,7 @@ class GameState:
                 (position, copy.deepcopy(enchantment, memo))
                 for position, enchantment in self.board_cards
             ],
+            en_passant_target=self.en_passant_target,
         )
 
     def cache_key(self) -> tuple:
@@ -143,6 +146,7 @@ class GameState:
             self.double_move_collected_board_card, tuple(self.resurrection_moves),
             self.random_state,
             tuple((position, enchantment_key(card)) for position, card in self.board_cards),
+            self.en_passant_target,
         )
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:

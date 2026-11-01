@@ -12,6 +12,7 @@ class AIWorkerStats:
     visited_nodes: Optional[int] = None
     mode: str = "-"
     root: str = "-"
+    search_depth: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -34,3 +35,10 @@ class AISearchStats:
     current_depth: Optional[int] = None
     completed_search_depth: Optional[int] = None
     live_visited_nodes: Optional[int] = None
+    ponder_white_actions_completed: Optional[int] = None
+    ponder_white_actions_total: Optional[int] = None
+    ponder_branches_generated: Optional[int] = None
+    ponder_root_actions_completed: Optional[int] = None
+    ponder_root_actions_discovered: Optional[int] = None
+    ponder_depth_counts: Tuple[Tuple[int, int], ...] = ()
+    ponder_max_branch_depth: Optional[int] = None

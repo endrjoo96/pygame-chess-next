@@ -41,6 +41,7 @@ Plik `run.properties` musi zawierać wartość `DEBUG` albo `PROD` dla `mode`. W
 
 ## Wskazówki dotyczące zmian i weryfikacji
 
+- **Niezmienna zasada zakończenia gry:** nie implementuj szacha, mata, pata ani podobnych mechanizmów. Nie śledź stanu szacha ani nie odrzucaj ruchów z powodu atakowanego pola lub narażenia króla — również przy roszadzie. Gra kończy się wyłącznie po eliminacji (zbiciu/usunięciu) króla przeciwnika. Zasada dotyczy reguł, symulacji, AI, interfejsu i testów; nie zmieniaj jej bez wyraźnej prośby użytkownika.
 - Przy zmianach ruchu, zbić, efektów kart lub tur graczy zachowuj dotychczasowe zasady gry i kolejność tur. Te zachowania są koordynowane w `GameLogicLoop`, procesorach, figurach i funkcjach zachowań zaklęć.
 - `GameSimulation.available_actions(state)` udostępnia akcje bieżącego gracza, a `GameSimulation.apply(state, action)` zwraca nowy stan bez modyfikowania wejściowego. Rozszerzaj oba elementy i ich testy, gdy dodajesz akcję gry. Warstwa symulacji używa wspólnych przejść/reguł `GameLogicLoop`, ale nie może zależeć od ekranu ani rysować elementów UI.
 - Przy zmianach zasad gry lub działania kart dodawaj albo aktualizuj odpowiednie testy pytest w `tests/`. Zamiast uruchamiać graficzną grę w testach, korzystaj z istniejących lekkich obiektów testowych i atrap.

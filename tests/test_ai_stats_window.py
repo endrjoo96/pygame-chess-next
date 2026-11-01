@@ -85,11 +85,12 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
                 4, "busy", pid=456, mode="prepare", root="D7"),
             AIWorkerStats(
                 2, "busy", pid=234, cache_entries=20,
-                mode="search", root="C2"),
+                mode="search", root="C2", search_depth=3),
             AIWorkerStats(
                 1, "idle", pid=123, cache_entries=12),
             AIWorkerStats(
-                5, "busy", pid=567, mode="search", root="A1"),
+                5, "busy", pid=567, mode="search", root="A1",
+                search_depth=1),
             AIWorkerStats(
                 6, "busy", pid=678, mode="prepare", root="E2"),
             AIWorkerStats(7, "starting"),
@@ -115,7 +116,15 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         search_phase="pondering",
         current_depth=0,
         completed_search_depth=0,
+        ponder_white_actions_completed=2,
+        ponder_white_actions_total=4,
+        ponder_branches_generated=7,
+        ponder_root_actions_completed=8,
+        ponder_root_actions_discovered=10,
+        ponder_depth_counts=((1, 2), (2, 1)),
+        ponder_max_branch_depth=2,
     ))
+    ponder_blits = window._window.surface.blits[:]
 
     assert window._window.flip_count == 3
     assert window._window.surface.get_size() == (700, 720)
@@ -139,7 +148,7 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     ]
     assert progress_ys == [196, 214, 232]
     expected_worker_rows = [374 + row * 18 for row in range(7)]
-    for column_x in (16, 236, 350, 470):
+    for column_x in (16, 236, 350, 470, 580):
         worker_row_ys = [
             position[1]
             for position, _ in candidate_blits
@@ -171,7 +180,25 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert "Kolejna karta pojawi się za 3 tury" in rendered_text
     assert "Główny: 42 / 256 | workery: 32 | wyparcia: 3" in rendered_text
     assert "Maks. głębokość wpisu cache: 3" in rendered_text
-    assert "Głębokość ponderingu: aktualnie 0 | ukończona 0" in rendered_text
+    assert "Największa ukończona głębokość gałęzi: 2" in rendered_text
+    assert (
+        "Gałęzie wg ukończonej głębokości: d1:2 | d2:1"
+        in rendered_text
+    )
+    assert "Akcje białych rozwinięte: 2/4 | pozycje: 7" in rendered_text
+    assert (
+        "Odpowiedzi czarnych: 8 analiz ukończonych / 10 legalnych"
+        in rendered_text
+    )
+    assert [
+        position[1]
+        for position, _ in ponder_blits
+        if position[0] == 16 and position[1] in (250, 268)
+    ] == [250, 268]
+    assert (16, 286) in [
+        position for position, _ in ponder_blits]
+    assert (16, 358) in [
+        position for position, _ in ponder_blits]
     assert "W01 PID 123" in rendered_text
     assert "idle" in rendered_text
     assert "search" in rendered_text
@@ -186,6 +213,9 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert "Stan" in rendered_text
     assert "Tryb" in rendered_text
     assert "Root" in rendered_text
+    assert "Głęb." in rendered_text
+    assert "3" in rendered_text
+    assert "1" in rendered_text
 
 
 def test_board_card_countdown_text_uses_current_card_state():

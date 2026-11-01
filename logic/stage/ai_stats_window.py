@@ -80,8 +80,9 @@ class AIStatsWindow:
                 "Oczekiwanie na ruch bota...", True, (220, 220, 220))
             surface.blit(message, (16, 60))
 
-        self._draw_live_progress(surface, stats)
-        self._draw_engine_diagnostics(surface, stats)
+        progress_line_count = self._draw_live_progress(surface, stats)
+        self._draw_engine_diagnostics(
+            surface, stats, max(0, progress_line_count - 3) * 18)
         self._window.flip()
 
     @staticmethod
@@ -169,30 +170,59 @@ class AIStatsWindow:
             format(stats.live_visited_nodes, ",").replace(",", " ")
             if stats.live_visited_nodes is not None else "?"
         )
-        current_depth = (
-            stats.current_depth
-            if stats.current_depth is not None else "-"
-        )
-        completed_depth = (
-            stats.completed_search_depth
-            if stats.completed_search_depth is not None else "-"
-        )
         lines = (
             "Aktywność: {}".format(phase_label),
             "Odwiedzone węzły: {}".format(visited_nodes),
-            "{}: aktualnie {} | ukończona {}".format(
-                depth_label, current_depth, completed_depth),
         )
+        if phase == "pondering":
+            max_branch_depth = (
+                stats.ponder_max_branch_depth
+                if stats.ponder_max_branch_depth is not None else "-"
+            )
+            depth_counts = " | ".join(
+                "d{}:{}".format(depth, count)
+                for depth, count in stats.ponder_depth_counts
+            ) or "brak gałęzi"
+            lines += (
+                "Największa ukończona głębokość gałęzi: {}".format(
+                    max_branch_depth),
+                "Akcje białych rozwinięte: {}/{} | pozycje: {}".format(
+                    stats.ponder_white_actions_completed or 0,
+                    stats.ponder_white_actions_total or 0,
+                    stats.ponder_branches_generated or 0,
+                ),
+                "Odpowiedzi czarnych: {} analiz ukończonych / "
+                "{} legalnych".format(
+                    stats.ponder_root_actions_completed or 0,
+                    stats.ponder_root_actions_discovered or 0,
+                ),
+                "Gałęzie wg ukończonej głębokości: {}".format(
+                    depth_counts),
+            )
+        else:
+            current_depth = (
+                stats.current_depth
+                if stats.current_depth is not None else "-"
+            )
+            completed_depth = (
+                stats.completed_search_depth
+                if stats.completed_search_depth is not None else "-"
+            )
+            lines += (
+                "{}: aktualnie {} | ukończona {}".format(
+                    depth_label, current_depth, completed_depth),
+            )
         for line_index, text in enumerate(lines):
             surface.blit(
                 self._detail_font.render(text, True, (220, 220, 220)),
                 (16, 196 + line_index * 18),
             )
+        return len(lines)
 
-    def _draw_engine_diagnostics(self, surface, stats):
+    def _draw_engine_diagnostics(self, surface, stats, y_offset=0):
         cache_title = self._body_font.render(
             "Cache", True, (220, 220, 220))
-        surface.blit(cache_title, (16, 260))
+        surface.blit(cache_title, (16, 260 + y_offset))
 
         if stats.cache_enabled is False:
             cache_text = "Wyłączony"
@@ -219,7 +249,7 @@ class AIStatsWindow:
             cache_text = "Brak danych"
         cache_detail = self._detail_font.render(
             cache_text, True, (220, 220, 220))
-        surface.blit(cache_detail, (16, 282))
+        surface.blit(cache_detail, (16, 282 + y_offset))
 
         if stats.cache_enabled is False:
             cache_depth = "wyłączony"
@@ -234,11 +264,13 @@ class AIStatsWindow:
             True,
             (220, 220, 220),
         )
-        surface.blit(cache_depth_text, (16, 304))
+        surface.blit(cache_depth_text, (16, 304 + y_offset))
 
         workers = sorted(stats.workers, key=self._worker_sort_key)
         total_workers = len(workers)
-        visible_workers = 17
+        surface_height = surface.get_size()[1]
+        first_worker_y = 374 + y_offset
+        visible_workers = max(1, (surface_height - first_worker_y - 40) // 18)
         self._worker_scroll = min(
             max(0, self._worker_scroll),
             max(0, total_workers - visible_workers),
@@ -251,7 +283,7 @@ class AIStatsWindow:
         )
         surface.blit(
             self._body_font.render(worker_heading, True, (220, 220, 220)),
-            (16, 328),
+            (16, 328 + y_offset),
         )
 
         for header, x in (
@@ -259,17 +291,18 @@ class AIStatsWindow:
             ("Stan", 236),
             ("Tryb", 350),
             ("Root", 470),
+            ("Głęb.", 580),
         ):
             surface.blit(
                 self._detail_font.render(header, True, (160, 160, 160)),
-                (x, 352),
+                (x, 352 + y_offset),
             )
 
         if not stats.workers:
             surface.blit(
                 self._detail_font.render(
                     "Brak danych o workerach", True, (180, 180, 180)),
-                (16, 374),
+                (16, first_worker_y),
             )
         else:
             state_colors = {
@@ -285,7 +318,7 @@ class AIStatsWindow:
                     name = f"W{worker.worker_id:02d}"
                     if worker.pid is not None:
                         name += " PID {}".format(worker.pid)
-                y = 374 + visible_index * 18
+                y = first_worker_y + visible_index * 18
                 worker_values = (
                     (name, 16, (200, 200, 200)),
                     (
@@ -295,6 +328,13 @@ class AIStatsWindow:
                     ),
                     (worker.mode, 350, (220, 220, 220)),
                     (worker.root, 470, (220, 220, 220)),
+                    (
+                        str(worker.search_depth)
+                        if worker.mode == "search"
+                        and worker.search_depth is not None else "-",
+                        580,
+                        (220, 220, 220),
+                    ),
                 )
                 for text, x, color in worker_values:
                     surface.blit(
@@ -306,7 +346,7 @@ class AIStatsWindow:
             surface.blit(
                 self._detail_font.render(
                     "Kółko myszy: przewijanie listy", True, (160, 160, 160)),
-                (16, 692),
+                (16, surface_height - 28),
             )
 
     @staticmethod
