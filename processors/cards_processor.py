@@ -33,6 +33,8 @@ class CardsProcessor:
         self.enchantment_icons = {
             EnchantmentType.PASSIVE: pygame.transform.scale(
                 pygame.image.load(context.card_mod_passive_src).convert_alpha(), (24, 24)),
+            EnchantmentType.BUFF: pygame.transform.scale(
+                pygame.image.load(context.card_mod_buff_src).convert_alpha(), (24, 24)),
             EnchantmentType.REUSABLE: pygame.transform.scale(
                 pygame.image.load(context.card_mod_reusable_src).convert_alpha(), (24, 24)),
             EnchantmentType.DELAY_BEFORE_USE: pygame.transform.scale(
@@ -121,12 +123,22 @@ class CardsProcessor:
             screen, context.black_cards_coordinates, chess_pieces, self.black_cards,
             card_size, PREDEFINED_COLOR.transparent_blue, COLOR.BLACK.value, COLOR.BLACK, selected_card)
 
-    def render_preview(self, screen: Surface, chess_pieces: PieceSprite, card: Enchantment, coords, color: COLOR):
+    def render_preview(
+        self, screen: Surface, chess_pieces: PieceSprite, card: Enchantment,
+        coords, color: COLOR, remaining_turns=None,
+    ):
         """Rysuje pojedynczą kartę w podanej pozycji jako podgląd planszowy."""
         context = GameContext()
         self.__render_card(
             screen, coords, chess_pieces, card, (context.card_width, context.card_height),
             PREDEFINED_COLOR.card_preview_brown, card_color=color.value)
+        if remaining_turns is not None:
+            counter = self.small_font.render(
+                "Pozostałe tury: {}".format(remaining_turns),
+                True,
+                PREDEFINED_COLOR.white,
+            )
+            screen.blit(counter, (coords[0] + 8, coords[1] + 8))
 
     def render_effects_preview(self, screen: Surface, chess_pieces: PieceSprite, effects, coords, color: COLOR):
         """Układa podgląd efektów figury w siatce, dopasowując go do granic ekranu."""

@@ -101,8 +101,28 @@ class EnchantmentCardType(Enum):
         [EnchantmentType.REUSABLE], 0.4, "Skok do przodu", "Wykonaj ruch o 2 pola do przodu", PIECE_TYPE.PAWN,
         pawn_behaviors.two_field_forward_move, (1, 3))
     PAWN_ONE_FIELD_BACKWARD = (
-        [EnchantmentType.REUSABLE], 0.4, "Ruch do tyłu", "Wykonaj ruch do tyłu. Pozwala również na zbicie",
-        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move, (1, 3))
+        [EnchantmentType.BUFF], 0.4, "Ruch do tyłu",
+        "Pozwala pionowi cofać się o jedno pole i zbijać po skosie do tyłu.",
+        PIECE_TYPE.PAWN, pawn_behaviors.one_field_backwards_move)
+    KNIGHT_RUNIC_TRAP = (
+        [], 0.12, "Pułapka runiczna",
+        "Postaw runę na pustym sąsiednim polu. Pierwsza figura, która na nią wejdzie "
+        "lub przez nią przejdzie, ginie; runa znika po 2 kolejnych turach rzucającego.",
+        PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves)
+    PAWN_OFFICER = (
+        [EnchantmentType.PASSIVE], 0.2, "Oficer",
+        "Sąsiednie sojusznicze piony naśladują ruch oficera, korzystając z jego "
+        "aktywnych efektów pasywnych.",
+        PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
+    ROOK_TREBUCHET = (
+        [EnchantmentType.REUSABLE, EnchantmentType.STUN_AFTER_USE], 0.12, "Trebusz",
+        "Wystrzel wybranego piona z sąsiedniej wieży na puste pole w zasięgu 6. "
+        "Wieża zostaje ogłuszona na 1 turę.",
+        PIECE_TYPE.ROOK, any_piece_behaviors.no_additional_moves, (1, 2))
+    RECRUIT_PAWN = (
+        [EnchantmentType.REUSABLE], 0.2, "Rekrut",
+        "Stwórz piona na pustym polu linii 1 białych lub linii 8 czarnych.",
+        PIECE_TYPE.EMPTY, any_piece_behaviors.no_additional_moves, (1, 5))
     KNIGHT_ONE_FIELD_ANY_DIRECTION = (
         [EnchantmentType.REUSABLE], 0.75, "Przesunięcie skoczka",
         "Skoczek porusza się o 1 pole w dowolnym kierunku",
@@ -127,7 +147,7 @@ class EnchantmentCardType(Enum):
         "Po 2 turach detonuje pion, niszcząc wszystkie figury w promieniu 1 pola, włącznie z sojuszniczymi.",
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves, None, 2)
     PAWN_SWORDSMAN = (
-        [EnchantmentType.PASSIVE], 0.75, "Szermierz", "Pozwala na poruszanie się na boki.",
+        [EnchantmentType.BUFF], 0.75, "Szermierz", "Pozwala na poruszanie się na boki.",
         PIECE_TYPE.PAWN, pawn_behaviors.move_one_field_horizontally)
     KING_PAWN_RESURRECTION = (
         [], 0.35, "Wskrzeszenie piona",

@@ -16,12 +16,15 @@ class GameSimulation:
 
     MOVEMENT_CARDS = {
         EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD,
-        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD,
         EnchantmentCardType.KNIGHT_ONE_FIELD_ANY_DIRECTION,
         EnchantmentCardType.ROOK_JUMP_ALLIES,
         EnchantmentCardType.QUEEN_JUMP_ALLIES,
         EnchantmentCardType.ROOK_TOWER_THROW,
     }
+    TREBUCHET_DIRECTIONS = (
+        (-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1),
+    )
 
     @staticmethod
     def destinations_for(piece, source, pieces_locations, enchantment=None):
@@ -86,7 +89,60 @@ class GameSimulation:
                 if required_type not in (PIECE_TYPE.EMPTY, piece.get_type()):
                     continue
 
-                if card_type in cls.MOVEMENT_CARDS:
+                if card_type == EnchantmentCardType.KNIGHT_RUNIC_TRAP:
+                    if not can_move:
+                        continue
+                    x, y = id_to_xy(source)
+                    unavailable = {
+                        position for position, _ in GameRules._board_cards(state)
+                    }
+                    unavailable.update(
+                        trap.position for trap in state.rune_traps)
+                    for target_y in range(max(0, y - 1), min(7, y + 1) + 1):
+                        for target_x in range(max(0, x - 1), min(7, x + 1) + 1):
+                            if (target_x, target_y) == (x, y):
+                                continue
+                            destination = xy_to_id(target_x, target_y)
+                            if (
+                                not state.pieces_locations[destination].exists()
+                                and destination not in unavailable
+                            ):
+                                actions.append(GameAction(
+                                    GameActionType.PLACE_RUNE,
+                                    source,
+                                    destination,
+                                    card_index,
+                                ))
+                elif card_type == EnchantmentCardType.ROOK_TREBUCHET:
+                    if not can_move:
+                        continue
+                    rook_x, rook_y = id_to_xy(source)
+                    for pawn_position, target in state.pieces_locations.items():
+                        if (
+                            not target.exists()
+                            or target.get_type() != PIECE_TYPE.PAWN
+                            or max(
+                                abs(id_to_xy(pawn_position)[0] - rook_x),
+                                abs(id_to_xy(pawn_position)[1] - rook_y),
+                            ) != 1
+                        ):
+                            continue
+                        for direction_x, direction_y in cls.TREBUCHET_DIRECTIONS:
+                            for distance in range(1, 7):
+                                target_x = rook_x + direction_x * distance
+                                target_y = rook_y + direction_y * distance
+                                if not (0 <= target_x < 8 and 0 <= target_y < 8):
+                                    break
+                                destination = xy_to_id(target_x, target_y)
+                                if not state.pieces_locations[destination].exists():
+                                    actions.append(GameAction(
+                                        GameActionType.TREBUCHET,
+                                        source,
+                                        destination,
+                                        card_index,
+                                        secondary_source=pawn_position,
+                                    ))
+                elif card_type in cls.MOVEMENT_CARDS:
                     if not can_move:
                         continue
                     for destination in cls.destinations_for(
@@ -99,8 +155,13 @@ class GameSimulation:
                             card_index,
                         ))
                 elif card.is_passive() and can_move:
+                    action_type = (
+                        GameActionType.APPLY_BUFF
+                        if card.is_buff()
+                        else GameActionType.APPLY_PASSIVE
+                    )
                     actions.append(GameAction(
-                        GameActionType.APPLY_PASSIVE,
+                        action_type,
                         source,
                         card_index=card_index,
                     ))
@@ -144,6 +205,28 @@ class GameSimulation:
                     actions.extend(cls._resurrection_actions(
                         state, source, card_index, card_type.resurrected_piece_type))
 
+        if not in_double_move:
+            home_row = 0 if current_color == COLOR.WHITE else 7
+            unavailable = {
+                position for position, _ in GameRules._board_cards(state)
+            }
+            unavailable.update(trap.position for trap in state.rune_traps)
+            for card_index, card in enumerate(cards):
+                if card.get_card_type() != EnchantmentCardType.RECRUIT_PAWN:
+                    continue
+                for x in range(8):
+                    destination = xy_to_id(x, home_row)
+                    if (
+                        not state.pieces_locations[destination].exists()
+                        and destination not in unavailable
+                    ):
+                        actions.append(GameAction(
+                            GameActionType.RECRUIT_PAWN,
+                            0,
+                            destination,
+                            card_index,
+                        ))
+
         return actions
 
     @classmethod
@@ -160,11 +243,11 @@ class GameSimulation:
             return ()
 
         destinations = []
-        if state.en_passant_target is not None:
+        for en_passant_target in GameRules._en_passant_targets(state):
             en_passant_capture = GameRules.en_passant_capture_position(
-                state, source, state.en_passant_target)
+                state, source, en_passant_target)
             if en_passant_capture is not None:
-                destinations.append(state.en_passant_target)
+                destinations.append(en_passant_target)
 
         if piece.get_type() != PIECE_TYPE.KING:
             return tuple(destinations)

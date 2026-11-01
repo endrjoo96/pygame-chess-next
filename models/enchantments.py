@@ -78,8 +78,15 @@ class Enchantment:
         return EnchantmentType.REUSABLE in self.__enchantment_types
 
     def is_passive(self) -> bool:
-        """Sprawdza, czy zaklęcie działa jako efekt pasywny."""
-        return EnchantmentType.PASSIVE in self.__enchantment_types
+        """Sprawdza, czy zaklęcie działa jako efekt przypisany do figury."""
+        return any(
+            enchantment_type in self.__enchantment_types
+            for enchantment_type in (EnchantmentType.PASSIVE, EnchantmentType.BUFF)
+        )
+
+    def is_buff(self) -> bool:
+        """Sprawdza, czy nałożenie efektu nie kończy tury gracza."""
+        return EnchantmentType.BUFF in self.__enchantment_types
 
     def get_remaining_uses(self) -> int:
         """Zwraca liczbę pozostałych użyć."""

@@ -23,7 +23,7 @@ from logic.search_cache import Bound, CacheEntry
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
-from models.game_state import GameState
+from models.game_state import GameState, RuneTrap
 from utils.run_config import (
     AI_SEARCH_CPU_PERCENT,
     AI_SEARCH_MAX_DEPTH,
@@ -1817,3 +1817,26 @@ def test_ai_prefers_a_safe_board_card_over_a_small_capture():
 
     assert decision.action is not None
     assert decision.action.destination == state.board_card_position
+
+
+def test_evaluation_values_rune_traps_and_the_new_card_types():
+    state = make_black_to_move_state()
+    state.pieces_locations[POS.E8.value] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.pieces_locations[POS.E1.value] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    state.pieces_locations[POS.D4.value] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    without_trap = ChessAI.evaluate(state)
+
+    state.rune_traps.append(RuneTrap(
+        POS.D5.value,
+        COLOR.BLACK,
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+        placed_on_turn=1,
+    ))
+    with_trap = ChessAI.evaluate(state)
+    state.rune_traps.clear()
+
+    state.black_cards = [EnchantmentCardType.ROOK_TREBUCHET.create()]
+    with_card = ChessAI.evaluate(state)
+
+    assert with_trap > without_trap
+    assert with_card > without_trap

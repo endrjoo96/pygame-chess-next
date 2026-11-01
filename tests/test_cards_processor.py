@@ -7,6 +7,7 @@ from constants.enchantment_type import EnchantmentType
 from constants.predefined_colors import PREDEFINED_COLOR
 from models.enchantment_cards import EnchantmentCardType
 from processors.cards_processor import CardsProcessor
+from utils.gamecontext import GameContext
 
 
 class FakePieceSprite:
@@ -38,6 +39,25 @@ def test_card_renderer_composes_icons_piece_and_text():
     )
 
     assert screen.get_at((10, 10)) != (0, 0, 0, 0)
+
+
+def test_buff_card_icon_is_loaded_from_its_resource(monkeypatch):
+    loaded_paths = []
+
+    class FakeImage:
+        def convert_alpha(self):
+            return pygame.Surface((24, 24), pygame.SRCALPHA)
+
+    def fake_load(path):
+        loaded_paths.append(path)
+        return FakeImage()
+
+    monkeypatch.setattr(pygame.image, "load", fake_load)
+    monkeypatch.setattr(GameContext(), "square_length", 80, raising=False)
+    processor = CardsProcessor(pygame.Surface((1200, 880)))
+
+    assert EnchantmentType.BUFF in processor.enchantment_icons
+    assert GameContext().card_mod_buff_src in loaded_paths
 
 
 def test_reset_decks_gives_both_players_the_same_two_random_cards(monkeypatch):

@@ -1,3 +1,4 @@
+import copy
 import random
 from dataclasses import dataclass
 from enum import Enum
@@ -7,7 +8,7 @@ from constants.piece_type import PIECE_TYPE
 from constants.pos import POS, id_to_xy, xy_to_id
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
-from models.game_state import GameState
+from models.game_state import GameState, RuneTrap
 from processors.movement_processor import process_possible_basic_moves
 from utils.run_config import GAME_SEED, RUN_MODE, RunMode
 
@@ -18,7 +19,11 @@ class GameActionType(Enum):
     TELEPORT = "teleport"
     RETURN_TO_START = "return_to_start"
     APPLY_PASSIVE = "apply_passive"
+    APPLY_BUFF = "apply_buff"
     RESURRECT = "resurrect"
+    PLACE_RUNE = "place_rune"
+    TREBUCHET = "trebuchet"
+    RECRUIT_PAWN = "recruit_pawn"
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,7 @@ class GameAction:
     card_index: int = -1
     captured_color: COLOR = COLOR.EMPTY
     captured_index: int = -1
+    secondary_source: int = 0
 
     @staticmethod
     def _format_position(position):
@@ -53,6 +59,10 @@ class GameAction:
                 "captured_color={}".format(self.captured_color.value),
                 "captured_index={}".format(self.captured_index),
             ))
+        if self.secondary_source:
+            fields.append(
+                "secondary_source={}".format(
+                    self._format_position(self.secondary_source)))
         return "GameAction({})".format(", ".join(fields))
 
 
@@ -79,25 +89,46 @@ class GameRules:
             if action.card_index >= 0 else None
         )
 
-        if action.action_type != GameActionType.MOVE:
+        if action.action_type not in (
+            GameActionType.MOVE,
+            GameActionType.APPLY_BUFF,
+        ):
             state.en_passant_target = None
+            state.en_passant_targets = []
 
         if action.action_type == GameActionType.MOVE:
-            target = state.pieces_locations[action.destination]
-            if target.exists() and not cls._is_rook_tower_throw_selected(state):
-                cls._capture_piece(state, target)
+            if cls._trigger_rune_on_route(
+                state, action.source, action.destination
+            ):
+                state.en_passant_target = None
+                state.en_passant_targets = []
+                cls._consume_selected_card_use(state)
+                cls._finish_piece_move(
+                    state, False, rng, advance_board_card_clock)
             else:
-                captured_position = cls.en_passant_capture_position(
-                    state, action.source, action.destination)
-                if captured_position is not None:
-                    captured_pawn = state.pieces_locations[captured_position]
-                    cls._capture_piece(state, captured_pawn)
-                    state.pieces_locations[captured_position] = Piece()
-            cls._move_piece(
-                state, action.destination, rng, advance_board_card_clock)
-        elif action.action_type == GameActionType.APPLY_PASSIVE:
+                target = state.pieces_locations[action.destination]
+                if target.exists() and not cls._is_rook_tower_throw_selected(state):
+                    cls._capture_piece(state, target)
+                else:
+                    captured_position = cls.en_passant_capture_position(
+                        state, action.source, action.destination)
+                    if captured_position is not None:
+                        captured_pawn = state.pieces_locations[captured_position]
+                        cls._capture_piece(state, captured_pawn)
+                        state.pieces_locations[captured_position] = Piece()
+                cls._move_piece(
+                    state, action.destination, rng, advance_board_card_clock)
+        elif action.action_type in (
+            GameActionType.APPLY_PASSIVE,
+            GameActionType.APPLY_BUFF,
+        ):
             enchantment = state.get_cards_for(state.current_turn)[action.card_index]
-            cls._apply_selected_passive(state, action.source, enchantment)
+            cls._apply_selected_piece_enchantment(
+                state,
+                action.source,
+                enchantment,
+                ends_turn=action.action_type == GameActionType.APPLY_PASSIVE,
+            )
         elif action.action_type == GameActionType.PROMOTE:
             cls._promote_piece(state, action.source)
         elif action.action_type == GameActionType.TELEPORT:
@@ -112,18 +143,46 @@ class GameRules:
             state.selected_piece_position = 0
             cls._end_turn(state)
         elif action.action_type == GameActionType.RETURN_TO_START:
-            cls._move_piece(
-                state, action.destination, rng, advance_board_card_clock)
+            if cls._trigger_rune_on_route(
+                state, action.source, action.destination
+            ):
+                cls._consume_selected_card_use(state)
+                cls._finish_piece_move(
+                    state, False, rng, advance_board_card_clock)
+            else:
+                cls._move_piece(
+                    state, action.destination, rng, advance_board_card_clock)
         elif action.action_type == GameActionType.RESURRECT:
             piece = state.get_captured_for(action.captured_color).pop(action.captured_index)
             state.pieces_locations[action.destination] = piece
+            trapped = cls._trigger_rune_on_route(
+                state, action.destination, action.destination)
             cls._discard_selected_card(state)
             state.selected_card = None
-            cls._collect_board_card(state, action.destination, state.current_turn)
+            if not trapped:
+                cls._collect_board_card(state, action.destination, state.current_turn)
             state.selected_captured_piece = None
             state.resurrection_moves = []
             state.selected_piece_position = 0
             cls._end_turn(state)
+        elif action.action_type == GameActionType.PLACE_RUNE:
+            card = state.get_cards_for(state.current_turn)[action.card_index]
+            state.rune_traps.append(RuneTrap(
+                action.destination,
+                state.current_turn,
+                card,
+                state.turns_started[state.current_turn],
+            ))
+            cls._discard_selected_card(state)
+            state.selected_card = None
+            state.selected_piece_position = 0
+            cls._end_turn(state)
+        elif action.action_type == GameActionType.TREBUCHET:
+            cls._fire_trebuchet(
+                state, action.source, action.secondary_source, action.destination,
+                rng, advance_board_card_clock)
+        elif action.action_type == GameActionType.RECRUIT_PAWN:
+            cls._recruit_pawn(state, action.destination, rng, advance_board_card_clock)
 
         if rng is not None:
             state.random_state = rng.getstate()
@@ -148,7 +207,9 @@ class GameRules:
         cls._end_turn(state)
 
     @classmethod
-    def _apply_selected_passive(cls, state, position, enchantment):
+    def _apply_selected_piece_enchantment(
+        cls, state, position, enchantment, *, ends_turn,
+    ):
         delay = enchantment.get_rate_delay_before_use()
         if delay > 0:
             piece = state.pieces_locations[position]
@@ -161,7 +222,42 @@ class GameRules:
         state.selected_card = None
         state.selected_captured_piece = None
         state.selected_piece_position = 0
-        cls._end_turn(state)
+        if ends_turn:
+            cls._end_turn(state)
+
+    @classmethod
+    def _fire_trebuchet(
+        cls, state, rook_position, pawn_position, destination, rng,
+        advance_board_card_clock,
+    ):
+        rook = state.pieces_locations[rook_position]
+        pawn = state.pieces_locations[pawn_position]
+        color = state.current_turn
+        _, _, _, card = cls._get_used_card(state, color)
+        collected_card = False
+        if not cls._trigger_rune_on_route(state, pawn_position, destination):
+            state.pieces_locations[pawn_position] = Piece()
+            state.pieces_locations[destination] = pawn
+            pawn.set_has_moved()
+            collected_card = cls._collect_board_card(state, destination, color)
+
+        rook.set_stunned_for_turns(1)
+        rook.add_stun_effect(card, 1)
+        cls._consume_selected_card_use(state)
+        cls._finish_piece_move(
+            state, collected_card, rng, advance_board_card_clock)
+
+    @classmethod
+    def _recruit_pawn(cls, state, destination, rng, advance_board_card_clock):
+        color = state.current_turn
+        home_row = 0 if color == COLOR.WHITE else 7
+        x, y = id_to_xy(destination)
+        if y != home_row or state.pieces_locations[destination].exists():
+            raise ValueError("A recruited pawn must be placed on an empty home-rank square")
+        state.pieces_locations[destination] = Piece(color, PIECE_TYPE.PAWN)
+        cls._consume_selected_card_use(state)
+        cls._finish_piece_move(
+            state, False, rng, advance_board_card_clock)
 
     @staticmethod
     def _apply_passive_enchantment(state, position, enchantment):
@@ -192,9 +288,32 @@ class GameRules:
 
     @classmethod
     def _end_turn(cls, state):
+        ending_color = state.current_turn
+        for trap in state.rune_traps:
+            if (
+                trap.owner == ending_color
+                and trap.placed_on_turn < state.turns_started[ending_color]
+            ):
+                trap.remaining_owner_turns -= 1
+        state.rune_traps = [
+            trap for trap in state.rune_traps
+            if trap.remaining_owner_turns > 0
+        ]
         state.current_turn = COLOR.BLACK if state.current_turn == COLOR.WHITE else COLOR.WHITE
         state.turns_started[state.current_turn] += 1
         cls._apply_ready_passive_enchantments(state, state.current_turn)
+
+    @staticmethod
+    def _consume_selected_card_use(state):
+        if state.selected_card is None:
+            return
+        color, card_index = state.selected_card
+        card_deck = state.get_cards_for(color)
+        if 0 <= card_index < len(card_deck):
+            card = card_deck[card_index]
+            if card.consume_use() == 0:
+                card_deck.pop(card_index)
+        state.selected_card = None
 
     @classmethod
     def _apply_ready_passive_enchantments(cls, state, color):
@@ -225,9 +344,12 @@ class GameRules:
 
         moving_color = state.current_turn
         piece = state.pieces_locations[source_position]
+        officer_followers = cls._officer_follower_positions(
+            state, source_position, piece)
         en_passant_target = cls._en_passant_target_after_pawn_move(
             piece, moving_color, source_position, destination)
         state.en_passant_target = None
+        state.en_passant_targets = []
         first_double_move = (
             cls._selected_card_is_double_move(state) and state.double_move_step == 0
         )
@@ -242,12 +364,15 @@ class GameRules:
         collected_rook_card = False
         if castling_rook_positions is not None:
             rook_source, rook_destination = castling_rook_positions
-            rook = state.pieces_locations[rook_source]
-            state.pieces_locations[rook_source] = Piece()
-            state.pieces_locations[rook_destination] = rook
-            rook.set_has_moved()
-            collected_rook_card = cls._collect_board_card(
-                state, rook_destination, moving_color)
+            if not cls._trigger_rune_on_route(
+                state, rook_source, rook_destination
+            ):
+                rook = state.pieces_locations[rook_source]
+                state.pieces_locations[rook_source] = Piece()
+                state.pieces_locations[rook_destination] = rook
+                rook.set_has_moved()
+                collected_rook_card = cls._collect_board_card(
+                    state, rook_destination, moving_color)
 
         if (
             used_card is not None
@@ -262,6 +387,13 @@ class GameRules:
             cls._collect_board_card(state, destination, moving_color)
             or collected_rook_card
         )
+        followers_collected_card, follower_en_passant_targets = (
+            cls._move_officer_followers(
+                state, source_position, destination, piece, officer_followers)
+        )
+        collected_board_card = followers_collected_card or collected_board_card
+        if en_passant_target is not None:
+            follower_en_passant_targets.insert(0, en_passant_target)
 
         if not first_double_move and used_card is not None and used_card.consume_use() == 0:
             card_deck.pop(card_index)
@@ -278,7 +410,163 @@ class GameRules:
 
         cls._finish_piece_move(
             state, collected_board_card, rng, advance_board_card_clock)
-        state.en_passant_target = en_passant_target
+        state.en_passant_targets = list(dict.fromkeys(follower_en_passant_targets))
+        state.en_passant_target = (
+            state.en_passant_targets[0] if state.en_passant_targets else None
+        )
+
+    @staticmethod
+    def _officer_follower_positions(state, officer_position, officer):
+        if (
+            officer.get_type() != PIECE_TYPE.PAWN
+            or not any(
+                enchantment.get_card_type() == EnchantmentCardType.PAWN_OFFICER
+                for enchantment in officer.get_passive_enchantments()
+            )
+        ):
+            return ()
+
+        officers = [
+            (position, piece)
+            for position, piece in state.pieces_locations.items()
+            if piece.exists()
+            and piece.get_color() == officer.get_color()
+            and piece.get_type() == PIECE_TYPE.PAWN
+            and any(
+                enchantment.get_card_type() == EnchantmentCardType.PAWN_OFFICER
+                for enchantment in piece.get_passive_enchantments()
+            )
+        ]
+        officer_x, officer_y = id_to_xy(officer_position)
+        return tuple(
+            position
+            for position, piece in state.pieces_locations.items()
+            if position != officer_position
+            and piece.exists()
+            and piece.get_color() == officer.get_color()
+            and piece.get_type() == PIECE_TYPE.PAWN
+            and max(
+                abs(id_to_xy(position)[0] - officer_x),
+                abs(id_to_xy(position)[1] - officer_y),
+            ) == 1
+            and min(
+                officers,
+                key=lambda candidate: (
+                    max(
+                        abs(id_to_xy(position)[0] - id_to_xy(candidate[0])[0]),
+                        abs(id_to_xy(position)[1] - id_to_xy(candidate[0])[1]),
+                    ),
+                    candidate[0],
+                ),
+                default=(None, None),
+            )[0] == officer_position
+        )
+
+    @classmethod
+    def _move_officer_followers(
+        cls, state, officer_source, officer_destination, officer, follower_positions,
+    ):
+        if not follower_positions:
+            return False, []
+
+        source_x, source_y = id_to_xy(officer_source)
+        destination_x, destination_y = id_to_xy(officer_destination)
+        delta_x = destination_x - source_x
+        delta_y = destination_y - source_y
+        officer_effects = officer.get_passive_enchantments()
+        collected_board_card = False
+        en_passant_targets = []
+
+        for follower_source in sorted(follower_positions):
+            follower = state.pieces_locations[follower_source]
+            if (
+                not follower.exists()
+                or follower.get_type() != PIECE_TYPE.PAWN
+                or follower.get_color() != state.current_turn
+                or not follower.can_receive_enchantment()
+            ):
+                continue
+
+            follower_x, follower_y = id_to_xy(follower_source)
+            target_x = follower_x + delta_x
+            target_y = follower_y + delta_y
+            if not (0 <= target_x < 8 and 0 <= target_y < 8):
+                continue
+            follower_destination = xy_to_id(target_x, target_y)
+
+            effective_follower = copy.deepcopy(follower)
+            effective_follower.remove_passive_enchantments()
+            for enchantment in officer_effects:
+                effective_follower.set_enchantment(enchantment)
+            legal_moves = process_possible_basic_moves(
+                effective_follower,
+                (follower_x, follower_y),
+                state.pieces_locations,
+            )
+            if [target_x, target_y] not in legal_moves:
+                continue
+
+            if cls._trigger_rune_on_route(
+                state, follower_source, follower_destination
+            ):
+                continue
+
+            target_piece = state.pieces_locations[follower_destination]
+            if target_piece.exists():
+                cls._capture_piece(state, target_piece)
+            en_passant_target = cls._en_passant_target_after_pawn_move(
+                follower, state.current_turn, follower_source, follower_destination)
+            state.pieces_locations[follower_source] = Piece()
+            state.pieces_locations[follower_destination] = follower
+            follower.set_has_moved()
+            if en_passant_target is not None:
+                en_passant_targets.append(en_passant_target)
+            collected_board_card = (
+                cls._collect_board_card(
+                    state, follower_destination, state.current_turn)
+                or collected_board_card
+            )
+
+        return collected_board_card, en_passant_targets
+
+    @classmethod
+    def _trigger_rune_on_route(cls, state, source, destination):
+        piece = state.pieces_locations[source]
+        source_x, source_y = id_to_xy(source)
+        destination_x, destination_y = id_to_xy(destination)
+        delta_x = destination_x - source_x
+        delta_y = destination_y - source_y
+
+        if source == destination:
+            route = (destination,)
+        elif piece.get_type() == PIECE_TYPE.KNIGHT:
+            route = (destination,)
+        elif (
+            delta_x == 0
+            or delta_y == 0
+            or abs(delta_x) == abs(delta_y)
+        ):
+            step_x = (delta_x > 0) - (delta_x < 0)
+            step_y = (delta_y > 0) - (delta_y < 0)
+            route = tuple(
+                xy_to_id(source_x + step_x * step, source_y + step_y * step)
+                for step in range(1, max(abs(delta_x), abs(delta_y)) + 1)
+            )
+        else:
+            route = (destination,)
+
+        for position in route:
+            trap = next(
+                (trap for trap in state.rune_traps if trap.position == position),
+                None,
+            )
+            if trap is None:
+                continue
+            state.rune_traps.remove(trap)
+            cls._capture_piece(state, piece)
+            state.pieces_locations[source] = Piece()
+            return True
+        return False
 
     @staticmethod
     def _en_passant_target_after_pawn_move(
@@ -300,7 +588,7 @@ class GameRules:
 
     @staticmethod
     def en_passant_capture_position(state, source, destination):
-        if state.en_passant_target != destination:
+        if destination not in GameRules._en_passant_targets(state):
             return None
         if not (1 <= source <= 64 and 1 <= destination <= 64):
             return None
@@ -331,6 +619,14 @@ class GameRules:
         ):
             return None
         return captured_position
+
+    @staticmethod
+    def _en_passant_targets(state):
+        targets = getattr(state, "en_passant_targets", ())
+        if targets:
+            return tuple(targets)
+        target = state.en_passant_target
+        return () if target is None else (target,)
 
     @staticmethod
     def castling_rook_positions(state, source, destination):
@@ -540,6 +836,7 @@ class GameRules:
             position for position in range(1, 65)
             if not state.pieces_locations[position].exists()
             and position not in occupied_card_positions
+            and all(trap.position != position for trap in state.rune_traps)
         ]
         if not empty_positions:
             return

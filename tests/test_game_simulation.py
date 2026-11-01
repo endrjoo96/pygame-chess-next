@@ -5,12 +5,12 @@ import pytest
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
-from constants.pos import POS
+from constants.pos import POS, id_to_xy, xy_to_id
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
-from models.game_state import GameState
+from models.game_state import GameState, RuneTrap
 
 _TEST_RANDOM_SEED = 123456789011
 
@@ -223,9 +223,138 @@ def test_passive_card_simulation_applies_detonation_without_mutating_source(empt
     assert not result.pieces_locations[29].exists()
     assert [piece.get_type() for piece in result.captured_white] == [PIECE_TYPE.KNIGHT]
     assert result.white_cards == []
+    assert result.current_turn == COLOR.BLACK
     assert empty_state.pieces_locations[28] is pawn
     assert empty_state.pieces_locations[29] is enemy
     assert len(empty_state.white_cards) == 1
+
+
+def test_buff_cards_can_be_applied_before_a_same_turn_piece_move(empty_state):
+    first_pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    second_pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[28] = first_pawn
+    empty_state.pieces_locations[36] = second_pawn
+    empty_state.white_cards.extend((
+        EnchantmentCardType.PAWN_SWORDSMAN.create(),
+        EnchantmentCardType.PAWN_SWORDSMAN.create(),
+    ))
+
+    assert empty_state.white_cards[0].is_buff()
+    assert empty_state.white_cards[0].is_passive()
+
+    first_buff = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.APPLY_BUFF and action.source == 28
+    )
+    after_first_buff = GameSimulation.apply(empty_state, first_buff)
+
+    assert after_first_buff.current_turn == COLOR.WHITE
+    assert after_first_buff.turns_started == {COLOR.WHITE: 1, COLOR.BLACK: 0}
+    assert len(after_first_buff.white_cards) == 1
+    assert after_first_buff.pieces_locations[28].has_passive_enchantment()
+    assert not first_pawn.has_passive_enchantment()
+
+    second_buff = next(
+        action for action in GameSimulation.available_actions(after_first_buff)
+        if action.action_type == GameActionType.APPLY_BUFF and action.source == 36
+    )
+    after_second_buff = GameSimulation.apply(after_first_buff, second_buff)
+
+    assert after_second_buff.current_turn == COLOR.WHITE
+    assert after_second_buff.turns_started == {COLOR.WHITE: 1, COLOR.BLACK: 0}
+    assert after_second_buff.white_cards == []
+    assert after_second_buff.pieces_locations[36].has_passive_enchantment()
+
+    source_x, source_y = id_to_xy(28)
+    sideways_destinations = {
+        xy_to_id(source_x - 1, source_y),
+        xy_to_id(source_x + 1, source_y),
+    }
+    pawn_move = next(
+        action for action in GameSimulation.available_actions(after_second_buff)
+        if action.action_type == GameActionType.MOVE
+        and action.source == 28
+        and action.destination in sideways_destinations
+    )
+    after_move = GameSimulation.apply(after_second_buff, pawn_move)
+
+    assert after_move.current_turn == COLOR.BLACK
+    assert not after_move.pieces_locations[28].exists()
+    assert after_move.pieces_locations[pawn_move.destination].get_type() == PIECE_TYPE.PAWN
+    assert empty_state.current_turn == COLOR.WHITE
+    assert empty_state.pieces_locations[28] is first_pawn
+    assert empty_state.pieces_locations[36] is second_pawn
+    assert len(empty_state.white_cards) == 2
+
+
+def test_buff_does_not_expire_en_passant_opportunity_before_piece_move(empty_state):
+    empty_state.current_turn = COLOR.BLACK
+    empty_state.en_passant_target = POS.E3.value
+    empty_state.pieces_locations[POS.D4.value] = Piece(
+        COLOR.BLACK, PIECE_TYPE.PAWN, POS.D4.value)
+    empty_state.pieces_locations[POS.D4.value].set_has_moved()
+    empty_state.pieces_locations[POS.E4.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.PAWN, POS.E4.value)
+    empty_state.pieces_locations[POS.E4.value].set_has_moved()
+    empty_state.black_cards.append(EnchantmentCardType.PAWN_SWORDSMAN.create())
+
+    buff_action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.APPLY_BUFF
+        and action.source == POS.D4.value
+    )
+    after_buff = GameSimulation.apply(empty_state, buff_action)
+
+    assert after_buff.current_turn == COLOR.BLACK
+    assert after_buff.en_passant_target == POS.E3.value
+    en_passant = next(
+        action for action in GameSimulation.available_actions(after_buff)
+        if action.action_type == GameActionType.MOVE
+        and action.source == POS.D4.value
+        and action.destination == POS.E3.value
+        and action.card_index == -1
+    )
+    result = GameSimulation.apply(after_buff, en_passant)
+
+    assert result.current_turn == COLOR.WHITE
+    assert result.pieces_locations[POS.E3.value].get_color() == COLOR.BLACK
+    assert not result.pieces_locations[POS.E4.value].exists()
+
+
+def test_pawn_backward_card_is_a_buff_that_can_be_used_before_retreat(empty_state):
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[POS.D4.value] = pawn
+    empty_state.white_cards.append(
+        EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create())
+    card = empty_state.white_cards[0]
+
+    assert card.is_buff()
+    assert card.is_passive()
+    assert not card.is_reusable()
+
+    buff_action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.APPLY_BUFF
+        and action.source == POS.D4.value
+    )
+    after_buff = GameSimulation.apply(empty_state, buff_action)
+
+    assert after_buff.current_turn == COLOR.WHITE
+    assert after_buff.white_cards == []
+    assert after_buff.pieces_locations[POS.D4.value].has_passive_enchantment()
+
+    retreat = next(
+        action for action in GameSimulation.available_actions(after_buff)
+        if action.action_type == GameActionType.MOVE
+        and action.source == POS.D4.value
+        and action.destination == POS.D3.value
+        and action.card_index == -1
+    )
+    after_retreat = GameSimulation.apply(after_buff, retreat)
+
+    assert after_retreat.current_turn == COLOR.BLACK
+    assert after_retreat.pieces_locations[POS.D3.value].get_type() == PIECE_TYPE.PAWN
+    assert empty_state.pieces_locations[POS.D4.value] is pawn
 
 
 def test_teleport_action_swaps_pieces_on_a_copy(empty_state):
@@ -847,3 +976,275 @@ def test_castling_right_is_lost_after_rook_moves_away_and_back(empty_state):
     assert returned.pieces_locations[kingside_rook].has_moved()
     assert POS.G1.value not in castle_destinations
     assert POS.C1.value in castle_destinations
+
+
+def test_rune_trap_kills_the_first_piece_that_crosses_its_square(empty_state):
+    knight_position = POS.E4.value
+    rook_position = POS.D8.value
+    empty_state.pieces_locations[knight_position] = Piece(
+        COLOR.WHITE, PIECE_TYPE.KNIGHT, knight_position)
+    empty_state.pieces_locations[rook_position] = Piece(
+        COLOR.BLACK, PIECE_TYPE.ROOK, rook_position)
+    empty_state.white_cards.append(EnchantmentCardType.KNIGHT_RUNIC_TRAP.create())
+
+    placement = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.PLACE_RUNE
+        and action.source == knight_position
+        and action.destination == POS.D4.value
+    )
+    armed = GameSimulation.apply(empty_state, placement)
+
+    assert armed.current_turn == COLOR.BLACK
+    assert [trap.position for trap in armed.rune_traps] == [POS.D4.value]
+    assert armed.white_cards == []
+
+    rook_move = next(
+        action for action in GameSimulation.available_actions(armed)
+        if action.source == rook_position and action.destination == POS.D3.value
+    )
+    triggered = GameSimulation.apply(armed, rook_move)
+
+    assert not triggered.pieces_locations[rook_position].exists()
+    assert not triggered.pieces_locations[POS.D3.value].exists()
+    assert triggered.rune_traps == []
+    assert triggered.captured_white[-1].get_type() == PIECE_TYPE.ROOK
+
+
+def test_knight_only_triggers_a_rune_when_landing_on_it(empty_state):
+    source = POS.C3.value
+    destination = POS.E4.value
+    trap_position = POS.D4.value
+    empty_state.current_turn = COLOR.BLACK
+    empty_state.turns_started[COLOR.BLACK] = 1
+    empty_state.pieces_locations[source] = Piece(COLOR.BLACK, PIECE_TYPE.KNIGHT)
+    empty_state.rune_traps.append(RuneTrap(
+        trap_position,
+        COLOR.WHITE,
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+        placed_on_turn=1,
+    ))
+
+    move = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == source and action.destination == destination
+    )
+    result = GameSimulation.apply(empty_state, move)
+
+    assert result.pieces_locations[destination].get_type() == PIECE_TYPE.KNIGHT
+    assert [trap.position for trap in result.rune_traps] == [trap_position]
+
+
+def test_rune_trap_expires_after_two_owner_turns(empty_state):
+    white_rook = POS.A1.value
+    black_rook = POS.H8.value
+    empty_state.pieces_locations[white_rook] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    empty_state.pieces_locations[black_rook] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    empty_state.rune_traps.append(RuneTrap(
+        POS.H1.value,
+        COLOR.WHITE,
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+        placed_on_turn=0,
+    ))
+
+    white_move = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == white_rook and action.destination == POS.A2.value
+    )
+    after_white = GameSimulation.apply(empty_state, white_move)
+    assert after_white.rune_traps[0].remaining_owner_turns == 1
+
+    black_move = next(
+        action for action in GameSimulation.available_actions(after_white)
+        if action.source == black_rook and action.destination == POS.H7.value
+    )
+    after_black = GameSimulation.apply(after_white, black_move)
+    assert after_black.rune_traps[0].remaining_owner_turns == 1
+
+    next_white_move = next(
+        action for action in GameSimulation.available_actions(after_black)
+        if action.source == POS.A2.value and action.destination == POS.A3.value
+    )
+    after_second_white_turn = GameSimulation.apply(after_black, next_white_move)
+    assert after_second_white_turn.rune_traps == []
+
+
+def test_officer_moves_adjacent_pawns_and_preserves_each_en_passant_target(empty_state):
+    officer_position = POS.E2.value
+    officer = Piece(COLOR.WHITE, PIECE_TYPE.PAWN, officer_position)
+    officer.set_enchantment(EnchantmentCardType.PAWN_OFFICER.create())
+    empty_state.pieces_locations[officer_position] = officer
+    empty_state.pieces_locations[POS.D2.value] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[POS.F2.value] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[POS.C4.value] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[POS.G4.value] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+
+    officer_move = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == officer_position and action.destination == POS.E4.value
+    )
+    after_officer_move = GameSimulation.apply(empty_state, officer_move)
+
+    assert after_officer_move.pieces_locations[POS.E4.value].get_type() == PIECE_TYPE.PAWN
+    assert after_officer_move.pieces_locations[POS.D4.value].get_type() == PIECE_TYPE.PAWN
+    assert after_officer_move.pieces_locations[POS.F4.value].get_type() == PIECE_TYPE.PAWN
+    assert set(after_officer_move.en_passant_targets) == {
+        POS.D3.value, POS.E3.value, POS.F3.value,
+    }
+    en_passant_destinations = {
+        action.destination for action in GameSimulation.available_actions(after_officer_move)
+        if action.source in (POS.C4.value, POS.G4.value)
+    }
+    assert {POS.D3.value, POS.F3.value}.issubset(en_passant_destinations)
+
+    en_passant = next(
+        action for action in GameSimulation.available_actions(after_officer_move)
+        if action.source == POS.C4.value and action.destination == POS.D3.value
+    )
+    after_en_passant = GameSimulation.apply(after_officer_move, en_passant)
+    assert after_en_passant.pieces_locations[POS.D3.value].get_color() == COLOR.BLACK
+    assert not after_en_passant.pieces_locations[POS.D4.value].exists()
+    assert after_en_passant.captured_black[-1].get_color() == COLOR.WHITE
+
+
+def test_trebuchet_can_launch_an_opposing_pawn_and_stuns_the_rook(empty_state):
+    rook_position = POS.E4.value
+    pawn_position = POS.D4.value
+    destination = POS.E7.value
+    empty_state.pieces_locations[rook_position] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    empty_state.pieces_locations[pawn_position] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+    empty_state.white_cards.append(
+        EnchantmentCardType.ROOK_TREBUCHET.create(uses=2))
+
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.TREBUCHET
+        and action.source == rook_position
+        and action.secondary_source == pawn_position
+        and action.destination == destination
+    )
+    result = GameSimulation.apply(empty_state, action)
+
+    assert not result.pieces_locations[pawn_position].exists()
+    assert result.pieces_locations[destination].get_color() == COLOR.BLACK
+    assert result.pieces_locations[rook_position].is_stunned()
+    assert result.white_cards[0].get_remaining_uses() == 1
+    assert result.current_turn == COLOR.BLACK
+
+
+def test_recruit_creates_a_pawn_on_an_empty_home_square(empty_state):
+    empty_state.white_cards.append(EnchantmentCardType.RECRUIT_PAWN.create(uses=2))
+    destination = POS.A1.value
+
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.RECRUIT_PAWN
+        and action.destination == destination
+    )
+    result = GameSimulation.apply(empty_state, action)
+
+    assert result.pieces_locations[destination].get_color() == COLOR.WHITE
+    assert result.pieces_locations[destination].get_type() == PIECE_TYPE.PAWN
+    assert result.white_cards[0].get_remaining_uses() == 1
+    assert result.current_turn == COLOR.BLACK
+
+
+def test_recruit_cannot_interrupt_a_double_move(empty_state):
+    source = POS.A3.value
+    empty_state.pieces_locations[source] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    empty_state.white_cards = [
+        EnchantmentCardType.PIECE_DOUBLE_MOVE.create(uses=2),
+        EnchantmentCardType.RECRUIT_PAWN.create(uses=2),
+    ]
+    empty_state.selected_card = (COLOR.WHITE, 0)
+    empty_state.selected_piece_position = source
+    empty_state.double_move_step = 1
+
+    actions = GameSimulation.available_actions(empty_state)
+
+    assert actions
+    assert all(action.source == source for action in actions)
+    assert not any(action.action_type == GameActionType.RECRUIT_PAWN for action in actions)
+
+
+def test_rune_trap_also_triggers_when_resurrecting_a_piece_onto_it(empty_state):
+    king_position = POS.E1.value
+    destination = POS.D1.value
+    empty_state.pieces_locations[king_position] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    empty_state.captured_black.append(Piece(COLOR.WHITE, PIECE_TYPE.PAWN))
+    empty_state.white_cards.append(
+        EnchantmentCardType.KING_PAWN_RESURRECTION.create())
+    empty_state.rune_traps.append(RuneTrap(
+        destination,
+        COLOR.BLACK,
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+        placed_on_turn=1,
+    ))
+
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.RESURRECT
+        and action.source == king_position
+        and action.destination == destination
+    )
+    result = GameSimulation.apply(empty_state, action)
+
+    assert not result.pieces_locations[destination].exists()
+    assert result.rune_traps == []
+    assert len(result.captured_black) == 1
+    assert result.captured_black[0].get_color() == COLOR.WHITE
+    assert result.white_cards == []
+
+
+def test_rune_trap_triggers_on_return_to_start(empty_state):
+    source = POS.A2.value
+    destination = POS.A1.value
+    rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK, destination)
+    rook.set_has_moved()
+    empty_state.pieces_locations[source] = rook
+    empty_state.white_cards.append(
+        EnchantmentCardType.RETURN_TO_START.create(uses=2))
+    empty_state.rune_traps.append(RuneTrap(
+        destination,
+        COLOR.BLACK,
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+        placed_on_turn=1,
+    ))
+
+    action = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.RETURN_TO_START
+        and action.source == source
+        and action.destination == destination
+    )
+    result = GameSimulation.apply(empty_state, action)
+
+    assert not result.pieces_locations[source].exists()
+    assert not result.pieces_locations[destination].exists()
+    assert result.rune_traps == []
+    assert result.captured_black[-1].get_type() == PIECE_TYPE.ROOK
+    assert result.white_cards[0].get_remaining_uses() == 1
+
+
+def test_rune_trap_on_castling_rooks_route_kills_the_rook(empty_state):
+    king_position, (queenside_rook, _) = add_castling_pieces(
+        empty_state, COLOR.WHITE)
+    empty_state.rune_traps.append(RuneTrap(
+        POS.B1.value,
+        COLOR.BLACK,
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+        placed_on_turn=1,
+    ))
+
+    castle = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == king_position
+        and action.destination == POS.C1.value
+    )
+    result = GameSimulation.apply(empty_state, castle)
+
+    assert result.pieces_locations[POS.C1.value].get_type() == PIECE_TYPE.KING
+    assert not result.pieces_locations[queenside_rook].exists()
+    assert not result.pieces_locations[POS.D1.value].exists()
+    assert result.captured_black[-1].get_type() == PIECE_TYPE.ROOK
+    assert result.rune_traps == []

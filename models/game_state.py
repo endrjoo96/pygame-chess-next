@@ -15,6 +15,15 @@ def _initial_random_state():
 
 
 @dataclass
+class RuneTrap:
+    position: int
+    owner: COLOR
+    enchantment: Enchantment
+    placed_on_turn: int
+    remaining_owner_turns: int = 2
+
+
+@dataclass
 class GameState:
     """Stan domenowy partii, niezależny od ekranu i zasobów Pygame."""
 
@@ -38,6 +47,8 @@ class GameState:
     random_state: tuple = field(default_factory=_initial_random_state)
     board_cards: List[Tuple[int, Enchantment]] = field(default_factory=list)
     en_passant_target: Optional[int] = None
+    rune_traps: List[RuneTrap] = field(default_factory=list)
+    en_passant_targets: List[int] = field(default_factory=list)
 
     @classmethod
     def from_game(cls, game) -> "GameState":
@@ -70,6 +81,8 @@ class GameState:
                 )
             ),
             en_passant_target=getattr(game, "en_passant_target", None),
+            rune_traps=getattr(game, "rune_traps", []),
+            en_passant_targets=getattr(game, "en_passant_targets", []),
             random_state=(
                 game.rng.getstate()
                 if hasattr(game, "rng")
@@ -108,6 +121,8 @@ class GameState:
                 for position, enchantment in self.board_cards
             ],
             en_passant_target=self.en_passant_target,
+            rune_traps=copy.deepcopy(self.rune_traps, memo),
+            en_passant_targets=self.en_passant_targets.copy(),
         )
 
     def cache_key(self) -> tuple:
@@ -147,6 +162,17 @@ class GameState:
             self.random_state,
             tuple((position, enchantment_key(card)) for position, card in self.board_cards),
             self.en_passant_target,
+            tuple(self.en_passant_targets),
+            tuple(
+                (
+                    trap.position,
+                    trap.owner,
+                    enchantment_key(trap.enchantment),
+                    trap.placed_on_turn,
+                    trap.remaining_owner_turns,
+                )
+                for trap in self.rune_traps
+            ),
         )
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:

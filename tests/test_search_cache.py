@@ -31,7 +31,7 @@ def populated_state():
         EnchantmentCardType.PAWN_SWORDSMAN.create(),
     ]
     state.black_cards = [EnchantmentCardType.PIECE_TELEPORT.create()]
-    card = EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create(uses=2)
+    card = EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create()
     state.board_card_available = True
     state.board_card_position = 36
     state.board_enchantment = card

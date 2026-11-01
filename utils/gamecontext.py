@@ -26,6 +26,7 @@ class GameContext(metaclass=Singleton):
     pieces_src = os.path.join(resources, "pieces.png")
     card_on_board_src = os.path.join(resources, "card_on_board.png")
     card_mod_passive_src = os.path.join(resources, "card_mod_passive.png")
+    card_mod_buff_src = os.path.join(resources, "card_mod_buff.png")
     card_mod_reusable_src = os.path.join(resources, "card_mod_reusable.png")
     card_mod_delay_src = os.path.join(resources, "card_mod_delay.png")
     card_mod_stun_src = os.path.join(resources, "card_mod_stun.png")

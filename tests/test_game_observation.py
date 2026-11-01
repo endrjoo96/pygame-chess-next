@@ -5,7 +5,7 @@ from constants.piece_type import PIECE_TYPE
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
-from models.game_state import GameState
+from models.game_state import GameState, RuneTrap
 
 
 def make_game_state():
@@ -86,3 +86,31 @@ def test_observation_preserves_en_passant_and_castling_rights():
     assert restored.pieces_locations[57].has_moved()
     restored.pieces_locations[57].set_has_moved(False)
     assert state.pieces_locations[57].has_moved()
+
+
+def test_observation_preserves_all_en_passant_targets_and_rune_traps():
+    state = make_game_state()
+    state.en_passant_target = 45
+    state.en_passant_targets = [45, 46]
+    state.rune_traps = [
+        RuneTrap(
+            position=36,
+            owner=COLOR.WHITE,
+            enchantment=EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+            placed_on_turn=2,
+            remaining_owner_turns=1,
+        )
+    ]
+
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    restored = observation.to_state()
+
+    assert restored.en_passant_target == 45
+    assert restored.en_passant_targets == [45, 46]
+    assert restored.rune_traps[0].position == 36
+    assert restored.rune_traps[0].owner == COLOR.WHITE
+    assert restored.rune_traps[0].remaining_owner_turns == 1
+    restored.en_passant_targets.append(47)
+    restored.rune_traps[0].remaining_owner_turns = 0
+    assert state.en_passant_targets == [45, 46]
+    assert state.rune_traps[0].remaining_owner_turns == 1

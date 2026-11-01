@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.pos import POS, id_to_xy, xy_to_id
-from logic.game_rules import GameAction, GameActionType
+from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
 from logic.opening_book import opening_hints
 from logic.search_cache import Bound, CacheEntry, SearchCache
@@ -48,6 +48,10 @@ PIECE_VALUES = {
 }
 
 CARD_VALUES = {
+    EnchantmentCardType.KNIGHT_RUNIC_TRAP: 1.0,
+    EnchantmentCardType.PAWN_OFFICER: 1.25,
+    EnchantmentCardType.ROOK_TREBUCHET: 0.75,
+    EnchantmentCardType.RECRUIT_PAWN: 0.75,
     EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD: 1.0,
     EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD: 1.0,
     EnchantmentCardType.KNIGHT_ONE_FIELD_ANY_DIRECTION: 1.25,
@@ -1997,6 +2001,38 @@ class ChessAI:
 
         score += ChessAI._threat_score(state, basic_destinations)
 
+        for position, piece in state.pieces_locations.items():
+            if (
+                not piece.exists()
+                or piece.get_type() != PIECE_TYPE.PAWN
+                or not any(
+                    enchantment.get_card_type() == EnchantmentCardType.PAWN_OFFICER
+                    for enchantment in piece.get_passive_enchantments()
+                )
+            ):
+                continue
+            sign = 1 if piece.get_color() == COLOR.BLACK else -1
+            score += sign * 0.25 * len(
+                GameRules._officer_follower_positions(state, position, piece))
+
+        for trap in state.rune_traps:
+            opponent_color = (
+                COLOR.WHITE if trap.owner == COLOR.BLACK else COLOR.BLACK)
+            trap_x, trap_y = id_to_xy(trap.position)
+            nearest_opponent = min(
+                (
+                    max(
+                        abs(trap_x - id_to_xy(position)[0]),
+                        abs(trap_y - id_to_xy(position)[1]),
+                    )
+                    for position, piece in state.pieces_locations.items()
+                    if piece.exists() and piece.get_color() == opponent_color
+                ),
+                default=8,
+            )
+            sign = 1 if trap.owner == COLOR.BLACK else -1
+            score += sign * max(0.0, 1.0 - nearest_opponent / 8) * 0.8
+
         for color in (COLOR.BLACK, COLOR.WHITE):
             sign = 1 if color == COLOR.BLACK else -1
             for card in state.get_cards_for(color):
@@ -2179,8 +2215,17 @@ class ChessAI:
             score += 2
         elif action.action_type == GameActionType.TELEPORT:
             score += 1
-        elif action.action_type == GameActionType.APPLY_PASSIVE:
+        elif action.action_type in (
+            GameActionType.APPLY_PASSIVE,
+            GameActionType.APPLY_BUFF,
+        ):
             score += 0.5
+        elif action.action_type == GameActionType.PLACE_RUNE:
+            score += 0.75
+        elif action.action_type == GameActionType.TREBUCHET:
+            score += 0.5
+        elif action.action_type == GameActionType.RECRUIT_PAWN:
+            score += PIECE_VALUES[PIECE_TYPE.PAWN]
 
         if (
             action.card_index >= 0

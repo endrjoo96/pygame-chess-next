@@ -82,6 +82,7 @@ def make_game(card_type=None, uses=None):
     game.resurrection_moves = []
     game.selected_card = (COLOR.WHITE, 0) if cards else None
     game.selected_captured_piece = None
+    game.selected_trebuchet_pawn_position = 0
     game.double_move_step = 0
     game.double_move_collected_board_card = False
     game.pieces_locations = {position: Piece() for position in range(1, 65)}
@@ -91,8 +92,11 @@ def make_game(card_type=None, uses=None):
     game.board_card_available = False
     game.board_card_position = 36
     game.board_enchantment = None
+    game.board_cards = []
+    game.rune_traps = []
     game.pending_board_card_delay = None
     game.en_passant_target = None
+    game.en_passant_targets = []
     game._ai_executor = ThreadPoolExecutor(max_workers=1)
     game._ai_future = None
     game._ai_best_move = None
@@ -105,6 +109,28 @@ def make_game(card_type=None, uses=None):
     game._ponder_cancel_event = Event()
     game.rng = random.Random(23)
     return game
+
+
+def test_player_can_apply_buff_and_select_its_new_piece_move():
+    game = make_game(EnchantmentCardType.PAWN_SWORDSMAN)
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    source = 28
+    game.pieces_locations[source] = pawn
+
+    game._GameLogicLoop__select_piece_for_movement(source, pawn)
+
+    assert game.current_turn == COLOR.WHITE
+    assert game.cards_processor.white_cards == []
+    buffed_pawn = game.pieces_locations[source]
+    assert buffed_pawn.has_passive_enchantment()
+    assert game.selected_card is None
+
+    game._GameLogicLoop__select_piece_for_movement(source, buffed_pawn)
+
+    source_x, source_y = id_to_xy(source)
+    assert [source_x - 1, source_y] in game.moves
+    assert [source_x + 1, source_y] in game.moves
+    game._ai_executor.shutdown(wait=True)
 
 
 def click_board(game, position, monkeypatch):
@@ -530,3 +556,53 @@ def test_board_card_countdown_places_another_card_while_one_is_available(monkeyp
     assert game.board_card_available
     assert game.pending_board_card_delay == 3
     assert len(game.board_cards) == 2
+
+
+def test_player_can_place_rune_by_selecting_a_knight_and_empty_square():
+    game = make_game(EnchantmentCardType.KNIGHT_RUNIC_TRAP)
+    knight_position = POS.E4.value
+    trap_position = POS.D4.value
+    game.pieces_locations[knight_position] = Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT)
+
+    game._GameLogicLoop__handle_board_click(knight_position)
+    assert game.selected_piece_position == knight_position
+    assert [3, 4] in game.moves
+
+    game._GameLogicLoop__handle_board_click(trap_position)
+
+    assert [trap.position for trap in game.rune_traps] == [trap_position]
+    assert game.current_turn == COLOR.BLACK
+    assert game.cards_processor.white_cards == []
+
+
+def test_player_can_fire_trebuchet_with_three_board_clicks():
+    game = make_game(EnchantmentCardType.ROOK_TREBUCHET, uses=2)
+    rook_position = POS.E4.value
+    pawn_position = POS.D4.value
+    destination = POS.E7.value
+    game.pieces_locations[rook_position] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    game.pieces_locations[pawn_position] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+
+    game._GameLogicLoop__handle_board_click(rook_position)
+    assert game.selected_piece_position == rook_position
+    game._GameLogicLoop__handle_board_click(pawn_position)
+    assert game.selected_trebuchet_pawn_position == pawn_position
+    game._GameLogicLoop__handle_board_click(destination)
+
+    assert game.pieces_locations[destination].get_color() == COLOR.BLACK
+    assert game.pieces_locations[destination].get_type() == PIECE_TYPE.PAWN
+    assert game.pieces_locations[rook_position].is_stunned()
+    assert game.cards_processor.white_cards[0].get_remaining_uses() == 1
+    assert game.current_turn == COLOR.BLACK
+
+
+def test_player_can_recruit_a_pawn_on_the_home_rank():
+    game = make_game(EnchantmentCardType.RECRUIT_PAWN, uses=2)
+    destination = POS.A1.value
+
+    game._GameLogicLoop__handle_board_click(destination)
+
+    assert game.pieces_locations[destination].get_color() == COLOR.WHITE
+    assert game.pieces_locations[destination].get_type() == PIECE_TYPE.PAWN
+    assert game.cards_processor.white_cards[0].get_remaining_uses() == 1
+    assert game.current_turn == COLOR.BLACK

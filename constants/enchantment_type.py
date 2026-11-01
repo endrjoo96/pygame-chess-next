@@ -7,3 +7,4 @@ class EnchantmentType(Enum):
     DELAY_BEFORE_USE = 3
     STUN_AFTER_USE = 4
     REUSABLE = 5
+    BUFF = 6

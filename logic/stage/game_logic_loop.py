@@ -67,6 +67,7 @@ class GameLogicLoop(object):
         self.resurrection_moves = []
         self.selected_card = None
         self.selected_captured_piece = None
+        self.selected_trebuchet_pawn_position = 0
         self.double_move_step = 0
         self.double_move_collected_board_card = False
 
@@ -80,8 +81,10 @@ class GameLogicLoop(object):
         self.board_card_available = False
         self.board_enchantment = None
         self.board_cards = []
+        self.rune_traps = []
         self.pending_board_card_delay = None
         self.en_passant_target = None
+        self.en_passant_targets = []
         card_image = pygame.image.load(self.context.card_on_board_src).convert_alpha()
         self.board_card_image = pygame.transform.scale(
             card_image, (self.context.square_length, self.context.square_length))
@@ -108,14 +111,17 @@ class GameLogicLoop(object):
         self.selected_piece_position = 0
         self.selected_card = None
         self.selected_captured_piece = None
+        self.selected_trebuchet_pawn_position = 0
         self.double_move_step = 0
         self.double_move_collected_board_card = False
         self.board_card_available = False
         self.board_card_position = POS.D5.value
         self.board_enchantment = None
         self.board_cards = []
+        self.rune_traps = []
         self.pending_board_card_delay = None
         self.en_passant_target = None
+        self.en_passant_targets = []
         if self._ai_future is not None:
             self._ai_future.cancel()
             self._ai_future = None
@@ -384,6 +390,8 @@ class GameLogicLoop(object):
 
     @staticmethod
     def _format_ai_action_notation(state, action):
+        if action.action_type == GameActionType.RECRUIT_PAWN:
+            return "P@{}".format(POS(action.destination).name.lower())
         piece = state.pieces_locations.get(action.source)
         destination = action.destination
         if piece is None or not piece.exists():
@@ -399,8 +407,20 @@ class GameLogicLoop(object):
         }
         source_square = POS(action.source).name.lower()
 
-        if action.action_type == GameActionType.APPLY_PASSIVE:
+        if action.action_type in (
+            GameActionType.APPLY_PASSIVE,
+            GameActionType.APPLY_BUFF,
+        ):
             return "{}@{}".format(piece_symbols.get(piece.get_type(), "?"), source_square)
+        if action.action_type == GameActionType.PLACE_RUNE:
+            return "S{}^{}".format(
+                source_square, POS(destination).name.lower())
+        if action.action_type == GameActionType.TREBUCHET:
+            return "W{}:{}>{}".format(
+                source_square,
+                POS(action.secondary_source).name.lower(),
+                POS(destination).name.lower(),
+            )
         if action.action_type == GameActionType.TELEPORT and destination in range(1, 65):
             return "{}{}↔{}".format(
                 piece_symbols.get(piece.get_type(), "?"),
@@ -475,10 +495,13 @@ class GameLogicLoop(object):
         self.board_card_position = result.board_card_position
         self.board_enchantment = result.board_enchantment
         self.board_cards = result.board_cards
+        self.rune_traps = result.rune_traps
         self.pending_board_card_delay = result.pending_board_card_delay
         self.en_passant_target = result.en_passant_target
+        self.en_passant_targets = result.en_passant_targets
         self.selected_card = result.selected_card
         self.selected_piece_position = result.selected_piece_position
+        self.selected_trebuchet_pawn_position = 0
         self.selected_captured_piece = result.selected_captured_piece
         self.double_move_step = result.double_move_step
         self.double_move_collected_board_card = result.double_move_collected_board_card
@@ -510,6 +533,26 @@ class GameLogicLoop(object):
                 self.board_card_image,
                 self.context.chessboard_coordinates[card_x][card_y],
             )
+
+        for trap in self.rune_traps:
+            x, y = id_to_xy(trap.position)
+            square_x, square_y = self.context.chessboard_coordinates[x][y]
+            center = (
+                square_x + self.context.square_length // 2,
+                square_y + self.context.square_length // 2,
+            )
+            radius = max(5, self.context.square_length // 5)
+            pygame.draw.polygon(
+                self.screen,
+                (126, 54, 166),
+                ((center[0], center[1] - radius),
+                 (center[0] + radius, center[1]),
+                 (center[0], center[1] + radius),
+                 (center[0] - radius, center[1])),
+            )
+            pygame.draw.circle(self.screen, (235, 215, 255), center, max(2, radius // 4))
+
+        self.__draw_recruit_targets()
 
         self.__draw_promotion_targets()
         self.__draw_return_to_start_targets()
@@ -581,6 +624,8 @@ class GameLogicLoop(object):
         """Wyświetla podgląd karty planszowej, gdy kursor znajduje się nad nią."""
         mouse_x, mouse_y = pygame.mouse.get_pos()
         hovered_card = None
+        hovered_color = self.current_turn
+        remaining_turns = None
         board_cards = getattr(self, "board_cards", []) or (
             [(self.board_card_position, self.board_enchantment)]
             if self.board_card_available and self.board_enchantment is not None
@@ -596,6 +641,18 @@ class GameLogicLoop(object):
                 hovered_card = enchantment
                 break
         if hovered_card is None:
+            for trap in self.rune_traps:
+                trap_x, trap_y = id_to_xy(trap.position)
+                square = pygame.Rect(
+                    self.context.chessboard_coordinates[trap_x][trap_y],
+                    (self.context.square_length, self.context.square_length),
+                )
+                if square.collidepoint(mouse_x, mouse_y):
+                    hovered_card = trap.enchantment
+                    hovered_color = trap.owner
+                    remaining_turns = trap.remaining_owner_turns
+                    break
+        if hovered_card is None:
             return
 
         margin = 10
@@ -609,7 +666,8 @@ class GameLogicLoop(object):
             preview_y = mouse_y - card_height - margin
 
         self.cards_processor.render_preview(
-            self.screen, self.chess_pieces, hovered_card, (preview_x, preview_y), self.current_turn)
+            self.screen, self.chess_pieces, hovered_card, (preview_x, preview_y),
+            hovered_color, remaining_turns)
 
     def __draw_piece_effect_preview(self):
         """Pokazuje podgląd efektów figury wskazanej kursorem."""
@@ -681,6 +739,16 @@ class GameLogicLoop(object):
             return
 
         piece = self.pieces_locations[position]
+        selected_card_type = self.__get_selected_card_type()
+        if selected_card_type == EnchantmentCardType.KNIGHT_RUNIC_TRAP:
+            self.__handle_rune_trap_click(position, piece)
+            return
+        if selected_card_type == EnchantmentCardType.ROOK_TREBUCHET:
+            self.__handle_trebuchet_click(position, piece)
+            return
+        if selected_card_type == EnchantmentCardType.RECRUIT_PAWN:
+            self.__handle_recruit_click(position)
+            return
         if self.__selected_card_is_piece_teleport():
             self.__handle_piece_teleport(position, piece)
             return
@@ -780,8 +848,7 @@ class GameLogicLoop(object):
                 self.selected_piece_position = 0
                 return
             if active_enchantment.is_passive():
-                self.__apply_selected_passive_enchantment(
-                    position, piece, active_enchantment)
+                self.__apply_selected_piece_enchantment(position, active_enchantment)
                 return
 
         self.selected_piece_position = position
@@ -806,11 +873,19 @@ class GameLogicLoop(object):
             return card_deck[card_index]
         return None
 
-    def __apply_selected_passive_enchantment(self, position, piece, enchantment):
-        """Przypisuje efekt pasywny lub planuje go, zużywa kartę i kończy turę."""
-        card_color, card_index = self.selected_card
+    def __apply_selected_piece_enchantment(self, position, enchantment):
+        """Nakłada efekt przypisany do figury i zużywa wybraną kartę."""
+        _, card_index = self.selected_card
+        action_type = (
+            GameActionType.APPLY_BUFF
+            if enchantment.is_buff()
+            else GameActionType.APPLY_PASSIVE
+        )
         self.__apply_domain_action(GameAction(
-            GameActionType.APPLY_PASSIVE, position, card_index=card_index))
+            action_type,
+            position,
+            card_index=card_index,
+        ))
 
     def __move_to_clicked_destination(self, position, piece):
         """Wykonuje legalny ruch na wybrane puste pole lub zbija figurę przeciwnika."""
@@ -841,9 +916,150 @@ class GameLogicLoop(object):
         self.double_move_step = 0
         self.double_move_collected_board_card = False
         self.selected_captured_piece = None
+        self.selected_trebuchet_pawn_position = 0
         self.resurrection_moves = []
         self.selected_piece_position = 0
         self.moves = []
+        if self.__get_selected_card_type() == EnchantmentCardType.RECRUIT_PAWN:
+            self.moves = [
+                id_to_xy(action.destination)
+                for action in self.__get_selected_card_actions(
+                    GameActionType.RECRUIT_PAWN)
+            ]
+
+    def __get_selected_card_type(self):
+        """Zwraca typ aktywnie wskazanej karty, jeśli nadal istnieje w talii."""
+        enchantment = self.__get_selected_enchantment()
+        return enchantment.get_card_type() if enchantment is not None else None
+
+    def __get_selected_card_actions(
+        self, action_type, *, source=None, secondary_source=None,
+    ):
+        """Pobiera legalne akcje bieżącej karty ze współdzielonego generatora symulacji."""
+        if self.selected_card is None:
+            return []
+        card_index = self.selected_card[1]
+        return [
+            action for action in GameSimulation.available_actions(GameState.from_game(self))
+            if action.action_type == action_type
+            and action.card_index == card_index
+            and (source is None or action.source == source)
+            and (secondary_source is None or action.secondary_source == secondary_source)
+        ]
+
+    def __handle_rune_trap_click(self, position, piece):
+        """Wybiera skoczka i legalne pole runy albo zatwierdza jej położenie."""
+        if self.selected_piece_position == 0:
+            actions = self.__get_selected_card_actions(
+                GameActionType.PLACE_RUNE, source=position)
+            if actions and piece.exists() and piece.get_color() == self.current_turn:
+                self.selected_piece_position = position
+                self.moves = [id_to_xy(action.destination) for action in actions]
+            return
+
+        if position == self.selected_piece_position:
+            self.selected_piece_position = 0
+            self.moves = []
+            return
+        action = next(
+            (action for action in self.__get_selected_card_actions(
+                GameActionType.PLACE_RUNE, source=self.selected_piece_position)
+             if action.destination == position),
+            None,
+        )
+        if action is not None:
+            self.__apply_domain_action(action)
+        elif piece.exists() and piece.get_color() == self.current_turn:
+            actions = self.__get_selected_card_actions(
+                GameActionType.PLACE_RUNE, source=position)
+            if actions:
+                self.selected_piece_position = position
+                self.moves = [id_to_xy(action.destination) for action in actions]
+
+    def __handle_trebuchet_click(self, position, piece):
+        """Wybiera wieżę, wystrzeliwanego piona i puste pole docelowe."""
+        if self.selected_piece_position == 0:
+            actions = self.__get_selected_card_actions(
+                GameActionType.TREBUCHET, source=position)
+            if actions and piece.exists() and piece.get_color() == self.current_turn:
+                self.selected_piece_position = position
+                self.moves = [
+                    id_to_xy(pawn_position)
+                    for pawn_position in dict.fromkeys(
+                        action.secondary_source for action in actions)
+                ]
+            return
+
+        if self.selected_trebuchet_pawn_position == 0:
+            actions = self.__get_selected_card_actions(
+                GameActionType.TREBUCHET,
+                source=self.selected_piece_position,
+                secondary_source=position,
+            )
+            if actions:
+                self.selected_trebuchet_pawn_position = position
+                self.moves = [id_to_xy(action.destination) for action in actions]
+            elif (
+                piece.exists() and piece.get_type() == PIECE_TYPE.ROOK
+                and piece.get_color() == self.current_turn
+            ):
+                self.selected_piece_position = 0
+                self.__handle_trebuchet_click(position, piece)
+            return
+
+        action = next(
+            (action for action in self.__get_selected_card_actions(
+                GameActionType.TREBUCHET,
+                source=self.selected_piece_position,
+                secondary_source=self.selected_trebuchet_pawn_position,
+            ) if action.destination == position),
+            None,
+        )
+        if action is not None:
+            self.__apply_domain_action(action)
+            self.selected_trebuchet_pawn_position = 0
+        elif piece.exists() and piece.get_type() == PIECE_TYPE.PAWN:
+            actions = self.__get_selected_card_actions(
+                GameActionType.TREBUCHET,
+                source=self.selected_piece_position,
+                secondary_source=position,
+            )
+            if actions:
+                self.selected_trebuchet_pawn_position = position
+                self.moves = [id_to_xy(action.destination) for action in actions]
+        elif piece.exists() and piece.get_type() == PIECE_TYPE.ROOK:
+            actions = self.__get_selected_card_actions(
+                GameActionType.TREBUCHET, source=position)
+            if actions and piece.get_color() == self.current_turn:
+                self.selected_piece_position = position
+                self.selected_trebuchet_pawn_position = 0
+                self.moves = [
+                    id_to_xy(pawn_position)
+                    for pawn_position in dict.fromkeys(
+                        action.secondary_source for action in actions)
+                ]
+
+    def __handle_recruit_click(self, position):
+        """Stawia rekruta na jednym z legalnych pól pierwszej linii."""
+        action = next(
+            (action for action in self.__get_selected_card_actions(
+                GameActionType.RECRUIT_PAWN)
+             if action.destination == position),
+            None,
+        )
+        if action is not None:
+            self.__apply_domain_action(action)
+
+    def __draw_recruit_targets(self):
+        """Podświetla pola rekruta, które można wybrać bez uprzedniego wyboru figury."""
+        if self.__get_selected_card_type() != EnchantmentCardType.RECRUIT_PAWN:
+            return
+        overlay = pygame.Surface(
+            (self.context.square_length, self.context.square_length), pygame.SRCALPHA)
+        overlay.fill(PREDEFINED_COLOR.transparent_blue)
+        for move_x, move_y in self.moves:
+            self.screen.blit(
+                overlay, self.context.chessboard_coordinates[move_x][move_y])
 
     def __select_captured_piece(self, color, index):
         """Przełącza wybór kwalifikującej się zbitej figury i aktualizuje pola wskrzeszenia."""
@@ -1286,6 +1502,10 @@ class GameLogicLoop(object):
             position for position in range(1, 65)
             if not self.pieces_locations[position].exists()
             and position not in occupied_card_positions
+            and all(
+                trap.position != position
+                for trap in getattr(self, "rune_traps", ())
+            )
         ]
         log_debug(
             "Board card placement: found {} empty square(s)".format(len(empty_positions))

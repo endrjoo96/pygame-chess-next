@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 from constants.piece_color import COLOR
 from models.chess_pieces import Piece
 from models.enchantments import Enchantment
-from models.game_state import GameState
+from models.game_state import GameState, RuneTrap
 
 
 @dataclass
@@ -33,6 +33,8 @@ class GameObservation:
     random_state: tuple
     board_cards: List[Tuple[int, Enchantment]] = field(default_factory=list)
     en_passant_target: Optional[int] = None
+    rune_traps: List[RuneTrap] = field(default_factory=list)
+    en_passant_targets: List[int] = field(default_factory=list)
 
     @classmethod
     def from_state(cls, state: GameState, own_color: COLOR):
@@ -60,6 +62,8 @@ class GameObservation:
             random_state=state.random_state,
             board_cards=state.board_cards,
             en_passant_target=state.en_passant_target,
+            rune_traps=state.rune_traps,
+            en_passant_targets=state.en_passant_targets,
         )
         return copy.deepcopy(observation)
 
@@ -97,4 +101,6 @@ class GameObservation:
             random_state=self.random_state,
             board_cards=copy.deepcopy(self.board_cards, memo),
             en_passant_target=self.en_passant_target,
+            rune_traps=copy.deepcopy(self.rune_traps, memo),
+            en_passant_targets=self.en_passant_targets.copy(),
         )

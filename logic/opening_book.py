@@ -34,6 +34,7 @@ def _position_key(state):
             if piece.exists()
         ),
         state.en_passant_target,
+        tuple(getattr(state, "en_passant_targets", ())),
     )
 
 

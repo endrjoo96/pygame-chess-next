@@ -39,14 +39,14 @@ def test_pawn_backward_move_captures_only_diagonal_enemies():
     pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
 
     moves = process_possible_basic_moves(
-        pawn, [3, 3], board, EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create(uses=1)
+        pawn, [3, 3], board, EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create()
     )
 
     assert moves == [[3, 2], [2, 2]]
 
     board[xy_to_id(3, 2)] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     assert process_possible_basic_moves(
-        pawn, [3, 3], board, EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create(uses=1)
+        pawn, [3, 3], board, EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create()
     ) == [[2, 2]]
 
 
