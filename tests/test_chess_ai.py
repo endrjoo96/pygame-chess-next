@@ -96,7 +96,7 @@ def test_ai_returns_best_known_move_after_an_incomplete_iteration(monkeypatch):
 
     def evaluate_root_action(
         search_state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None,
+        cache_size_callback=None, node_progress_callback=None,
     ):
         if depth == 1:
             if action == shallow_candidate:
@@ -147,7 +147,7 @@ def test_ai_passes_the_opponents_exact_cards_to_root_simulations(monkeypatch):
 
     def evaluate_root_action(
         search_state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None,
+        cache_size_callback=None, node_progress_callback=None,
     ):
         searched_states.append(search_state)
         return _RootEvaluation(0.0, 1)
@@ -313,7 +313,7 @@ def test_ponder_stops_when_cache_reaches_its_limit(monkeypatch):
 
     def evaluate_root_action(
         search_state, action, depth, config, deadline, cache_snapshot,
-        cache_size_callback=None,
+        cache_size_callback=None, node_progress_callback=None,
     ):
         entry = CacheEntry(
             ("pondered", search_state.cache_key()),
@@ -347,6 +347,138 @@ def test_ponder_stops_when_cache_reaches_its_limit(monkeypatch):
     assert all(entry.root_scope_ids for entry in ai._cache.snapshot(2))
     assert not ai._worker_search_cancel_event.is_set()
     assert not ai._ponder_active
+
+
+def test_ponder_extends_retained_cache_as_each_root_action_finishes(monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    ai = ChessAI(
+        SearchConfig(max_depth=1, cache_max_entries=8),
+        max_workers=1,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+
+    ponder_state = make_black_to_move_state()
+    ponder_state.current_turn = COLOR.WHITE
+    first_root = ponder_state.clone()
+    first_root.current_turn = COLOR.BLACK
+    second_root = first_root.clone()
+    second_root.selected_piece_position = 2
+    ai._states_after_player_turn = lambda _state, _event: (
+        first_root, second_root)
+
+    retained_entry = CacheEntry(
+        ("retained-branch",), 3, None, 1.0, Bound.EXACT)
+    ai._cache.put(retained_entry)
+    observed_cache_sizes = []
+    action = GameAction(GameActionType.MOVE, 3, 4)
+    monkeypatch.setattr(
+        GameSimulation, "available_actions", lambda _state: [action])
+    monkeypatch.setattr(ai, "_order_actions", lambda _state, actions: actions)
+
+    def evaluate_root_action(
+        state, action, depth, _config, _deadline, _cache_snapshot,
+        cache_size_callback=None, node_progress_callback=None,
+    ):
+        observed_cache_sizes.append(len(ai._cache))
+        entry = CacheEntry(
+            ("pondered", state.cache_key()), depth, action, float(depth),
+            Bound.EXACT)
+        return _RootEvaluation(float(depth), 1, (entry,))
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+
+    result = ai.ponder(ponder_state, Event())
+
+    assert result.completed_depth == 1
+    assert observed_cache_sizes == [1, 2]
+    assert ai._cache.get(retained_entry.key, retained_entry.depth) == retained_entry
+    assert len(ai._cache) == 3
+    assert ai.cache_diagnostics() == (True, 3, 8, 0, 3)
+
+
+def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
+    import logic.chess_ai as chess_ai
+
+    class ImmediateExecutor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    ai = ChessAI(
+        SearchConfig(max_depth=1, cache_max_entries=16),
+        max_workers=1,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+    status_values = [chess_ai._WORKER_IDLE]
+    status_pids = [123]
+    cache_entry_values = [0]
+    node_values = [0]
+    status_lock = Lock()
+    ai._worker_status_values = status_values
+    ai._worker_status_pids = status_pids
+    ai._worker_cache_entry_values = cache_entry_values
+    ai._worker_node_values = node_values
+    ai._worker_status_process_lock = status_lock
+    ai._worker_pool_state = "ready"
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_VALUES", status_values)
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_PIDS", status_pids)
+    monkeypatch.setattr(
+        chess_ai, "_WORKER_CACHE_ENTRY_VALUES", cache_entry_values)
+    monkeypatch.setattr(chess_ai, "_WORKER_NODE_VALUES", node_values)
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_LOCK", status_lock)
+    monkeypatch.setattr(chess_ai, "_WORKER_STATUS_INDEX", 0)
+
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    action = GameAction(GameActionType.MOVE, 1, 2)
+    observed_progress = []
+    monkeypatch.setattr(
+        ai, "_states_after_player_turn", lambda _state, _event: (state,))
+    monkeypatch.setattr(
+        ai, "_order_actions", lambda _state, actions: actions)
+    monkeypatch.setattr(
+        GameSimulation, "available_actions", lambda _state: [action])
+
+    def evaluate_root_action(
+        _state, _action, _depth, _config, _deadline, _cache_snapshot,
+        cache_size_callback=None, node_progress_callback=None,
+    ):
+        node_progress_callback = (
+            node_progress_callback or chess_ai._set_current_worker_visited_nodes)
+        chess_ai._set_current_worker_status(chess_ai._WORKER_BUSY)
+        node_progress_callback(128)
+        observed_progress.append(ai.search_progress_stats())
+        node_progress_callback(0)
+        chess_ai._set_current_worker_status(chess_ai._WORKER_IDLE)
+        return _RootEvaluation(0.0, 128)
+
+    monkeypatch.setattr(
+        chess_ai, "_evaluate_root_action", evaluate_root_action)
+
+    result = ai.ponder(state, Event())
+
+    assert result.visited_nodes == 128
+    assert observed_progress == [("pondering", 1, 0, 128)]
+    assert ai.search_progress_stats() == ("idle", 0, 1, 128)
 
 
 def test_pondering_is_disabled_when_ponder_percent_is_zero():
@@ -423,6 +555,7 @@ def test_prepared_worker_pool_reports_readiness_and_is_reused():
         assert [worker.state for worker in prepared_workers] == ["idle", "idle"]
         assert len({worker.pid for worker in prepared_workers}) == 2
         assert [worker.cache_entries for worker in prepared_workers] == [0, 0]
+        assert [worker.visited_nodes for worker in prepared_workers] == [0, 0]
         ai.choose_action(observation)
         assert ai._worker_pool is worker_pool
         ai.choose_action(observation)
@@ -471,12 +604,18 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
 
     def evaluate_root_action(
         state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None,
+        cache_size_callback=None, node_progress_callback=None,
     ):
         cache_size_callback(7)
+        node_progress_callback(128)
         worker = ai.worker_stats()[0]
-        observed_cache_sizes.append((worker.state, worker.cache_entries))
-        return _RootEvaluation(0.0, 1)
+        observed_cache_sizes.append((
+            worker.state,
+            worker.cache_entries,
+            worker.visited_nodes,
+            ai.search_progress_stats(),
+        ))
+        return _RootEvaluation(0.0, 128)
 
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action", evaluate_root_action)
@@ -486,8 +625,27 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
     ai.choose_action(GameObservation.from_state(state, COLOR.BLACK))
 
     assert observed_cache_sizes
-    assert all(value == ("busy", 7) for value in observed_cache_sizes)
+    assert all(
+        value[:3] == ("busy", 7, 128)
+        for value in observed_cache_sizes
+    )
+    assert observed_cache_sizes[0][3] == ("searching", 1, 0, 128)
+    assert all(
+        phase == "searching"
+        and current_depth == 1
+        and completed_depth == 0
+        and visited_nodes >= 128
+        for phase, current_depth, completed_depth, visited_nodes
+        in (value[3] for value in observed_cache_sizes)
+    )
     assert ai.worker_stats()[0].cache_entries == 0
+    assert ai.worker_stats()[0].visited_nodes == 0
+    phase, current_depth, completed_depth, visited_nodes = (
+        ai.search_progress_stats())
+    assert phase == "idle"
+    assert current_depth == 0
+    assert completed_depth == 1
+    assert visited_nodes == len(observed_cache_sizes) * 128
 
 
 def test_process_worker_status_changes_while_evaluating(monkeypatch):
@@ -497,22 +655,27 @@ def test_process_worker_status_changes_while_evaluating(monkeypatch):
     status_values = [chess_ai._WORKER_IDLE, chess_ai._WORKER_IDLE]
     status_pids = [123, 456]
     cache_entry_values = [0, 0]
+    node_values = [0, 0]
     status_lock = Lock()
     ai._worker_status_values = status_values
     ai._worker_status_pids = status_pids
     ai._worker_cache_entry_values = cache_entry_values
+    ai._worker_node_values = node_values
     ai._worker_status_process_lock = status_lock
     ai._worker_pool_state = "ready"
     monkeypatch.setattr(chess_ai, "_WORKER_STATUS_VALUES", status_values)
     monkeypatch.setattr(chess_ai, "_WORKER_STATUS_PIDS", status_pids)
     monkeypatch.setattr(
         chess_ai, "_WORKER_CACHE_ENTRY_VALUES", cache_entry_values)
+    monkeypatch.setattr(chess_ai, "_WORKER_NODE_VALUES", node_values)
     monkeypatch.setattr(chess_ai, "_WORKER_STATUS_LOCK", status_lock)
     monkeypatch.setattr(chess_ai, "_WORKER_STATUS_INDEX", 0)
     entered_search = Event()
     release_search = Event()
 
     def wait_during_search(_worker, _state, _depth, _alpha, _beta):
+        _worker._nodes = 17
+        _worker._node_progress_callback(17)
         entered_search.set()
         assert release_search.wait(timeout=2)
         return 0.0
@@ -541,11 +704,17 @@ def test_process_worker_status_changes_while_evaluating(monkeypatch):
             assert [
                 worker.cache_entries for worker in ai.worker_stats()
             ] == [1, 0]
+            assert [
+                worker.visited_nodes for worker in ai.worker_stats()
+            ] == [17, 0]
             release_search.set()
-            assert future.result(timeout=2).score == 0.0
+            result = future.result(timeout=2)
+            assert result.score == 0.0
+            assert result.nodes == 17
         assert [worker.state for worker in ai.worker_stats()] == [
             "idle", "idle"]
         assert [worker.cache_entries for worker in ai.worker_stats()] == [0, 0]
+        assert [worker.visited_nodes for worker in ai.worker_stats()] == [0, 0]
     finally:
         release_search.set()
 

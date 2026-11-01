@@ -75,8 +75,10 @@ _WORKER_SEARCH_CANCEL_EVENT: Any = None
 _WORKER_STATUS_VALUES: Any = None
 _WORKER_STATUS_PIDS: Any = None
 _WORKER_CACHE_ENTRY_VALUES: Any = None
+_WORKER_NODE_VALUES: Any = None
 _WORKER_STATUS_LOCK: Any = None
 _WORKER_STATUS_INDEX: Optional[int] = None
+_WORKER_NODE_UPDATE_INTERVAL = 128
 _WORKER_STARTING = 0
 _WORKER_INITIALIZING = 1
 _WORKER_IDLE = 2
@@ -167,15 +169,27 @@ def _set_current_worker_cache_entries(entry_count):
         _WORKER_CACHE_ENTRY_VALUES[_WORKER_STATUS_INDEX] = entry_count
 
 
+def _set_current_worker_visited_nodes(visited_nodes):
+    if (
+        _WORKER_NODE_VALUES is None
+        or _WORKER_STATUS_LOCK is None
+        or _WORKER_STATUS_INDEX is None
+    ):
+        return
+    with _WORKER_STATUS_LOCK:
+        _WORKER_NODE_VALUES[_WORKER_STATUS_INDEX] = visited_nodes
+
+
 def _initialize_search_worker(
     ready_count, probe_started_count, probe_release_event, search_cancel_event,
     worker_status_values, worker_status_pids, worker_cache_entry_values,
-    worker_status_lock,
+    worker_node_values, worker_status_lock,
 ):
     global _WORKER_PROBE_RELEASE_EVENT, _WORKER_PROBE_STARTED_COUNT
     global _WORKER_SEARCH_CANCEL_EVENT
     global _WORKER_STATUS_VALUES, _WORKER_STATUS_PIDS
-    global _WORKER_CACHE_ENTRY_VALUES, _WORKER_STATUS_LOCK
+    global _WORKER_CACHE_ENTRY_VALUES, _WORKER_NODE_VALUES
+    global _WORKER_STATUS_LOCK
     global _WORKER_STATUS_INDEX
     _WORKER_PROBE_RELEASE_EVENT = probe_release_event
     _WORKER_PROBE_STARTED_COUNT = probe_started_count
@@ -183,6 +197,7 @@ def _initialize_search_worker(
     _WORKER_STATUS_VALUES = worker_status_values
     _WORKER_STATUS_PIDS = worker_status_pids
     _WORKER_CACHE_ENTRY_VALUES = worker_cache_entry_values
+    _WORKER_NODE_VALUES = worker_node_values
     _WORKER_STATUS_LOCK = worker_status_lock
     with _WORKER_STATUS_LOCK:
         _WORKER_STATUS_INDEX = next(
@@ -197,6 +212,7 @@ def _initialize_search_worker(
             raise RuntimeError("No worker status slot is available")
         _WORKER_STATUS_PIDS[_WORKER_STATUS_INDEX] = os.getpid()
         _WORKER_CACHE_ENTRY_VALUES[_WORKER_STATUS_INDEX] = 0
+        _WORKER_NODE_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_STATUS_VALUES[_WORKER_STATUS_INDEX] = _WORKER_STARTING
     with ready_count.get_lock():
         ready_count.value += 1
@@ -221,17 +237,21 @@ def _prewarm_search_worker():
 
 def _evaluate_root_action(
     state, action, depth, config, deadline, cache_snapshot=(),
-    cache_size_callback=None,
+    cache_size_callback=None, node_progress_callback=None,
 ):
     """Ocenia jeden ruch startowy w izolowanym workerze."""
     cache_size_callback = (
         cache_size_callback or _set_current_worker_cache_entries)
+    node_progress_callback = (
+        node_progress_callback or _set_current_worker_visited_nodes)
     _set_current_worker_cache_entries(0)
+    node_progress_callback(0)
     _set_current_worker_status(_WORKER_BUSY)
     try:
         worker = ChessAI(config, max_workers=1)
         worker._deadline = deadline
         worker._nodes = 0
+        worker._node_progress_callback = node_progress_callback
         if worker._cache is not None:
             worker._cache = SearchCache(
                 min(config.cache_max_entries, _WORKER_CACHE_LIMIT),
@@ -254,6 +274,7 @@ def _evaluate_root_action(
             worker._cache_score_hits, worker._cache_hints)
     finally:
         cache_size_callback(0)
+        node_progress_callback(0)
         _set_current_worker_status(_WORKER_IDLE)
 
 
@@ -284,6 +305,12 @@ class ChessAI:
         self.ponder_cpu_percent = ponder_cpu_percent
         self._deadline = 0.0
         self._nodes = 0
+        self._node_progress_callback = None
+        self._search_progress_lock = Lock()
+        self._search_phase = "idle"
+        self._current_search_depth = 0
+        self._completed_search_depth = 0
+        self._reported_search_nodes = 0
         self._cache = SearchCache(config.cache_max_entries) if config.cache_enabled else None
         self._cache_lock = Lock()
         self._cache_generation = 0
@@ -300,10 +327,12 @@ class ChessAI:
         self._worker_status_values = None
         self._worker_status_pids = None
         self._worker_cache_entry_values = None
+        self._worker_node_values = None
         self._worker_status_process_lock = None
         self._worker_pool_state = "not-started"
         self._local_worker_busy = False
         self._local_worker_cache_entries = 0
+        self._local_worker_visited_nodes = 0
         self._ponder_state_lock = Lock()
         self._ponder_active = False
 
@@ -346,6 +375,7 @@ class ChessAI:
             worker_status_values = context.RawArray("i", self.max_workers)
             worker_status_pids = context.RawArray("i", self.max_workers)
             worker_cache_entry_values = context.RawArray("i", self.max_workers)
+            worker_node_values = context.RawArray("q", self.max_workers)
             worker_status_lock = context.Lock()
             executor = ProcessPoolExecutor(
                 max_workers=self.max_workers,
@@ -359,6 +389,7 @@ class ChessAI:
                     worker_status_values,
                     worker_status_pids,
                     worker_cache_entry_values,
+                    worker_node_values,
                     worker_status_lock,
                 ),
             )
@@ -371,6 +402,7 @@ class ChessAI:
                 self._worker_status_values = worker_status_values
                 self._worker_status_pids = worker_status_pids
                 self._worker_cache_entry_values = worker_cache_entry_values
+                self._worker_node_values = worker_node_values
                 self._worker_status_process_lock = worker_status_lock
                 self._worker_pool_state = "starting"
             warmup_futures = []
@@ -451,6 +483,7 @@ class ChessAI:
             worker_status_values = self._worker_status_values
             worker_status_pids = self._worker_status_pids
             worker_cache_entry_values = self._worker_cache_entry_values
+            worker_node_values = self._worker_node_values
             worker_status_process_lock = self._worker_status_process_lock
             self._clear_worker_pool(executor)
         if executor is not None:
@@ -467,6 +500,7 @@ class ChessAI:
                 self._worker_status_values = None
                 self._worker_status_pids = None
                 self._worker_cache_entry_values = None
+                self._worker_node_values = None
                 self._worker_status_process_lock = None
                 self._worker_pool_state = "not-started"
 
@@ -482,6 +516,7 @@ class ChessAI:
             worker_status_values = self._worker_status_values
             worker_status_pids = self._worker_status_pids
             worker_cache_entry_values = self._worker_cache_entry_values
+            worker_node_values = self._worker_node_values
             worker_status_process_lock = self._worker_status_process_lock
             self._clear_worker_pool(executor)
         executor.shutdown(wait=True, cancel_futures=True)
@@ -497,21 +532,76 @@ class ChessAI:
             return self._cache_generation
 
     def cache_stats(self):
+        return self.cache_diagnostics()[:4]
+
+    def cache_diagnostics(self):
         with self._cache_lock:
             cache = self._cache
             if cache is None:
-                return False, 0, self.config.cache_max_entries, 0
-            return True, len(cache), cache.max_entries, cache.evictions
+                return False, 0, self.config.cache_max_entries, 0, None
+            return (
+                True,
+                len(cache),
+                cache.max_entries,
+                cache.evictions,
+                cache.deepest_entry_depth,
+            )
+
+    def search_progress_stats(self, workers=None):
+        if workers is None:
+            workers = self.worker_stats()
+        active_worker_nodes = sum(worker.visited_nodes or 0 for worker in workers)
+        with self._search_progress_lock:
+            phase = self._search_phase
+            current_depth = self._current_search_depth
+            completed_depth = self._completed_search_depth
+            self._reported_search_nodes = max(
+                self._reported_search_nodes,
+                self._nodes + active_worker_nodes,
+            )
+        return (
+            phase,
+            current_depth,
+            completed_depth,
+            self._reported_search_nodes,
+        )
+
+    def _begin_search_progress(self, phase):
+        with self._search_progress_lock:
+            self._search_phase = phase
+            self._current_search_depth = 0
+            self._completed_search_depth = 0
+            self._nodes = 0
+            self._reported_search_nodes = 0
+
+    def _set_current_search_depth(self, depth):
+        with self._search_progress_lock:
+            self._current_search_depth = depth
+
+    def _set_completed_search_depth(self, depth):
+        with self._search_progress_lock:
+            self._completed_search_depth = depth
+
+    def _add_completed_nodes(self, node_count):
+        with self._search_progress_lock:
+            self._nodes += node_count
+
+    def _finish_search_progress(self):
+        with self._search_progress_lock:
+            self._search_phase = "idle"
+            self._current_search_depth = 0
 
     def worker_stats(self):
         with self._worker_metrics_lock:
             status_values = self._worker_status_values
             status_pids = self._worker_status_pids
             cache_entry_values = self._worker_cache_entry_values
+            node_values = self._worker_node_values
             process_lock = self._worker_status_process_lock
             pool_state = self._worker_pool_state
             local_worker_busy = self._local_worker_busy
             local_worker_cache_entries = self._local_worker_cache_entries
+            local_worker_visited_nodes = self._local_worker_visited_nodes
 
         if status_values is None or status_pids is None or process_lock is None:
             if self.max_workers == 1:
@@ -521,6 +611,7 @@ class ChessAI:
                         "busy" if local_worker_busy else "idle",
                         is_local=True,
                         cache_entries=local_worker_cache_entries,
+                        visited_nodes=local_worker_visited_nodes,
                     ),
                 )
             status = "starting" if pool_state == "starting" else "not-started"
@@ -535,6 +626,7 @@ class ChessAI:
                         "busy",
                         is_local=True,
                         cache_entries=local_worker_cache_entries,
+                        visited_nodes=local_worker_visited_nodes,
                     ),
                 )
             return workers
@@ -548,12 +640,15 @@ class ChessAI:
                         cache_entry_values[index]
                         if cache_entry_values is not None else None
                     ),
+                    node_values[index] if node_values is not None else None,
                 )
                 for index in range(self.max_workers)
             )
 
         workers = []
-        for index, (status_code, worker_pid, cache_entries) in enumerate(
+        for index, (
+            status_code, worker_pid, cache_entries, visited_nodes
+        ) in enumerate(
             process_states
         ):
             if worker_pid == 0:
@@ -562,7 +657,8 @@ class ChessAI:
             else:
                 status = _WORKER_STATUS_NAMES.get(status_code, "unknown")
             workers.append(AIWorkerStats(
-                index + 1, status, worker_pid, cache_entries=cache_entries))
+                index + 1, status, worker_pid,
+                cache_entries=cache_entries, visited_nodes=visited_nodes))
         if local_worker_busy:
             workers.append(
                 AIWorkerStats(
@@ -570,6 +666,7 @@ class ChessAI:
                     "busy",
                     is_local=True,
                     cache_entries=local_worker_cache_entries,
+                    visited_nodes=local_worker_visited_nodes,
                 ))
         return tuple(workers)
 
@@ -578,10 +675,15 @@ class ChessAI:
             self._local_worker_busy = is_busy
             if not is_busy:
                 self._local_worker_cache_entries = 0
+                self._local_worker_visited_nodes = 0
 
     def _set_local_worker_cache_entries(self, entry_count):
         with self._worker_metrics_lock:
             self._local_worker_cache_entries = entry_count
+
+    def _set_local_worker_visited_nodes(self, visited_nodes):
+        with self._worker_metrics_lock:
+            self._local_worker_visited_nodes = visited_nodes
 
     def choose_action(
         self,
@@ -607,7 +709,7 @@ class ChessAI:
 
         search_started = time.monotonic()
         self._deadline = search_started + self.config.time_limit_seconds
-        self._nodes = 0
+        self._begin_search_progress("searching")
         self._cache_hits = self._cache_score_hits = self._cache_hints = 0
         ordered_actions = self._order_actions(state, root_actions)
         action_order = {
@@ -657,7 +759,11 @@ class ChessAI:
                     if time.monotonic() >= self._deadline:
                         interrupted = True
                     else:
+                        self._finish_search_progress()
                         raise
+                except Exception:
+                    self._finish_search_progress()
+                    raise
         executor = (
             self._worker_pool
             if worker_count > 1 and not interrupted else None
@@ -667,6 +773,7 @@ class ChessAI:
                 if time.monotonic() >= self._deadline:
                     interrupted = True
                     break
+                self._set_current_search_depth(depth)
                 log_logic("AI search started depth {}".format(depth))
                 with self._cache_lock:
                     snapshot = (
@@ -684,7 +791,7 @@ class ChessAI:
 
                 def record_result(index, result):
                     nonlocal next_merge
-                    self._nodes += result.nodes
+                    self._add_completed_nodes(result.nodes)
                     self._cache_hits += result.hits
                     self._cache_score_hits += result.score_hits
                     self._cache_hints += result.hints
@@ -722,7 +829,8 @@ class ChessAI:
                         try:
                             result = _evaluate_root_action(
                                 state, action, depth, self.config, self._deadline,
-                                snapshot, self._set_local_worker_cache_entries)
+                                snapshot, self._set_local_worker_cache_entries,
+                                self._set_local_worker_visited_nodes)
                         except Exception as error:
                             log_error(
                                 "AI root task failed for {} at depth {}: {}".format(
@@ -820,6 +928,7 @@ class ChessAI:
                     depth_scores,
                     key=lambda item: (item[0], -action_order[item[1]]))
                 completed_depth = depth
+                self._set_completed_search_depth(completed_depth)
                 log_logic(
                     "AI search completed depth {}: best action={}, score={:+.2f}".format(
                         depth, best_action, best_score)
@@ -839,6 +948,8 @@ class ChessAI:
             if executor is not None:
                 self._discard_worker_pool(executor)
             raise
+        finally:
+            self._finish_search_progress()
 
         best_action = max(
             best_known_scores,
@@ -929,9 +1040,12 @@ class ChessAI:
             worker_cancel_event.clear()
 
         with self._cache_lock:
+            cache = self._cache
+            if cache is None:
+                return PonderResult(0, 0, 0, "disabled")
             cache_generation = self._cache_generation
-            cache_limit = self._cache.max_entries
-            if len(self._cache) >= cache_limit:
+            cache_limit = cache.max_entries
+            if len(cache) >= cache_limit:
                 return PonderResult(0, 0, 0, "cache-full")
 
         root_states = tuple(
@@ -956,6 +1070,7 @@ class ChessAI:
                 len(root_states), len(tasks),
                 self._ponder_worker_count_for_tasks(len(tasks)))
         )
+        self._begin_search_progress("pondering")
         total_nodes = 0
         completed_depth = 0
         stopped_reason = "max-depth"
@@ -967,42 +1082,45 @@ class ChessAI:
                 if cancellation_event.is_set():
                     stopped_reason = "cancelled"
                     break
+                self._set_current_search_depth(depth)
                 with self._cache_lock:
-                    if self._cache_generation != cache_generation:
+                    if (
+                        self._cache_generation != cache_generation
+                        or self._cache is not cache
+                    ):
                         stopped_reason = "cache-reset"
                         break
-                    if len(self._cache) >= cache_limit:
+                    if len(cache) >= cache_limit:
                         stopped_reason = "cache-full"
                         break
-                    snapshot = self._cache.snapshot(_WORKER_CACHE_LIMIT)
-                    existing_keys = {
-                        (entry.key, entry.depth)
-                        for entry in self._cache.snapshot(cache_limit)
-                    }
+                    snapshot = cache.snapshot(_WORKER_CACHE_LIMIT)
 
-                iteration_cache = SearchCache(cache_limit)
-                iteration_keys = set()
                 pending = {}
                 next_task = 0
                 depth_complete = True
                 capacity_reached = False
+                cache_reset = False
                 task_worker_count = self._ponder_worker_count_for_tasks(len(tasks))
 
-                def merge_result_entries(root_key, action, entries):
-                    nonlocal capacity_reached
+                def merge_result_entries(branch_root_key, branch_action, entries):
+                    nonlocal capacity_reached, cache_reset
                     scoped_entries = self._entries_for_root_scope(
-                        root_key, action, entries, cache_generation)
+                        branch_root_key, branch_action, entries, cache_generation)
                     for entry in scoped_entries:
-                        key = (entry.key, entry.depth)
-                        if key not in existing_keys and key not in iteration_keys:
-                            if len(existing_keys) + len(iteration_keys) >= cache_limit:
+                        with self._cache_lock:
+                            if (
+                                self._cache_generation != cache_generation
+                                or self._cache is not cache
+                            ):
+                                cache_reset = True
+                                return
+                            is_new_entry = not cache.contains(entry.key, entry.depth)
+                            if is_new_entry and len(cache) >= cache_limit:
                                 capacity_reached = True
                                 return
-                            iteration_keys.add(key)
-                        iteration_cache.put(entry)
-                        if len(existing_keys) + len(iteration_keys) >= cache_limit:
-                            capacity_reached = True
-                            return
+                            cache.put(entry)
+                            if len(cache) >= cache_limit:
+                                capacity_reached = True
 
                 while next_task < len(tasks) or pending:
                     if cancellation_event.is_set():
@@ -1035,12 +1153,21 @@ class ChessAI:
                         _, _, action, root_key = pending.pop(future)
                         result = future.result()
                         total_nodes += result.nodes
+                        self._add_completed_nodes(result.nodes)
                         if result.score is None:
                             depth_complete = False
                         merge_result_entries(root_key, action, result.entries)
-                        if capacity_reached:
+                        if capacity_reached or cache_reset:
                             break
 
+                    if cache_reset:
+                        stopped_reason = "cache-reset"
+                        depth_complete = False
+                        if worker_cancel_event is not None:
+                            worker_cancel_event.set()
+                        for future in pending:
+                            future.cancel()
+                        break
                     if capacity_reached:
                         capacity_reached = True
                         stopped_reason = "cache-full"
@@ -1064,16 +1191,13 @@ class ChessAI:
                         if not future.cancelled():
                             result = future.result()
                             total_nodes += result.nodes
+                            self._add_completed_nodes(result.nodes)
                             _, _, action, root_key = task_info
                             merge_result_entries(root_key, action, result.entries)
-
-                with self._cache_lock:
-                    if self._cache_generation == cache_generation:
-                        for entry in iteration_cache.snapshot(cache_limit):
-                            self._cache.put(entry)
                 if not depth_complete:
                     break
                 completed_depth = depth
+                self._set_completed_search_depth(completed_depth)
                 log_logic("AI pondering completed depth {}".format(depth))
                 if capacity_reached:
                     break
@@ -1084,6 +1208,7 @@ class ChessAI:
                 self._discard_worker_pool(executor)
             raise
         finally:
+            self._finish_search_progress()
             with self._ponder_state_lock:
                 if worker_cancel_event is not None:
                     worker_cancel_event.clear()
@@ -1174,6 +1299,11 @@ class ChessAI:
     ):
         self._check_deadline()
         self._nodes += 1
+        if (
+            self._node_progress_callback is not None
+            and self._nodes % _WORKER_NODE_UPDATE_INTERVAL == 0
+        ):
+            self._node_progress_callback(self._nodes)
 
         winner = state.get_winner()
         if winner is not None:

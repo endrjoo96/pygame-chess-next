@@ -32,9 +32,12 @@ Bot gra czarnymi. Podczas namysłu plansza jest przyciemniona, wyświetla się
 animowany spinner. Przy partii przeciwko botowi otwiera się osobne okno
 statystyk, w którym widać najlepszy dotychczas znaleziony ruch, jego ocenę i
 głębokość; po zakończeniu wyszukiwania także wybrany ruch i liczbę odwiedzonych
-węzłów. Panel pokazuje również liczbę wpisów głównego cache względem limitu, wyparcia,
-łączną liczbę wpisów w lokalnych cache workerów (aktualizowaną w trakcie
-wyszukiwania) oraz bieżący stan każdego workera (`not-started`, `starting`,
+węzłów. Panel na bieżąco pokazuje także fazę pracy (`wyszukiwanie` lub
+`pondering`), liczbę odwiedzonych węzłów oraz aktualnie badaną i ostatnią
+ukończoną głębokość. Zajętość głównego cache i sumę wpisów w lokalnych cache
+workerów pokazuje osobno — cache workerów mogą zawierać kopie tych samych wpisów.
+Licznik węzłów workerów jest odświeżany porcjami, aby ograniczyć narzut.
+Widoczne są też wyparcia i bieżący stan każdego workera (`not-started`, `starting`,
 `initializing`, `busy` lub `idle`);
 lista mieści 24 workery, a przy większej liczbie można ją przewijać kółkiem myszy.
 Wyszukiwanie szeregowe pokazuje worker lokalny. Okno jest pozbawione górnej belki

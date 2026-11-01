@@ -91,7 +91,7 @@ def test_search_evaluates_all_moves_and_can_choose_outside_the_book(monkeypatch)
 
     def evaluate_root_action(
         _state, action, _depth, _config, _deadline, _cache_snapshot=(),
-        cache_size_callback=None,
+        cache_size_callback=None, node_progress_callback=None,
     ):
         evaluated.append(action)
         score = 1.0 if action == expected_action else 0.0

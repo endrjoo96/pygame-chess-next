@@ -9,6 +9,7 @@ class AIWorkerStats:
     pid: Optional[int] = None
     is_local: bool = False
     cache_entries: Optional[int] = None
+    visited_nodes: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -25,4 +26,9 @@ class AISearchStats:
     cache_entries: Optional[int] = None
     cache_limit: Optional[int] = None
     cache_evictions: Optional[int] = None
+    cache_deepest_entry_depth: Optional[int] = None
     workers: Tuple[AIWorkerStats, ...] = ()
+    search_phase: Optional[str] = None
+    current_depth: Optional[int] = None
+    completed_search_depth: Optional[int] = None
+    live_visited_nodes: Optional[int] = None

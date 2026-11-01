@@ -343,10 +343,14 @@ class GameLogicLoop(object):
             final_result = self._ai_final_result
             is_searching = self._ai_searching
         cache_stats = None
+        cache_deepest_entry_depth = None
         workers = ()
+        progress_stats = (None, None, None, None)
         if isinstance(self.black_ai, ChessAI):
-            cache_stats = self.black_ai.cache_stats()
+            cache_stats = self.black_ai.cache_diagnostics()
+            cache_deepest_entry_depth = cache_stats[4]
             workers = self.black_ai.worker_stats()
+            progress_stats = self.black_ai.search_progress_stats(workers)
         return AISearchStats(
             is_searching=is_searching,
             candidate_move=best_move[0] if best_move is not None else None,
@@ -364,7 +368,12 @@ class GameLogicLoop(object):
             cache_entries=cache_stats[1] if cache_stats is not None else None,
             cache_limit=cache_stats[2] if cache_stats is not None else None,
             cache_evictions=cache_stats[3] if cache_stats is not None else None,
+            cache_deepest_entry_depth=cache_deepest_entry_depth,
             workers=workers,
+            search_phase=progress_stats[0],
+            current_depth=progress_stats[1],
+            completed_search_depth=progress_stats[2],
+            live_visited_nodes=progress_stats[3],
         )
 
     def draw_ai_thinking_overlay(self):

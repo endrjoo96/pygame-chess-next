@@ -135,6 +135,29 @@ def test_cache_retains_deeper_verified_entries_and_is_bounded():
     assert cache.get(("b",), 3) == deep
 
 
+def test_cache_tracks_deepest_entry_after_eviction_and_scope_retention():
+    cache = SearchCache(2)
+    root = ("root",)
+    selected_scope = cache.scope_id_for(
+        root, GameAction(GameActionType.MOVE, 1, 2), create=True)
+    other_scope = cache.scope_id_for(
+        root, GameAction(GameActionType.MOVE, 1, 3), create=True)
+    cache.put(CacheEntry(("shallow",), 1, None, 1, Bound.EXACT,
+                         frozenset((selected_scope,))))
+    cache.put(CacheEntry(("deep",), 3, None, 3, Bound.EXACT,
+                         frozenset((selected_scope,))))
+    cache.put(CacheEntry(("other",), 4, None, 4, Bound.EXACT,
+                         frozenset((other_scope,))))
+
+    assert cache.deepest_entry_depth == 4
+
+    cache.retain_scope(selected_scope)
+
+    assert cache.deepest_entry_depth == 3
+    cache.retain_scope(None)
+    assert cache.deepest_entry_depth is None
+
+
 def test_cache_can_retain_only_entries_from_the_selected_root_scope():
     cache = SearchCache(8)
     root_key = ("root",)
@@ -473,7 +496,8 @@ def test_cached_root_hint_preserves_original_tie_breaking(monkeypatch):
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
         lambda state, action, depth, config, deadline, snapshot,
-               cache_size_callback=None: _RootEvaluation(0.0, 1),
+               cache_size_callback=None, node_progress_callback=None:
+            _RootEvaluation(0.0, 1),
     )
     updates = []
     result = ai.choose_action(
@@ -502,7 +526,7 @@ def test_choose_action_keeps_only_the_selected_root_branch(tree, monkeypatch):
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
         lambda state, action, depth, config, deadline, snapshot,
-               cache_size_callback=None:
+               cache_size_callback=None, node_progress_callback=None:
             _RootEvaluation(float(actions.index(action)), 1, (entries[action],)),
     )
 
@@ -511,6 +535,51 @@ def test_choose_action_keeps_only_the_selected_root_branch(tree, monkeypatch):
     assert result.action == actions[-1]
     assert len(ai._cache) == 1
     assert ai._cache.snapshot(1)[0].key == ("root-result", actions[-1])
+
+
+def test_depth_four_search_retains_depth_three_of_selected_branch(tree, monkeypatch):
+    ai, root, actions = tree
+    ai.config = SearchConfig(
+        time_limit_seconds=5, max_depth=4, cache_max_entries=32)
+
+    class TreeObservation:
+        own_color = COLOR.BLACK
+        current_turn = COLOR.BLACK
+
+        def to_state(self):
+            return root
+
+    def root_result(
+        _state, action, depth, _config, _deadline, _cache_snapshot,
+        cache_size_callback=None, node_progress_callback=None,
+    ):
+        entries = (
+            (CacheEntry(
+                ("root-result", action.destination, depth),
+                depth - 1,
+                None,
+                float(actions.index(action)),
+                Bound.EXACT,
+            ),)
+            if depth > 1 else ()
+        )
+        return _RootEvaluation(
+            float(actions.index(action)), 1, entries)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", root_result)
+
+    result = ai.choose_action(TreeObservation())
+
+    assert result.completed_depth == 4
+    assert result.action == actions[-1]
+    assert ai._cache.deepest_entry_depth == 3
+    assert {
+        entry.depth for entry in ai._cache.snapshot(32)
+    } == {1, 2, 3}
+    assert {
+        entry.key[1] for entry in ai._cache.snapshot(32)
+    } == {actions[-1].destination}
 
 
 def test_reset_during_search_cannot_restore_previous_entries(monkeypatch):
@@ -523,7 +592,7 @@ def test_reset_during_search_cannot_restore_previous_entries(monkeypatch):
 
     def root_result(
         search_state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None,
+        cache_size_callback=None, node_progress_callback=None,
     ):
         nonlocal calls
         calls += 1
@@ -547,7 +616,7 @@ def test_search_queued_before_reset_cannot_populate_new_cache(monkeypatch):
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
         lambda state, action, depth, config, deadline, snapshot,
-               cache_size_callback=None:
+               cache_size_callback=None, node_progress_callback=None:
             _RootEvaluation(1.0, 1, (entry,)),
     )
     ai.choose_action(

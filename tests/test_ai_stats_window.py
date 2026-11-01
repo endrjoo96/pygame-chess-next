@@ -54,10 +54,15 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         cache_entries=42,
         cache_limit=256,
         cache_evictions=3,
+        cache_deepest_entry_depth=3,
         workers=(
             AIWorkerStats(1, "idle", pid=123, cache_entries=12),
             AIWorkerStats(2, "busy", pid=456, cache_entries=20),
         ),
+        search_phase="searching",
+        current_depth=3,
+        completed_search_depth=2,
+        live_visited_nodes=9876,
     ))
     window.draw(AISearchStats(
         final_move="Wb8",
@@ -65,8 +70,17 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         completed_depth=3,
         visited_nodes=1234,
     ))
+    window.draw(AISearchStats(
+        cache_enabled=True,
+        cache_entries=42,
+        cache_limit=256,
+        cache_deepest_entry_depth=3,
+        search_phase="pondering",
+        current_depth=0,
+        completed_search_depth=0,
+    ))
 
-    assert window._window.flip_count == 2
+    assert window._window.flip_count == 3
     assert window._window.surface.get_size() == (620, 620)
     assert window._window.position == (0, 0)
     assert window._window.borderless
@@ -76,7 +90,12 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert "Wynik wyszukiwania (czarne): +1.50" in rendered_text
     assert "Ukończona głębokość: 3" in rendered_text
     assert "Odwiedzone węzły: 1 234" in rendered_text
-    assert "Wpisy: 42 / 256 | workery: 32 | wyparcia: 3" in rendered_text
+    assert "Aktywność: wyszukiwanie" in rendered_text
+    assert "Odwiedzone węzły: 9 876" in rendered_text
+    assert "Głębokość wyszukiwania: aktualnie 3 | ukończona 2" in rendered_text
+    assert "Główny: 42 / 256 | workery: 32 | wyparcia: 3" in rendered_text
+    assert "Maks. głębokość wpisu cache: 3" in rendered_text
+    assert "Głębokość ponderingu: aktualnie 0 | ukończona 0" in rendered_text
     assert "W01 PID 123: idle" in rendered_text
     assert "W02 PID 456: busy" in rendered_text
 

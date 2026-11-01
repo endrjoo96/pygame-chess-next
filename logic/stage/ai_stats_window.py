@@ -65,6 +65,7 @@ class AIStatsWindow:
                 "Oczekiwanie na ruch bota...", True, (220, 220, 220))
             surface.blit(message, (20, 75))
 
+        self._draw_live_progress(surface, stats)
         self._draw_engine_diagnostics(surface, stats)
         self._window.flip()
 
@@ -119,10 +120,47 @@ class AIStatsWindow:
         surface.blit(depth, (20, 174))
         surface.blit(nodes, (20, 202))
 
+    def _draw_live_progress(self, surface, stats):
+        phase = stats.search_phase or (
+            "searching" if stats.is_searching else "idle")
+        phase_label = {
+            "searching": "wyszukiwanie",
+            "pondering": "pondering",
+            "idle": "bezczynny",
+        }.get(phase, phase)
+        depth_label = {
+            "searching": "Głębokość wyszukiwania",
+            "pondering": "Głębokość ponderingu",
+            "idle": "Ostatnia głębokość",
+        }.get(phase, "Głębokość etapu")
+        visited_nodes = (
+            format(stats.live_visited_nodes, ",").replace(",", " ")
+            if stats.live_visited_nodes is not None else "?"
+        )
+        current_depth = (
+            stats.current_depth
+            if stats.current_depth is not None else "-"
+        )
+        completed_depth = (
+            stats.completed_search_depth
+            if stats.completed_search_depth is not None else "-"
+        )
+        lines = (
+            "Aktywność: {}".format(phase_label),
+            "Odwiedzone węzły: {}".format(visited_nodes),
+            "{}: aktualnie {} | ukończona {}".format(
+                depth_label, current_depth, completed_depth),
+        )
+        for line_index, text in enumerate(lines):
+            surface.blit(
+                self._detail_font.render(text, True, (220, 220, 220)),
+                (20, 218 + line_index * 20),
+            )
+
     def _draw_engine_diagnostics(self, surface, stats):
         cache_title = self._body_font.render(
             "Cache", True, (220, 220, 220))
-        surface.blit(cache_title, (20, 226))
+        surface.blit(cache_title, (20, 284))
 
         if stats.cache_enabled is False:
             cache_text = "Wyłączony"
@@ -139,7 +177,7 @@ class AIStatsWindow:
                 worker.cache_entries or 0
                 for worker in stats.workers
             )
-            cache_text = "Wpisy: {} / {} | workery: {} | wyparcia: {}".format(
+            cache_text = "Główny: {} / {} | workery: {} | wyparcia: {}".format(
                 format(stats.cache_entries, ",").replace(",", " "),
                 cache_limit,
                 format(worker_cache_entries, ",").replace(",", " "),
@@ -149,7 +187,22 @@ class AIStatsWindow:
             cache_text = "Brak danych"
         cache_detail = self._detail_font.render(
             cache_text, True, (220, 220, 220))
-        surface.blit(cache_detail, (20, 254))
+        surface.blit(cache_detail, (20, 312))
+
+        if stats.cache_enabled is False:
+            cache_depth = "wyłączony"
+        elif stats.cache_deepest_entry_depth is not None:
+            cache_depth = str(stats.cache_deepest_entry_depth)
+        elif stats.cache_entries == 0:
+            cache_depth = "brak wpisów"
+        else:
+            cache_depth = "?"
+        cache_depth_text = self._detail_font.render(
+            "Maks. głębokość wpisu cache: {}".format(cache_depth),
+            True,
+            (220, 220, 220),
+        )
+        surface.blit(cache_depth_text, (20, 334))
 
         total_workers = len(stats.workers)
         visible_workers = 24
@@ -165,14 +218,14 @@ class AIStatsWindow:
         )
         surface.blit(
             self._body_font.render(worker_heading, True, (220, 220, 220)),
-            (20, 282),
+            (20, 356),
         )
 
         if not stats.workers:
             surface.blit(
                 self._detail_font.render(
                     "Brak danych o workerach", True, (180, 180, 180)),
-                (20, 312),
+                (20, 380),
             )
         else:
             state_colors = {
@@ -197,14 +250,14 @@ class AIStatsWindow:
                         True,
                         state_colors.get(worker.state, (200, 200, 200)),
                     ),
-                    (20 + column * 300, 312 + row * 22),
+                    (20 + column * 300, 380 + row * 18),
                 )
 
         if total_workers > visible_workers:
             surface.blit(
                 self._detail_font.render(
                     "Kółko myszy: przewijanie listy", True, (160, 160, 160)),
-                (20, 590),
+                (20, 600),
             )
 
     def close(self):

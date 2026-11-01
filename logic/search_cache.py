@@ -37,6 +37,7 @@ class SearchCache:
         self._entries = {}
         self._by_state = {}
         self._heap = []
+        self._deepest_entry_depth = None
         self._sequence = 0
         self._updated = set()
         self._read = set()
@@ -66,6 +67,11 @@ class SearchCache:
         sequence = self._sequence
         self._entries[key] = (entry, sequence)
         self._by_state.setdefault(entry.key, {})[entry.depth] = entry
+        if (
+            self._deepest_entry_depth is None
+            or entry.depth > self._deepest_entry_depth
+        ):
+            self._deepest_entry_depth = entry.depth
         heapq.heappush(self._heap, (*self._quality(entry), sequence, key))
         if updated:
             self._updated.add(key)
@@ -91,6 +97,11 @@ class SearchCache:
             del by_depth[depth]
             if not by_depth:
                 del self._by_state[state_key]
+            if depth == self._deepest_entry_depth:
+                self._deepest_entry_depth = max(
+                    (entry.depth for entry, _ in self._entries.values()),
+                    default=None,
+                )
             self._updated.discard(key)
             self._read.discard(key)
             self.evictions += 1
@@ -103,6 +114,9 @@ class SearchCache:
             self._read.add(cache_key)
         return value[0] if value else None
 
+    def contains(self, key: tuple, depth: int) -> bool:
+        return (key, depth) in self._entries
+
     def best_move(self, key: tuple) -> Optional[GameAction]:
         entries = self._by_state.get(key, {})
         choices = [entry for entry in entries.values() if entry.action is not None]
@@ -111,6 +125,10 @@ class SearchCache:
         best_entry = max(choices, key=self._quality)
         self._read.add((best_entry.key, best_entry.depth))
         return best_entry.action
+
+    @property
+    def deepest_entry_depth(self):
+        return self._deepest_entry_depth
 
     def scope_id_for(self, root_key: tuple, action: GameAction, create=False):
         scope_key = (root_key, action)
@@ -132,6 +150,7 @@ class SearchCache:
             self._read.clear()
             self._scope_ids.clear()
             self._scope_keys.clear()
+            self._deepest_entry_depth = None
             self._notify_size_change(size_before)
             return
 
@@ -142,6 +161,10 @@ class SearchCache:
             entry = replace(entry, root_scope_ids=frozenset((scope_id,)))
             retained[key] = (entry, sequence)
         self._entries = retained
+        self._deepest_entry_depth = max(
+            (entry.depth for entry, _ in retained.values()),
+            default=None,
+        )
         self._by_state = {}
         for (state_key, depth), (entry, _) in retained.items():
             self._by_state.setdefault(state_key, {})[depth] = entry

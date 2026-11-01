@@ -327,17 +327,26 @@ def test_ai_search_stats_include_cache_and_individual_worker_states():
         max_workers=1,
     )
     game.black_ai._cache.put(
-        CacheEntry(("diagnostic",), 1, None, 1.0, Bound.EXACT))
+        CacheEntry(("diagnostic",), 3, None, 1.0, Bound.EXACT))
+    game.black_ai._begin_search_progress("pondering")
+    game.black_ai._set_current_search_depth(4)
+    game.black_ai._set_completed_search_depth(3)
+    game.black_ai._add_completed_nodes(900)
 
     stats = game.ai_search_stats
 
     assert stats.cache_enabled
     assert stats.cache_entries == 1
+    assert stats.cache_deepest_entry_depth == 3
     assert stats.cache_limit == 4
     assert stats.cache_evictions == 0
     assert len(stats.workers) == 1
     assert stats.workers[0].is_local
     assert stats.workers[0].state == "idle"
+    assert stats.search_phase == "pondering"
+    assert stats.current_depth == 4
+    assert stats.completed_search_depth == 3
+    assert stats.live_visited_nodes == 900
 
 
 def test_ai_starts_pondering_after_its_move():
