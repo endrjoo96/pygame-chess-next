@@ -77,7 +77,7 @@ Ustawienia znajdują się w `run.properties`:
 |---|---|
 | `mode` | `PROD` losuje karty planszowe według rzadkości; `DEBUG` wybiera je równomiernie i umieszcza natychmiast. |
 | `log.level` | Poziom logów: `ERROR`, `WARN`, `INFO`, `LOGIC`, `DEBUG` lub `OFF`; domyślnie `WARN`. |
-| `game.seed` | Opcjonalny seed losowości. Jeśli klucza brakuje, nowy seed 64-bitowy jest losowany przy rozpoczęciu partii. |
+| `game.seed` | Opcjonalny seed losowości. Jeśli klucz jest pominięty lub pusty, nowy seed 64-bitowy jest losowany przy rozpoczęciu partii. |
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
 | `ai.search.time_limit_seconds` | Łączny budżet czasu AI na wybranie ruchu, w sekundach. |
 | `ai.search.cpu_percent` | Limit workerów AI jako procent logicznych CPU, liczba całkowita od 1 do 100; domyślnie `100`. |
@@ -114,9 +114,9 @@ pokazuje więc też `INFO`, `WARN` i `ERROR`, natomiast nie pokazuje `DEBUG`.
 
 Seed może być dowolną liczbą całkowitą, również ujemną lub bardzo dużą.
 Ustawienie stałej wartości, np. `game.seed=12345`, pozwala odtwarzać te same
-losowania w kolejnych partiach. Usunięcie wpisu powoduje losowanie nowego seeda
-przy każdym rozpoczęciu partii. Reset klawiszem `Spacja` zachowuje seed bieżącej
-partii.
+losowania w kolejnych partiach. Pominięcie wpisu albo ustawienie `game.seed=`
+powoduje losowanie nowego seeda przy każdym rozpoczęciu partii. Reset klawiszem
+`Spacja` zachowuje seed bieżącej partii.
 
 ## Notacja ruchów bota
 

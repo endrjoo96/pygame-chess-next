@@ -10,7 +10,8 @@ from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_state import GameState
-from utils.run_config import GAME_SEED
+
+_TEST_RANDOM_SEED = 123456789011
 
 
 @pytest.fixture
@@ -27,8 +28,7 @@ def empty_state():
         board_card_position=36,
         board_enchantment=None,
         pending_board_card_delay=None,
-        random_state=random.Random(
-            GAME_SEED if GAME_SEED is not None else 0).getstate(),
+        random_state=random.Random(_TEST_RANDOM_SEED).getstate(),
     )
 
 
@@ -62,6 +62,30 @@ def test_available_actions_and_simulation_share_board_move_rules(empty_state):
     assert empty_state.pieces_locations[1] is rook
     assert empty_state.pieces_locations[3].get_type() == PIECE_TYPE.PAWN
     assert empty_state.captured_white == []
+
+
+def test_double_move_actions_reuse_basic_destinations(empty_state, monkeypatch):
+    empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    empty_state.white_cards.append(
+        EnchantmentCardType.PIECE_DOUBLE_MOVE.create())
+    calls = []
+    original_destinations_for = GameSimulation.destinations_for
+
+    def counted_destinations_for(piece, source, locations, enchantment=None):
+        calls.append((source, enchantment))
+        return original_destinations_for(piece, source, locations, enchantment)
+
+    monkeypatch.setattr(
+        GameSimulation,
+        "destinations_for",
+        staticmethod(counted_destinations_for),
+    )
+
+    actions = GameSimulation.available_actions(empty_state)
+
+    assert sum(source == 1 for source, _ in calls) == 1
+    assert any(action.source == 1 and action.card_index == -1 for action in actions)
+    assert any(action.source == 1 and action.card_index == 0 for action in actions)
 
 
 def test_game_state_clone_isolates_piece_effects_and_preserves_card_aliases(

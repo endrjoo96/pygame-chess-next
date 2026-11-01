@@ -145,6 +145,8 @@ class _RootEvaluation:
     hits: int = 0
     score_hits: int = 0
     hints: int = 0
+    bound: Optional[Bound] = Bound.EXACT
+    reliable: bool = True
 
 
 def _set_current_worker_status(status):
@@ -238,6 +240,7 @@ def _prewarm_search_worker():
 def _evaluate_root_action(
     state, action, depth, config, deadline, cache_snapshot=(),
     cache_size_callback=None, node_progress_callback=None,
+    root_alpha=-math.inf,
 ):
     """Ocenia jeden ruch startowy w izolowanym workerze."""
     cache_size_callback = (
@@ -247,6 +250,8 @@ def _evaluate_root_action(
     _set_current_worker_cache_entries(0)
     node_progress_callback(0)
     _set_current_worker_status(_WORKER_BUSY)
+    root_bound = None
+    reliable = False
     try:
         worker = ChessAI(config, max_workers=1)
         worker._deadline = deadline
@@ -262,16 +267,33 @@ def _evaluate_root_action(
         try:
             worker._check_deadline()
             child = GameSimulation._apply_generated_action(state, action)
-            score = worker._search(child, depth - 1, -math.inf, math.inf)
+            score, reliable = worker._search_with_proof(
+                child, depth - 1, root_alpha, math.inf)
+            if not reliable:
+                score, reliable = worker._search_with_proof(
+                    child, depth - 1, -math.inf, math.inf, allow_lmr=False)
+            elif math.isfinite(root_alpha) and score == root_alpha:
+                score, reliable = worker._search_with_proof(
+                    child, depth - 1, -math.inf, math.inf)
+                if not reliable:
+                    score, reliable = worker._search_with_proof(
+                        child, depth - 1, -math.inf, math.inf, allow_lmr=False)
+            root_bound = (
+                Bound.UPPER
+                if reliable and score < root_alpha
+                else Bound.EXACT if reliable else None
+            )
         except _SearchTimeout:
             score = None
+            reliable = False
         entries = (
             worker._cache.snapshot(_WORKER_CACHE_LIMIT, touched_only=True)
             if worker._cache is not None else ()
         )
         return _RootEvaluation(
             score, worker._nodes, entries, worker._cache_hits,
-            worker._cache_score_hits, worker._cache_hints)
+            worker._cache_score_hits, worker._cache_hints,
+            root_bound, reliable)
     finally:
         cache_size_callback(0)
         node_progress_callback(0)
@@ -788,40 +810,66 @@ class ChessAI:
                 completed_scores = {}
                 outcomes = {}
                 next_merge = 0
+                root_alpha = -math.inf
+                finished_root_actions = 0
 
                 def record_result(index, result):
-                    nonlocal next_merge
+                    nonlocal next_merge, root_alpha, finished_root_actions
                     self._add_completed_nodes(result.nodes)
                     self._cache_hits += result.hits
                     self._cache_score_hits += result.score_hits
                     self._cache_hints += result.hints
                     outcomes[index] = result
                     while next_merge in outcomes:
+                        merge_index = next_merge
                         completed = outcomes.pop(next_merge)
                         if iteration_cache is not None:
                             scoped_entries = self._entries_for_root_scope(
                                 root_key,
-                                ordered_actions[next_merge],
+                                ordered_actions[merge_index],
                                 completed.entries,
                                 cache_generation,
                             )
                             for entry in scoped_entries:
                                 iteration_cache.put(entry)
                         next_merge += 1
-                    if result.score is None:
-                        return
-                    if is_enabled("DEBUG"):
-                        log_debug(
-                            "AI root action at depth {}: {} => {:.2f} "
-                            "({} nodes)".format(
-                                depth, ordered_actions[index], result.score, result.nodes)
-                        )
-                    previous_leader = self._candidate_leader_index(completed_scores)
-                    completed_scores[index] = result.score
-                    best_known_scores[ordered_actions[index]] = (result.score, depth)
-                    self._report_completed_candidate(
-                        ordered_actions, completed_scores, depth,
-                        candidate_callback, previous_leader)
+                        if completed.score is None:
+                            continue
+                        finished_root_actions += 1
+                        if (
+                            completed.bound == Bound.UPPER
+                            and completed.reliable
+                            and completed.score < root_alpha
+                        ):
+                            best_known_scores.pop(
+                                ordered_actions[merge_index], None)
+                            continue
+                        if (
+                            completed.bound != Bound.EXACT
+                            or not completed.reliable
+                        ):
+                            raise RuntimeError(
+                                "Root action search returned an unverified score")
+                        if is_enabled("DEBUG"):
+                            log_debug(
+                                "AI root action at depth {}: {} => {:.2f} "
+                                "({} nodes)".format(
+                                    depth,
+                                    ordered_actions[merge_index],
+                                    completed.score,
+                                    completed.nodes,
+                                )
+                            )
+                        completed_scores[merge_index] = completed.score
+                        best_known_scores[
+                            ordered_actions[merge_index]
+                        ] = (completed.score, depth)
+                        root_alpha = max(root_alpha, completed.score)
+                        previous_leader = self._candidate_leader_index(
+                            completed_scores)
+                        self._report_completed_candidate(
+                            ordered_actions, completed_scores, depth,
+                            candidate_callback, previous_leader)
 
                 if executor is None:
                     for action_index, action in enumerate(ordered_actions):
@@ -830,7 +878,8 @@ class ChessAI:
                             result = _evaluate_root_action(
                                 state, action, depth, self.config, self._deadline,
                                 snapshot, self._set_local_worker_cache_entries,
-                                self._set_local_worker_visited_nodes)
+                                self._set_local_worker_visited_nodes,
+                                root_alpha=root_alpha)
                         except Exception as error:
                             log_error(
                                 "AI root task failed for {} at depth {}: {}".format(
@@ -854,7 +903,8 @@ class ChessAI:
                         ):
                             future = executor.submit(
                                 _evaluate_root_action, state, ordered_actions[next_action],
-                                depth, self.config, self._deadline, snapshot)
+                                depth, self.config, self._deadline, snapshot,
+                                root_alpha=root_alpha)
                             pending[future] = next_action
                             next_action += 1
                         if not pending:
@@ -916,12 +966,13 @@ class ChessAI:
                         if self._cache_generation == cache_generation:
                             for entry in iteration_cache.snapshot(self.config.cache_max_entries):
                                 self._cache.put(entry)
-                if len(completed_scores) != len(ordered_actions):
+                if finished_root_actions != len(ordered_actions):
                     interrupted = True
                     break
                 depth_scores = [
                     (completed_scores[index], action)
                     for index, action in enumerate(ordered_actions)
+                    if index in completed_scores
                 ]
 
                 best_score, best_action = max(
@@ -937,12 +988,17 @@ class ChessAI:
                     progress_callback(best_action, completed_depth)
                 if candidate_callback is not None:
                     candidate_callback(best_action, completed_depth, best_score)
-                ordered_actions = [
+                ordered_exact_actions = [
                     action
                     for _, action in sorted(
                         depth_scores,
                         key=lambda item: (item[0], -action_order[item[1]]),
                         reverse=True)
+                ]
+                exact_actions = set(ordered_exact_actions)
+                ordered_actions = ordered_exact_actions + [
+                    action for action in ordered_actions
+                    if action not in exact_actions
                 ]
         except Exception:
             if executor is not None:
@@ -1053,22 +1109,36 @@ class ChessAI:
         )
         if cancellation_event.is_set():
             return PonderResult(0, len(root_states), 0, "cancelled")
-        tasks = []
-        for root_state in root_states:
-            actions = self._order_actions(
-                root_state, GameSimulation.available_actions(root_state))
-            tasks.extend(
-                (root_state, action, root_state.cache_key())
-                for action in actions
-            )
-        if not tasks:
+        task_groups = []
+        task_count = 0
+
+        def iter_tasks():
+            nonlocal task_count
+            for root_index, root_state in enumerate(root_states):
+                if cancellation_event.is_set():
+                    return
+                if root_index == len(task_groups):
+                    root_key = root_state.cache_key()
+                    actions = self._order_actions(
+                        root_state, GameSimulation.available_actions(root_state))
+                    task_groups.append((root_key, tuple(actions)))
+                    task_count += len(actions)
+                root_key, actions = task_groups[root_index]
+                for action in actions:
+                    if cancellation_event.is_set():
+                        return
+                    yield root_state, action, root_key
+
+        if next(iter_tasks(), None) is None:
+            if cancellation_event.is_set():
+                return PonderResult(0, len(root_states), 0, "cancelled")
             return PonderResult(0, len(root_states), 0, "no-legal-replies")
 
         log_info(
-            "AI pondering started: {} player-turn branches, {} root actions, "
-            "workers={}".format(
-                len(root_states), len(tasks),
-                self._ponder_worker_count_for_tasks(len(tasks)))
+            "AI pondering started: {} player-turn branches, workers={}".format(
+                len(root_states),
+                self._ponder_worker_count_for_tasks(self.max_workers),
+            )
         )
         self._begin_search_progress("pondering")
         total_nodes = 0
@@ -1097,10 +1167,13 @@ class ChessAI:
 
                 pending = {}
                 next_task = 0
+                tasks_exhausted = False
                 depth_complete = True
                 capacity_reached = False
                 cache_reset = False
-                task_worker_count = self._ponder_worker_count_for_tasks(len(tasks))
+                task_worker_count = self._ponder_worker_count_for_tasks(
+                    self.max_workers)
+                task_iterator = iter_tasks()
 
                 def merge_result_entries(branch_root_key, branch_action, entries):
                     nonlocal capacity_reached, cache_reset
@@ -1122,7 +1195,7 @@ class ChessAI:
                             if len(cache) >= cache_limit:
                                 capacity_reached = True
 
-                while next_task < len(tasks) or pending:
+                while not tasks_exhausted or pending:
                     if cancellation_event.is_set():
                         stopped_reason = "cancelled"
                         depth_complete = False
@@ -1131,8 +1204,12 @@ class ChessAI:
                         for future in pending:
                             future.cancel()
                         break
-                    while next_task < len(tasks) and len(pending) < task_worker_count:
-                        root_state, action, root_key = tasks[next_task]
+                    while len(pending) < task_worker_count:
+                        try:
+                            root_state, action, root_key = next(task_iterator)
+                        except StopIteration:
+                            tasks_exhausted = True
+                            break
                         future = executor.submit(
                             _evaluate_root_action,
                             root_state,
@@ -1171,7 +1248,11 @@ class ChessAI:
                     if capacity_reached:
                         capacity_reached = True
                         stopped_reason = "cache-full"
-                        depth_complete = next_task == len(tasks) and not pending
+                        depth_complete = (
+                            len(task_groups) == len(root_states)
+                            and next_task == task_count
+                            and not pending
+                        )
                         if worker_cancel_event is not None:
                             worker_cancel_event.set()
                         for future in pending:
@@ -1215,9 +1296,10 @@ class ChessAI:
                 self._ponder_active = False
 
         log_info(
-            "AI pondering finished: completed_depth={}, branches={}, nodes={}, "
-            "reason={}".format(
-                completed_depth, len(root_states), total_nodes, stopped_reason)
+            "AI pondering finished: completed_depth={}, branches={}, "
+            "root_actions={}, nodes={}, reason={}".format(
+                completed_depth, len(root_states), task_count, total_nodes,
+                stopped_reason)
         )
         return PonderResult(
             completed_depth, len(root_states), total_nodes, stopped_reason)
@@ -1295,7 +1377,8 @@ class ChessAI:
         return self._search_with_proof(state, depth, alpha, beta)[0]
 
     def _search_with_proof(
-        self, state: GameState, depth: int, alpha: float, beta: float
+        self, state: GameState, depth: int, alpha: float, beta: float,
+        allow_lmr=True,
     ):
         self._check_deadline()
         self._nodes += 1
@@ -1360,6 +1443,7 @@ class ChessAI:
             child = GameSimulation._apply_generated_action(state, action)
             if (
                 _LMR_ENABLED
+                and allow_lmr
                 and not king_threatened
                 and self._should_reduce_late_move(
                     state, action, depth, action_index)
@@ -1367,16 +1451,16 @@ class ChessAI:
                     child, action, opposing_king_position)
             ):
                 action_value, child_reliable = self._search_with_proof(
-                    child, depth - 2, alpha, beta)
+                    child, depth - 2, alpha, beta, allow_lmr=allow_lmr)
                 if (action_value > alpha if maximizing else action_value < beta):
                     action_value, child_reliable = self._search_with_proof(
-                        child, depth - 1, alpha, beta)
+                        child, depth - 1, alpha, beta, allow_lmr=allow_lmr)
                 else:
                     # The reduced probe does not establish a full-depth bound.
                     child_reliable = False
             else:
                 action_value, child_reliable = self._search_with_proof(
-                    child, depth - 1, alpha, beta)
+                    child, depth - 1, alpha, beta, allow_lmr=allow_lmr)
             reliable = reliable and child_reliable
             if best_action is None or (
                 action_value > value if maximizing else action_value < value
@@ -1641,6 +1725,8 @@ class ChessAI:
 
         def action_order_key(action):
             score = self._quick_action_score(state, action)
+            if state.current_turn == COLOR.WHITE:
+                score = -score
             move = (action.source, action.destination)
             rank = (
                 book_order.get(move)

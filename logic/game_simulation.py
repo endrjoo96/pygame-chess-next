@@ -57,10 +57,12 @@ class GameSimulation:
             if in_double_move and source != state.selected_piece_position:
                 continue
             can_move = piece.can_receive_enchantment()
-            if can_move:
-                for destination in cls.destinations_for(
-                    piece, source, state.pieces_locations
-                ):
+            basic_destinations = (
+                cls.destinations_for(piece, source, state.pieces_locations)
+                if can_move else ()
+            )
+            if basic_destinations:
+                for destination in basic_destinations:
                     actions.append(GameAction(
                         GameActionType.MOVE,
                         source,
@@ -124,9 +126,7 @@ class GameSimulation:
                 elif card_type == EnchantmentCardType.PIECE_DOUBLE_MOVE:
                     if not can_move:
                         continue
-                    for destination in cls.destinations_for(
-                        piece, source, state.pieces_locations
-                    ):
+                    for destination in basic_destinations:
                         actions.append(GameAction(
                             GameActionType.MOVE,
                             source,

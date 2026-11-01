@@ -17,6 +17,7 @@ from logic.chess_ai import (
 )
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
+from logic.opening_book import opening_hints
 from logic.search_cache import Bound, CacheEntry
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
@@ -69,6 +70,54 @@ def test_ai_finds_immediate_king_capture():
     assert [depth for _, depth in progress] == [0, 1]
 
 
+def test_white_prioritizes_valuable_captures_when_ordering_moves():
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    state.pieces_locations[3] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+    state.pieces_locations[8] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.pieces_locations[64] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    actions = GameSimulation.available_actions(state)
+    capture = next(
+        action for action in actions
+        if action.source == 1 and action.destination == 3
+    )
+
+    ordered = ChessAI(max_workers=1)._order_actions(state, actions)
+
+    assert ordered[0] == capture
+
+
+def test_white_prioritizes_an_immediate_king_capture():
+    state = make_black_to_move_state()
+    state.current_turn = COLOR.WHITE
+    state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    state.pieces_locations[3] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.pieces_locations[64] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    actions = GameSimulation.available_actions(state)
+    king_capture = next(
+        action for action in actions
+        if action.source == 1 and action.destination == 3
+    )
+
+    ordered = ChessAI(max_workers=1)._order_actions(state, actions)
+
+    assert ordered[0] == king_capture
+
+
+def test_opening_book_skips_position_key_after_its_covered_range(monkeypatch):
+    state = make_black_to_move_state()
+    state.turns_started = {COLOR.WHITE: 3, COLOR.BLACK: 2}
+
+    def unexpected_position_key(_state):
+        pytest.fail("Opening positions outside the book range need no key")
+
+    monkeypatch.setattr(
+        "logic.opening_book._position_key", unexpected_position_key)
+
+    assert opening_hints(state) == ()
+
+
 def test_ai_returns_a_legal_fallback_when_search_budget_expires():
     state = make_black_to_move_state()
     state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
@@ -96,7 +145,7 @@ def test_ai_returns_best_known_move_after_an_incomplete_iteration(monkeypatch):
 
     def evaluate_root_action(
         search_state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         if depth == 1:
             if action == shallow_candidate:
@@ -115,6 +164,93 @@ def test_ai_returns_best_known_move_after_an_incomplete_iteration(monkeypatch):
     assert decision.action == shallow_candidate
     assert decision.score == 15.0
     assert decision.completed_depth == 1
+
+
+def test_root_search_passes_alpha_and_excludes_bound_only_candidates(monkeypatch):
+    state = make_black_to_move_state()
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    actions = [
+        GameAction(GameActionType.MOVE, 1, destination)
+        for destination in (2, 3, 4)
+    ]
+    evaluated_alphas = []
+    monkeypatch.setattr(
+        GameSimulation, "available_actions", lambda _state: actions)
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action", lambda search_state, _action: search_state)
+    monkeypatch.setattr(ChessAI, "_order_actions", lambda _self, _state, moves: moves)
+    monkeypatch.setattr(ChessAI, "evaluate", staticmethod(lambda _state: 0.0))
+
+    def evaluate_root_action(
+        _state, action, _depth, _config, _deadline, _snapshot,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
+    ):
+        evaluated_alphas.append(root_alpha)
+        if action == actions[0]:
+            return _RootEvaluation(5.0, 1)
+        if action == actions[1]:
+            return _RootEvaluation(
+                4.0, 1, bound=Bound.UPPER, reliable=True)
+        return _RootEvaluation(6.0, 1)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+    candidate_updates = []
+
+    result = ChessAI(
+        SearchConfig(max_depth=1, cache_enabled=False), max_workers=1
+    ).choose_action(
+        observation,
+        candidate_callback=lambda action, depth, score: candidate_updates.append(
+            (action, depth, score)),
+    )
+
+    assert evaluated_alphas == [-float("inf"), 5.0, 5.0]
+    assert result.action == actions[2]
+    assert (actions[1], 1, 4.0) not in candidate_updates
+
+
+def test_root_fail_low_discards_a_shallower_score_for_that_action(monkeypatch):
+    state = make_black_to_move_state()
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    actions = [
+        GameAction(GameActionType.MOVE, 1, destination)
+        for destination in (2, 3, 4)
+    ]
+    monkeypatch.setattr(
+        GameSimulation, "available_actions", lambda _state: actions)
+    monkeypatch.setattr(
+        GameSimulation,
+        "_apply_generated_action",
+        lambda search_state, _action: search_state,
+    )
+    monkeypatch.setattr(
+        ChessAI, "_order_actions", lambda _self, _state, moves: list(moves))
+    monkeypatch.setattr(
+        ChessAI, "evaluate", staticmethod(lambda _state: 0.0))
+
+    def evaluate_root_action(
+        _state, action, depth, _config, _deadline, _snapshot,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
+    ):
+        if depth == 1:
+            return _RootEvaluation(10.0 - actions.index(action), 1)
+        if action == actions[1]:
+            return _RootEvaluation(
+                -6.0, 1, bound=Bound.UPPER, reliable=True)
+        return _RootEvaluation(
+            -5.0 if action == actions[0] else -3.0, 1)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+
+    result = ChessAI(
+        SearchConfig(max_depth=2, cache_enabled=False), max_workers=1
+    ).choose_action(observation)
+
+    assert result.action == actions[2]
+    assert result.score == -3.0
+    assert result.completed_depth == 2
 
 
 def test_ai_search_is_reproducible_for_the_same_observation():
@@ -147,7 +283,7 @@ def test_ai_passes_the_opponents_exact_cards_to_root_simulations(monkeypatch):
 
     def evaluate_root_action(
         search_state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         searched_states.append(search_state)
         return _RootEvaluation(0.0, 1)
@@ -408,6 +544,112 @@ def test_ponder_extends_retained_cache_as_each_root_action_finishes(monkeypatch)
     assert ai.cache_diagnostics() == (True, 3, 8, 0, 3)
 
 
+def test_ponder_reuses_each_root_key_and_action_group_across_depths(monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    ai = ChessAI(
+        SearchConfig(max_depth=3, cache_max_entries=16),
+        max_workers=1,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+    ponder_state = make_black_to_move_state()
+    ponder_state.current_turn = COLOR.WHITE
+    root_state = ponder_state.clone()
+    root_state.current_turn = COLOR.BLACK
+    key_calls = []
+    original_cache_key = root_state.cache_key
+
+    def counted_cache_key():
+        key_calls.append(True)
+        return original_cache_key()
+
+    root_state.cache_key = counted_cache_key
+    action = GameAction(GameActionType.MOVE, 1, 2)
+    available_action_calls = []
+    monkeypatch.setattr(
+        ai, "_states_after_player_turn", lambda _state, _event: (root_state,))
+    monkeypatch.setattr(
+        GameSimulation,
+        "available_actions",
+        lambda _state: available_action_calls.append(True) or [action],
+    )
+    monkeypatch.setattr(
+        ai, "_order_actions", lambda _state, actions: list(actions))
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action",
+        lambda _state, _action, depth, *_args:
+            _RootEvaluation(float(depth), 1),
+    )
+
+    result = ai.ponder(ponder_state, Event())
+
+    assert result.completed_depth == 3
+    assert len(key_calls) == 1
+    assert len(available_action_calls) == 1
+
+
+def test_ponder_generates_later_task_groups_only_when_needed(monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    cancellation_event = Event()
+    ai = ChessAI(
+        SearchConfig(max_depth=3, cache_max_entries=16),
+        max_workers=1,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+    ponder_state = make_black_to_move_state()
+    ponder_state.current_turn = COLOR.WHITE
+    first_root = ponder_state.clone()
+    first_root.current_turn = COLOR.BLACK
+    second_root = first_root.clone()
+    second_root.selected_piece_position = 2
+    action = GameAction(GameActionType.MOVE, 1, 2)
+    generated_roots = []
+    monkeypatch.setattr(
+        ai, "_states_after_player_turn",
+        lambda _state, _event: (first_root, second_root),
+    )
+    monkeypatch.setattr(
+        GameSimulation,
+        "available_actions",
+        lambda state: generated_roots.append(state) or [action],
+    )
+    monkeypatch.setattr(
+        ai, "_order_actions", lambda _state, actions: list(actions))
+
+    def cancel_after_first_task(*_args):
+        cancellation_event.set()
+        return _RootEvaluation(0.0, 1)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", cancel_after_first_task)
+
+    result = ai.ponder(ponder_state, cancellation_event)
+
+    assert result.stopped_reason == "cancelled"
+    assert generated_roots == [first_root]
+
+
 def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
     import logic.chess_ai as chess_ai
 
@@ -604,7 +846,7 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
 
     def evaluate_root_action(
         state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         cache_size_callback(7)
         node_progress_callback(128)
@@ -673,14 +915,16 @@ def test_process_worker_status_changes_while_evaluating(monkeypatch):
     entered_search = Event()
     release_search = Event()
 
-    def wait_during_search(_worker, _state, _depth, _alpha, _beta):
+    def wait_during_search(
+        _worker, _state, _depth, _alpha, _beta, allow_lmr=True,
+    ):
         _worker._nodes = 17
         _worker._node_progress_callback(17)
         entered_search.set()
         assert release_search.wait(timeout=2)
-        return 0.0
+        return 0.0, True
 
-    monkeypatch.setattr(ChessAI, "_search", wait_during_search)
+    monkeypatch.setattr(ChessAI, "_search_with_proof", wait_during_search)
     state = make_black_to_move_state()
     state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     action = GameSimulation.available_actions(state)[0]
@@ -830,7 +1074,8 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
     assert parallel_result.completed_depth == serial_result.completed_depth == 2
     assert [depth for _, depth in parallel_progress] == [0, 1, 2]
     assert [depth for _, depth in serial_progress] == [0, 1, 2]
-    assert parallel_result.visited_nodes == serial_result.visited_nodes
+    assert parallel_result.visited_nodes > 0
+    assert serial_result.visited_nodes > 0
     assert any(depth == 2 for _, depth, _ in parallel_candidate_updates)
     assert all(isinstance(score, float) for _, _, score in parallel_candidate_updates)
     assert parallel_events.index(("candidate", 2)) < parallel_events.index(

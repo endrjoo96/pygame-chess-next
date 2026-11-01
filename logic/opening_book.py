@@ -21,6 +21,7 @@ _OPENING_LINES = (
     ("c2c4", "e7e5", "b1c3", "g8f6"),  # English Opening
     ("g1f3", "d7d5", "c2c4", "e7e6"),  # Reti Opening
 )
+_MAX_OPENING_HINT_TURN_SUM = max(len(line) for line in _OPENING_LINES)
 
 
 def _position_key(state):
@@ -102,4 +103,6 @@ _OPENING_BOOK = _build_opening_book()
 
 def opening_hints(state):
     """Zwraca klasyczne ruchy książkowe dla wczesnej, zgodnej pozycji."""
+    if sum(state.turns_started.values()) > _MAX_OPENING_HINT_TURN_SUM:
+        return ()
     return _OPENING_BOOK.get(_position_key(state), ())

@@ -68,10 +68,11 @@ def _load_run_config():
             "Invalid 'log.level' {!r} in {}; expected ERROR, WARN, INFO, LOGIC, "
             "DEBUG, or OFF".format(log_level_value, properties_path)
         ) from None
+    game_seed_value = properties.get("game.seed", "").strip()
     game_seed = None
-    if "game.seed" in properties:
+    if game_seed_value:
         try:
-            game_seed = int(properties["game.seed"])
+            game_seed = int(game_seed_value)
         except ValueError:
             raise ValueError(
                 "Invalid 'game.seed' in {}; expected an integer".format(properties_path)

@@ -36,6 +36,7 @@ class SearchCache:
         self._on_size_change = on_size_change
         self._entries = {}
         self._by_state = {}
+        self._depth_counts = {}
         self._heap = []
         self._deepest_entry_depth = None
         self._sequence = 0
@@ -63,6 +64,10 @@ class SearchCache:
                 entry = replace(old_entry, root_scope_ids=scopes)
             else:
                 entry = replace(entry, root_scope_ids=scopes)
+        else:
+            self._depth_counts[entry.depth] = (
+                self._depth_counts.get(entry.depth, 0) + 1
+            )
         self._sequence += 1
         sequence = self._sequence
         self._entries[key] = (entry, sequence)
@@ -97,11 +102,13 @@ class SearchCache:
             del by_depth[depth]
             if not by_depth:
                 del self._by_state[state_key]
+            depth_count = self._depth_counts[depth] - 1
+            if depth_count:
+                self._depth_counts[depth] = depth_count
+            else:
+                del self._depth_counts[depth]
             if depth == self._deepest_entry_depth:
-                self._deepest_entry_depth = max(
-                    (entry.depth for entry, _ in self._entries.values()),
-                    default=None,
-                )
+                self._deepest_entry_depth = max(self._depth_counts, default=None)
             self._updated.discard(key)
             self._read.discard(key)
             self.evictions += 1
@@ -145,6 +152,7 @@ class SearchCache:
         if scope_id is None:
             self._entries.clear()
             self._by_state.clear()
+            self._depth_counts.clear()
             self._heap.clear()
             self._updated.clear()
             self._read.clear()
@@ -161,9 +169,11 @@ class SearchCache:
             entry = replace(entry, root_scope_ids=frozenset((scope_id,)))
             retained[key] = (entry, sequence)
         self._entries = retained
+        self._depth_counts = {}
+        for (_, depth), _ in retained.items():
+            self._depth_counts[depth] = self._depth_counts.get(depth, 0) + 1
         self._deepest_entry_depth = max(
-            (entry.depth for entry, _ in retained.values()),
-            default=None,
+            self._depth_counts, default=None,
         )
         self._by_state = {}
         for (state_key, depth), (entry, _) in retained.items():

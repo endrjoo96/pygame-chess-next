@@ -6,6 +6,7 @@ from logic.chess_ai import ChessAI, SearchConfig
 from logic.game_rules import GameActionType
 from logic.game_simulation import GameSimulation
 from logic.opening_book import opening_hints
+from logic.search_cache import Bound
 from models.chess_pieces import Piece
 from models.game_observation import GameObservation
 from models.game_state import GameState
@@ -92,11 +93,14 @@ def test_search_evaluates_all_moves_and_can_choose_outside_the_book(monkeypatch)
     def evaluate_root_action(
         _state, action, _depth, _config, _deadline, _cache_snapshot=(),
         cache_size_callback=None, node_progress_callback=None,
+        root_alpha=None,
     ):
         evaluated.append(action)
         score = 1.0 if action == expected_action else 0.0
         return SimpleNamespace(
             score=score,
+            bound=Bound.EXACT,
+            reliable=True,
             nodes=1,
             entries=(),
             hits=0,

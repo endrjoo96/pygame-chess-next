@@ -13,6 +13,20 @@ def test_run_config_allows_missing_game_seed(monkeypatch, tmp_path):
     assert run_config._load_run_config()[2] is None
 
 
+@pytest.mark.parametrize("seed_value", ["", "   "])
+def test_run_config_allows_empty_game_seed(monkeypatch, tmp_path, seed_value):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (
+            {"mode": "PROD", "game.seed": seed_value},
+            tmp_path / "run.properties",
+        ),
+    )
+
+    assert run_config._load_run_config()[2] is None
+
+
 def test_run_config_defaults_log_level_to_warn(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config,

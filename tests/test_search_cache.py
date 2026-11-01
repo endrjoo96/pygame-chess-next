@@ -135,6 +135,42 @@ def test_cache_retains_deeper_verified_entries_and_is_bounded():
     assert cache.get(("b",), 3) == deep
 
 
+def test_cache_depth_counts_follow_replacement_eviction_and_scope_retention():
+    cache = SearchCache(3)
+    cache.put(CacheEntry(("a",), 1, None, 1, Bound.EXACT))
+    cache.put(CacheEntry(("b",), 1, None, 2, Bound.EXACT))
+    cache.put(CacheEntry(("c",), 4, None, 4, Bound.EXACT))
+    cache.put(CacheEntry(("c",), 4, None, 5, Bound.EXACT))
+
+    assert cache._depth_counts == {1: 2, 4: 1}
+
+    cache.put(CacheEntry(("d",), 5, None, 5, Bound.EXACT))
+    assert cache._depth_counts == {1: 1, 4: 1, 5: 1}
+    cache.put(CacheEntry(("e",), 5, None, 6, Bound.EXACT))
+    assert cache._depth_counts == {4: 1, 5: 2}
+    assert cache.deepest_entry_depth == 5
+
+    scoped_cache = SearchCache(8)
+    root = ("root",)
+    selected_scope = scoped_cache.scope_id_for(
+        root, GameAction(GameActionType.MOVE, 1, 2), create=True)
+    other_scope = scoped_cache.scope_id_for(
+        root, GameAction(GameActionType.MOVE, 1, 3), create=True)
+    scoped_cache.put(CacheEntry(
+        ("selected-shallow",), 2, None, 1, Bound.EXACT,
+        frozenset((selected_scope,))))
+    scoped_cache.put(CacheEntry(
+        ("selected-deep",), 4, None, 2, Bound.EXACT,
+        frozenset((selected_scope,))))
+    scoped_cache.put(CacheEntry(
+        ("other",), 5, None, 3, Bound.EXACT, frozenset((other_scope,))))
+
+    scoped_cache.retain_scope(selected_scope)
+    assert scoped_cache._depth_counts == {2: 1, 4: 1}
+    scoped_cache.retain_scope(None)
+    assert scoped_cache._depth_counts == {}
+
+
 def test_cache_tracks_deepest_entry_after_eviction_and_scope_retention():
     cache = SearchCache(2)
     root = ("root",)
@@ -441,15 +477,73 @@ def test_worker_returns_completed_entries_when_root_times_out(monkeypatch):
     action = GameSimulation.available_actions(state)[0]
     entry = CacheEntry(("completed",), 1, action, 1.0, Bound.EXACT)
 
-    def interrupted(worker, child, depth, alpha, beta):
+    def interrupted(worker, child, depth, alpha, beta, allow_lmr=True):
         worker._cache.put(entry)
         raise _SearchTimeout
 
-    monkeypatch.setattr(ChessAI, "_search", interrupted)
+    monkeypatch.setattr(ChessAI, "_search_with_proof", interrupted)
     result = _evaluate_root_action(
         state, action, 2, SearchConfig(cache_max_entries=4), time.monotonic() + 10)
     assert result.score is None
     assert result.entries == (entry,)
+
+
+@pytest.mark.parametrize(
+    ("leaf_values", "expected_bound", "expected_nodes"),
+    [
+        ((5.0, 8.0), Bound.UPPER, 2),
+        ((10.0, 12.0), Bound.EXACT, 5),
+    ],
+)
+def test_root_action_returns_only_proven_bounds_and_researches_ties(
+    monkeypatch, leaf_values, expected_bound, expected_nodes
+):
+    root = TreeState("root", COLOR.BLACK)
+    child = TreeState("child", COLOR.WHITE)
+    leaves = [
+        TreeState("first-leaf", COLOR.BLACK),
+        TreeState("second-leaf", COLOR.BLACK),
+    ]
+    root_action = GameAction(GameActionType.MOVE, 1, 2)
+    child_actions = [
+        GameAction(GameActionType.MOVE, 2, 3),
+        GameAction(GameActionType.MOVE, 2, 4),
+    ]
+    transitions = {
+        (root, root_action): child,
+        **{
+            (child, action): leaf
+            for action, leaf in zip(child_actions, leaves)
+        },
+    }
+    monkeypatch.setattr(
+        GameSimulation, "available_actions",
+        lambda state: child_actions if state == child else [],
+    )
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action",
+        lambda state, action: transitions[(state, action)],
+    )
+    monkeypatch.setattr(
+        ChessAI, "_order_actions", lambda _self, _state, actions: list(actions))
+    monkeypatch.setattr(
+        ChessAI, "evaluate",
+        staticmethod(lambda state: leaf_values[leaves.index(state)]),
+    )
+
+    result = _evaluate_root_action(
+        root,
+        root_action,
+        2,
+        SearchConfig(cache_enabled=False),
+        time.monotonic() + 10,
+        root_alpha=10.0,
+    )
+
+    assert result.score == min(leaf_values)
+    assert result.bound == expected_bound
+    assert result.reliable
+    assert result.nodes == expected_nodes
 
 
 def test_worker_caches_double_move_continuation_for_same_player():
@@ -496,7 +590,8 @@ def test_cached_root_hint_preserves_original_tie_breaking(monkeypatch):
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
         lambda state, action, depth, config, deadline, snapshot,
-               cache_size_callback=None, node_progress_callback=None:
+               cache_size_callback=None, node_progress_callback=None,
+               root_alpha=None:
             _RootEvaluation(0.0, 1),
     )
     updates = []
@@ -526,7 +621,8 @@ def test_choose_action_keeps_only_the_selected_root_branch(tree, monkeypatch):
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
         lambda state, action, depth, config, deadline, snapshot,
-               cache_size_callback=None, node_progress_callback=None:
+               cache_size_callback=None, node_progress_callback=None,
+               root_alpha=None:
             _RootEvaluation(float(actions.index(action)), 1, (entries[action],)),
     )
 
@@ -551,7 +647,7 @@ def test_depth_four_search_retains_depth_three_of_selected_branch(tree, monkeypa
 
     def root_result(
         _state, action, depth, _config, _deadline, _cache_snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         entries = (
             (CacheEntry(
@@ -592,7 +688,7 @@ def test_reset_during_search_cannot_restore_previous_entries(monkeypatch):
 
     def root_result(
         search_state, action, depth, config, deadline, snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         nonlocal calls
         calls += 1
@@ -616,7 +712,8 @@ def test_search_queued_before_reset_cannot_populate_new_cache(monkeypatch):
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
         lambda state, action, depth, config, deadline, snapshot,
-               cache_size_callback=None, node_progress_callback=None:
+               cache_size_callback=None, node_progress_callback=None,
+               root_alpha=None:
             _RootEvaluation(1.0, 1, (entry,)),
     )
     ai.choose_action(
