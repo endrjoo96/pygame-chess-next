@@ -416,10 +416,10 @@ def test_ponder_worker_count_uses_ceiling_and_respects_task_count():
 
 def test_ponder_stops_when_cache_reaches_its_limit(monkeypatch):
     class ImmediateExecutor:
-        def submit(self, function, *args):
+        def submit(self, function, *args, **kwargs):
             future = Future()
             try:
-                future.set_result(function(*args))
+                future.set_result(function(*args, **kwargs))
             except Exception as error:
                 future.set_exception(error)
             return future
@@ -449,7 +449,7 @@ def test_ponder_stops_when_cache_reaches_its_limit(monkeypatch):
 
     def evaluate_root_action(
         search_state, action, depth, config, deadline, cache_snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         entry = CacheEntry(
             ("pondered", search_state.cache_key()),
@@ -487,10 +487,10 @@ def test_ponder_stops_when_cache_reaches_its_limit(monkeypatch):
 
 def test_ponder_extends_retained_cache_as_each_root_action_finishes(monkeypatch):
     class ImmediateExecutor:
-        def submit(self, function, *args):
+        def submit(self, function, *args, **kwargs):
             future = Future()
             try:
-                future.set_result(function(*args))
+                future.set_result(function(*args, **kwargs))
             except Exception as error:
                 future.set_exception(error)
             return future
@@ -510,8 +510,10 @@ def test_ponder_extends_retained_cache_as_each_root_action_finishes(monkeypatch)
     first_root.current_turn = COLOR.BLACK
     second_root = first_root.clone()
     second_root.selected_piece_position = 2
-    ai._states_after_player_turn = lambda _state, _event: (
-        first_root, second_root)
+    monkeypatch.setattr(
+        "logic.chess_ai._expand_ponder_white_action",
+        lambda _state, _action: (first_root, second_root),
+    )
 
     retained_entry = CacheEntry(
         ("retained-branch",), 3, None, 1.0, Bound.EXACT)
@@ -524,7 +526,7 @@ def test_ponder_extends_retained_cache_as_each_root_action_finishes(monkeypatch)
 
     def evaluate_root_action(
         state, action, depth, _config, _deadline, _cache_snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         observed_cache_sizes.append(len(ai._cache))
         entry = CacheEntry(
@@ -544,12 +546,189 @@ def test_ponder_extends_retained_cache_as_each_root_action_finishes(monkeypatch)
     assert ai.cache_diagnostics() == (True, 3, 8, 0, 3)
 
 
-def test_ponder_reuses_each_root_key_and_action_group_across_depths(monkeypatch):
+def test_ponder_shares_alpha_sequentially_within_each_branch(monkeypatch):
     class ImmediateExecutor:
-        def submit(self, function, *args):
+        def submit(self, function, *args, **kwargs):
             future = Future()
             try:
-                future.set_result(function(*args))
+                future.set_result(function(*args, **kwargs))
+            except Exception as error:
+                future.set_exception(error)
+            return future
+
+    ai = ChessAI(
+        SearchConfig(max_depth=1, cache_max_entries=16),
+        max_workers=2,
+        ponder_cpu_percent=100,
+    )
+    ai._worker_pool = ImmediateExecutor()
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+    ponder_state = make_black_to_move_state()
+    ponder_state.current_turn = COLOR.WHITE
+    first_root = ponder_state.clone()
+    first_root.current_turn = COLOR.BLACK
+    first_root.selected_piece_position = 1
+    second_root = first_root.clone()
+    second_root.selected_piece_position = 2
+    first_actions = [
+        GameAction(GameActionType.MOVE, 1, 2),
+        GameAction(GameActionType.MOVE, 1, 3),
+    ]
+    second_actions = [
+        GameAction(GameActionType.MOVE, 2, 3),
+        GameAction(GameActionType.MOVE, 2, 4),
+    ]
+    actions_by_root = {1: first_actions, 2: second_actions}
+    observed = []
+    monkeypatch.setattr(
+        "logic.chess_ai._expand_ponder_white_action",
+        lambda _state, _action: (first_root, second_root),
+    )
+
+    def available_actions(root):
+        if root.current_turn == COLOR.WHITE:
+            return [GameAction(GameActionType.MOVE, 1, 2)]
+        return actions_by_root[root.selected_piece_position]
+
+    monkeypatch.setattr(
+        GameSimulation, "available_actions", available_actions)
+    monkeypatch.setattr(
+        ai, "_order_actions", lambda _root, actions: list(actions))
+
+    def evaluate_root_action(
+        root, action, _depth, _config, _deadline, _snapshot,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
+    ):
+        root_index = root.selected_piece_position
+        observed.append((root_index, action, root_alpha))
+        if action == first_actions[0]:
+            score = 10.0
+        elif action == first_actions[1]:
+            score = 9.0
+        elif action == second_actions[0]:
+            score = 20.0
+        else:
+            score = 22.0
+        bound = (
+            Bound.UPPER
+            if action == first_actions[1] else Bound.EXACT
+        )
+        entry = CacheEntry(
+            ("ponder-branch-child", root_index, action.destination),
+            1,
+            None,
+            score,
+            Bound.EXACT,
+        )
+        return _RootEvaluation(
+            score, 1, (entry,), bound=bound, reliable=True)
+
+    monkeypatch.setattr(
+        "logic.chess_ai._evaluate_root_action", evaluate_root_action)
+
+    result = ai.ponder(ponder_state, Event())
+
+    assert result.completed_depth == 1
+    assert observed == [
+        (1, first_actions[0], -float("inf")),
+        (2, second_actions[0], -float("inf")),
+        (1, first_actions[1], 10.0),
+        (2, second_actions[1], 20.0),
+    ]
+    assert len(ai._cache) == 4
+    for root, actions in (
+        (first_root, first_actions), (second_root, second_actions)
+    ):
+        for action in actions:
+            scope_id = ai._cache.scope_id_for(root.cache_key(), action)
+            entry = ai._cache.get(
+                ("ponder-branch-child", root.selected_piece_position,
+                 action.destination),
+                1,
+            )
+            assert entry.root_scope_ids == frozenset((scope_id,))
+
+
+def test_ponder_dispatches_search_before_all_expansions_finish(monkeypatch):
+    import logic.chess_ai as chess_ai
+
+    white_actions = [
+        GameAction(GameActionType.MOVE, 1, 2),
+        GameAction(GameActionType.MOVE, 1, 3),
+    ]
+    black_action = GameAction(GameActionType.MOVE, 3, 4)
+    ponder_state = make_black_to_move_state()
+    ponder_state.current_turn = COLOR.WHITE
+    first_root = ponder_state.clone()
+    first_root.current_turn = COLOR.BLACK
+    first_root.selected_piece_position = 1
+    second_root = first_root.clone()
+    second_root.selected_piece_position = 2
+
+    class DynamicExecutor:
+        def __init__(self):
+            self.expansion_future = None
+            self.search_started_early = False
+            self.task_kinds = []
+
+        def submit(self, function, *args, **kwargs):
+            future = Future()
+            if function is expand_action:
+                self.task_kinds.append("expand")
+                if args[1] == white_actions[0]:
+                    future.set_result((first_root,))
+                else:
+                    self.expansion_future = future
+            elif function is evaluate_action:
+                self.task_kinds.append("search")
+                if not self.expansion_future.done():
+                    self.search_started_early = True
+                    self.expansion_future.set_result((second_root,))
+                future.set_result(_RootEvaluation(0.0, 1))
+            else:
+                raise AssertionError("Unexpected pondering task")
+            return future
+
+    def expand_action(_state, _action):
+        raise AssertionError("The executor controls expansion results")
+
+    def evaluate_action(*_args, **_kwargs):
+        raise AssertionError("The executor controls search results")
+
+    ai = ChessAI(
+        SearchConfig(max_depth=1, cache_max_entries=16),
+        max_workers=2,
+        ponder_cpu_percent=100,
+    )
+    executor = DynamicExecutor()
+    ai._worker_pool = executor
+    ai._worker_search_cancel_event = Event()
+    ai.prepare_workers = lambda **kwargs: None
+    monkeypatch.setattr(chess_ai, "_expand_ponder_white_action", expand_action)
+    monkeypatch.setattr(chess_ai, "_evaluate_root_action", evaluate_action)
+    monkeypatch.setattr(
+        GameSimulation,
+        "available_actions",
+        lambda state: white_actions if state.current_turn == COLOR.WHITE
+        else [black_action],
+    )
+    monkeypatch.setattr(ai, "_order_actions", lambda _state, actions: actions)
+
+    result = ai.ponder(ponder_state, Event())
+
+    assert result.completed_depth == 1
+    assert result.root_branches == 2
+    assert executor.search_started_early
+    assert executor.task_kinds == ["expand", "expand", "search", "search"]
+
+
+def test_ponder_reuses_each_root_key_and_action_group_across_depths(monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, function, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(function(*args, **kwargs))
             except Exception as error:
                 future.set_exception(error)
             return future
@@ -577,17 +756,23 @@ def test_ponder_reuses_each_root_key_and_action_group_across_depths(monkeypatch)
     action = GameAction(GameActionType.MOVE, 1, 2)
     available_action_calls = []
     monkeypatch.setattr(
-        ai, "_states_after_player_turn", lambda _state, _event: (root_state,))
-    monkeypatch.setattr(
-        GameSimulation,
-        "available_actions",
-        lambda _state: available_action_calls.append(True) or [action],
+        "logic.chess_ai._expand_ponder_white_action",
+        lambda _state, _action: (root_state,),
     )
+
+    def available_actions(search_state):
+        if search_state.current_turn == COLOR.WHITE:
+            return [action]
+        available_action_calls.append(True)
+        return [action]
+
+    monkeypatch.setattr(
+        GameSimulation, "available_actions", available_actions)
     monkeypatch.setattr(
         ai, "_order_actions", lambda _state, actions: list(actions))
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action",
-        lambda _state, _action, depth, *_args:
+        lambda _state, _action, depth, *_args, **_kwargs:
             _RootEvaluation(float(depth), 1),
     )
 
@@ -600,10 +785,10 @@ def test_ponder_reuses_each_root_key_and_action_group_across_depths(monkeypatch)
 
 def test_ponder_generates_later_task_groups_only_when_needed(monkeypatch):
     class ImmediateExecutor:
-        def submit(self, function, *args):
+        def submit(self, function, *args, **kwargs):
             future = Future()
             try:
-                future.set_result(function(*args))
+                future.set_result(function(*args, **kwargs))
             except Exception as error:
                 future.set_exception(error)
             return future
@@ -626,18 +811,22 @@ def test_ponder_generates_later_task_groups_only_when_needed(monkeypatch):
     action = GameAction(GameActionType.MOVE, 1, 2)
     generated_roots = []
     monkeypatch.setattr(
-        ai, "_states_after_player_turn",
-        lambda _state, _event: (first_root, second_root),
+        "logic.chess_ai._expand_ponder_white_action",
+        lambda _state, _action: (first_root, second_root),
     )
+
+    def available_actions(search_state):
+        if search_state.current_turn == COLOR.WHITE:
+            return [action]
+        generated_roots.append(search_state)
+        return [action]
+
     monkeypatch.setattr(
-        GameSimulation,
-        "available_actions",
-        lambda state: generated_roots.append(state) or [action],
-    )
+        GameSimulation, "available_actions", available_actions)
     monkeypatch.setattr(
         ai, "_order_actions", lambda _state, actions: list(actions))
 
-    def cancel_after_first_task(*_args):
+    def cancel_after_first_task(*_args, **_kwargs):
         cancellation_event.set()
         return _RootEvaluation(0.0, 1)
 
@@ -654,10 +843,10 @@ def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
     import logic.chess_ai as chess_ai
 
     class ImmediateExecutor:
-        def submit(self, function, *args):
+        def submit(self, function, *args, **kwargs):
             future = Future()
             try:
-                future.set_result(function(*args))
+                future.set_result(function(*args, **kwargs))
             except Exception as error:
                 future.set_exception(error)
             return future
@@ -694,7 +883,9 @@ def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
     action = GameAction(GameActionType.MOVE, 1, 2)
     observed_progress = []
     monkeypatch.setattr(
-        ai, "_states_after_player_turn", lambda _state, _event: (state,))
+        "logic.chess_ai._expand_ponder_white_action",
+        lambda _state, _action: (state,),
+    )
     monkeypatch.setattr(
         ai, "_order_actions", lambda _state, actions: actions)
     monkeypatch.setattr(
@@ -702,7 +893,7 @@ def test_ponder_reports_live_nodes_and_completed_depth(monkeypatch):
 
     def evaluate_root_action(
         _state, _action, _depth, _config, _deadline, _cache_snapshot,
-        cache_size_callback=None, node_progress_callback=None,
+        cache_size_callback=None, node_progress_callback=None, root_alpha=None,
     ):
         node_progress_callback = (
             node_progress_callback or chess_ai._set_current_worker_visited_nodes)

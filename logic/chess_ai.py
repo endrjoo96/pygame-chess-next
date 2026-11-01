@@ -2,6 +2,7 @@ import math
 import multiprocessing
 import os
 import time
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, replace
 from threading import Event, Lock
@@ -297,6 +298,41 @@ def _evaluate_root_action(
     finally:
         cache_size_callback(0)
         node_progress_callback(0)
+        _set_current_worker_status(_WORKER_IDLE)
+
+
+def _expand_ponder_white_action(state, action):
+    """Expand one white action into every completed white-turn root below it."""
+    _set_current_worker_status(_WORKER_BUSY)
+    try:
+        first_child = GameSimulation._apply_generated_action(state, action)
+        roots = []
+        frontier = [first_child]
+        while frontier:
+            if (
+                _WORKER_SEARCH_CANCEL_EVENT is not None
+                and _WORKER_SEARCH_CANCEL_EVENT.is_set()
+            ):
+                break
+            current_state = frontier.pop()
+            if current_state.get_winner() is not None:
+                continue
+            if current_state.current_turn != COLOR.WHITE:
+                if current_state.current_turn == COLOR.BLACK:
+                    roots.append(current_state)
+                continue
+            children = []
+            for next_action in GameSimulation.available_actions(current_state):
+                if (
+                    _WORKER_SEARCH_CANCEL_EVENT is not None
+                    and _WORKER_SEARCH_CANCEL_EVENT.is_set()
+                ):
+                    break
+                children.append(GameSimulation._apply_generated_action(
+                    current_state, next_action))
+            frontier.extend(reversed(children))
+        return tuple(roots)
+    finally:
         _set_current_worker_status(_WORKER_IDLE)
 
 
@@ -1104,39 +1140,29 @@ class ChessAI:
             if len(cache) >= cache_limit:
                 return PonderResult(0, 0, 0, "cache-full")
 
-        root_states = tuple(
-            self._states_after_player_turn(state, cancellation_event)
-        )
+        white_actions = GameSimulation.available_actions(state)
         if cancellation_event.is_set():
-            return PonderResult(0, len(root_states), 0, "cancelled")
+            return PonderResult(0, 0, 0, "cancelled")
+        if not white_actions:
+            return PonderResult(0, 0, 0, "no-legal-replies")
+        root_states = []
         task_groups = []
         task_count = 0
 
-        def iter_tasks():
+        def task_group_for(root_index):
             nonlocal task_count
-            for root_index, root_state in enumerate(root_states):
-                if cancellation_event.is_set():
-                    return
-                if root_index == len(task_groups):
-                    root_key = root_state.cache_key()
-                    actions = self._order_actions(
-                        root_state, GameSimulation.available_actions(root_state))
-                    task_groups.append((root_key, tuple(actions)))
-                    task_count += len(actions)
-                root_key, actions = task_groups[root_index]
-                for action in actions:
-                    if cancellation_event.is_set():
-                        return
-                    yield root_state, action, root_key
-
-        if next(iter_tasks(), None) is None:
-            if cancellation_event.is_set():
-                return PonderResult(0, len(root_states), 0, "cancelled")
-            return PonderResult(0, len(root_states), 0, "no-legal-replies")
+            if root_index == len(task_groups):
+                root_state = root_states[root_index]
+                root_key = root_state.cache_key()
+                actions = self._order_actions(
+                    root_state, GameSimulation.available_actions(root_state))
+                task_groups.append((root_key, tuple(actions)))
+                task_count += len(actions)
+            root_key, actions = task_groups[root_index]
+            return root_states[root_index], root_key, actions
 
         log_info(
-            "AI pondering started: {} player-turn branches, workers={}".format(
-                len(root_states),
+            "AI pondering started: generating player-turn branches, workers={}".format(
                 self._ponder_worker_count_for_tasks(self.max_workers),
             )
         )
@@ -1166,14 +1192,20 @@ class ChessAI:
                     snapshot = cache.snapshot(_WORKER_CACHE_LIMIT)
 
                 pending = {}
+                outcomes = {}
+                expansion_outcomes = {}
                 next_task = 0
-                tasks_exhausted = False
+                next_merge = 0
+                next_root_index = 0
+                next_expansion_dispatch = 0 if depth == 1 else len(white_actions)
+                next_expansion_merge = 0 if depth == 1 else len(white_actions)
+                active_branches = {}
+                ready_branches = deque()
                 depth_complete = True
                 capacity_reached = False
                 cache_reset = False
                 task_worker_count = self._ponder_worker_count_for_tasks(
                     self.max_workers)
-                task_iterator = iter_tasks()
 
                 def merge_result_entries(branch_root_key, branch_action, entries):
                     nonlocal capacity_reached, cache_reset
@@ -1195,7 +1227,50 @@ class ChessAI:
                             if len(cache) >= cache_limit:
                                 capacity_reached = True
 
-                while not tasks_exhausted or pending:
+                def load_branches():
+                    nonlocal next_root_index
+                    while (
+                        len(active_branches) < task_worker_count
+                        and next_root_index < len(root_states)
+                    ):
+                        root_index = next_root_index
+                        next_root_index += 1
+                        _, _, actions = task_group_for(root_index)
+                        if not actions:
+                            continue
+                        active_branches[root_index] = {
+                            "next_action": 0,
+                            "root_alpha": -math.inf,
+                            "in_flight": False,
+                        }
+                        ready_branches.append(root_index)
+
+                def expansion_complete():
+                    return (
+                        depth > 1
+                        or (
+                            next_expansion_dispatch == len(white_actions)
+                            and next_expansion_merge == len(white_actions)
+                            and not expansion_outcomes
+                            and not any(
+                                task_info[0] == "expand"
+                                for task_info in pending.values()
+                            )
+                        )
+                    )
+
+                def all_tasks_complete():
+                    return (
+                        expansion_complete()
+                        and next_root_index == len(root_states)
+                        and len(task_groups) == len(root_states)
+                        and not active_branches
+                        and not ready_branches
+                        and not pending
+                        and not outcomes
+                    )
+
+                while not all_tasks_complete():
                     if cancellation_event.is_set():
                         stopped_reason = "cancelled"
                         depth_complete = False
@@ -1204,12 +1279,21 @@ class ChessAI:
                         for future in pending:
                             future.cancel()
                         break
-                    while len(pending) < task_worker_count:
-                        try:
-                            root_state, action, root_key = next(task_iterator)
-                        except StopIteration:
-                            tasks_exhausted = True
-                            break
+                    while next_expansion_merge in expansion_outcomes:
+                        expanded_roots = expansion_outcomes.pop(
+                            next_expansion_merge)
+                        root_states.extend(expanded_roots)
+                        next_expansion_merge += 1
+                    load_branches()
+                    while len(pending) < task_worker_count and ready_branches:
+                        root_index = ready_branches.popleft()
+                        branch = active_branches[root_index]
+                        root_state, root_key, actions = task_group_for(root_index)
+                        action = actions[branch["next_action"]]
+                        branch["next_action"] += 1
+                        branch["in_flight"] = True
+                        task_index = next_task
+                        next_task += 1
                         future = executor.submit(
                             _evaluate_root_action,
                             root_state,
@@ -1218,22 +1302,85 @@ class ChessAI:
                             self.config,
                             math.inf,
                             snapshot,
+                            root_alpha=branch["root_alpha"],
                         )
-                        pending[future] = (next_task, root_state, action, root_key)
-                        next_task += 1
+                        pending[future] = (
+                            "search",
+                            task_index,
+                            root_index,
+                            root_state,
+                            action,
+                            root_key,
+                            branch["root_alpha"],
+                        )
+                    while (
+                        len(pending) < task_worker_count
+                        and depth == 1
+                        and next_expansion_dispatch < len(white_actions)
+                    ):
+                        expansion_index = next_expansion_dispatch
+                        next_expansion_dispatch += 1
+                        future = executor.submit(
+                            _expand_ponder_white_action,
+                            state,
+                            white_actions[expansion_index],
+                        )
+                        pending[future] = ("expand", expansion_index)
                     if not pending:
+                        if all_tasks_complete():
+                            break
+                        depth_complete = False
                         break
                     done, _ = wait(
                         set(pending), timeout=0.05, return_when=FIRST_COMPLETED)
                     for future in sorted(
-                        done, key=lambda item: pending[item][0]):
-                        _, _, action, root_key = pending.pop(future)
+                        done,
+                        key=lambda item: (
+                            pending[item][0], pending[item][1])):
+                        task_info = pending.pop(future)
                         result = future.result()
+                        if task_info[0] == "expand":
+                            expansion_outcomes[task_info[1]] = result
+                        else:
+                            outcomes[task_info[1]] = (task_info, result)
+
+                    while next_merge in outcomes:
+                        task_info, result = outcomes.pop(next_merge)
+                        (
+                            _, _, root_index, _, action, root_key, root_alpha,
+                        ) = task_info
+                        next_merge += 1
                         total_nodes += result.nodes
                         self._add_completed_nodes(result.nodes)
+                        merge_result_entries(root_key, action, result.entries)
                         if result.score is None:
                             depth_complete = False
-                        merge_result_entries(root_key, action, result.entries)
+                            break
+
+                        branch = active_branches[root_index]
+                        if (
+                            result.bound == Bound.UPPER
+                            and result.reliable
+                            and result.score < root_alpha
+                        ):
+                            pass
+                        elif (
+                            result.bound == Bound.EXACT
+                            and result.reliable
+                        ):
+                            branch["root_alpha"] = max(
+                                branch["root_alpha"], result.score)
+                        else:
+                            raise RuntimeError(
+                                "Ponder root action search returned an "
+                                "unverified score")
+
+                        branch["in_flight"] = False
+                        _, _, actions = task_group_for(root_index)
+                        if branch["next_action"] < len(actions):
+                            ready_branches.append(root_index)
+                        else:
+                            del active_branches[root_index]
                         if capacity_reached or cache_reset:
                             break
 
@@ -1246,13 +1393,8 @@ class ChessAI:
                             future.cancel()
                         break
                     if capacity_reached:
-                        capacity_reached = True
                         stopped_reason = "cache-full"
-                        depth_complete = (
-                            len(task_groups) == len(root_states)
-                            and next_task == task_count
-                            and not pending
-                        )
+                        depth_complete = all_tasks_complete()
                         if worker_cancel_event is not None:
                             worker_cancel_event.set()
                         for future in pending:
@@ -1266,15 +1408,32 @@ class ChessAI:
                             future.cancel()
                         break
 
+                remaining_results = [
+                    (task_index, task_info, result)
+                    for task_index, (task_info, result) in outcomes.items()
+                ]
+                outcomes.clear()
                 if pending:
                     for future, task_info in sorted(
-                        pending.items(), key=lambda item: item[1][0]):
+                        pending.items(),
+                        key=lambda item: (item[1][0], item[1][1])):
                         if not future.cancelled():
                             result = future.result()
-                            total_nodes += result.nodes
-                            self._add_completed_nodes(result.nodes)
-                            _, _, action, root_key = task_info
-                            merge_result_entries(root_key, action, result.entries)
+                            if task_info[0] == "search":
+                                remaining_results.append(
+                                    (task_info[1], task_info, result))
+                for _, task_info, result in sorted(remaining_results):
+                    total_nodes += result.nodes
+                    self._add_completed_nodes(result.nodes)
+                    _, _, _, _, action, root_key, _ = task_info
+                    merge_result_entries(root_key, action, result.entries)
+                if (
+                    depth == 1
+                    and task_count == 0
+                    and expansion_complete()
+                ):
+                    stopped_reason = "no-legal-replies"
+                    break
                 if not depth_complete:
                     break
                 completed_depth = depth

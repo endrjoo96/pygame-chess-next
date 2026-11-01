@@ -15,13 +15,17 @@ from utils.run_config import LogLevel
 
 class ImmediateExecutor:
     @staticmethod
-    def submit(function, *args):
+    def submit(function, *args, **kwargs):
         future = Future()
         try:
-            future.set_result(function(*args))
+            future.set_result(function(*args, **kwargs))
         except Exception as error:
             future.set_exception(error)
         return future
+
+    @staticmethod
+    def shutdown(wait=True, cancel_futures=False):
+        return None
 
 
 def _make_sparse_game_state():
