@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
-from constants.pos import id_to_xy, xy_to_id
+from constants.pos import POS, id_to_xy, xy_to_id
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from logic.opening_book import opening_hints
@@ -75,6 +75,8 @@ _WORKER_PROBE_STARTED_COUNT: Any = None
 _WORKER_SEARCH_CANCEL_EVENT: Any = None
 _WORKER_STATUS_VALUES: Any = None
 _WORKER_STATUS_PIDS: Any = None
+_WORKER_MODE_VALUES: Any = None
+_WORKER_ROOT_VALUES: Any = None
 _WORKER_CACHE_ENTRY_VALUES: Any = None
 _WORKER_NODE_VALUES: Any = None
 _WORKER_STATUS_LOCK: Any = None
@@ -84,12 +86,26 @@ _WORKER_STARTING = 0
 _WORKER_INITIALIZING = 1
 _WORKER_IDLE = 2
 _WORKER_BUSY = 3
+_WORKER_MODE_NONE = 0
+_WORKER_MODE_SEARCH = 1
+_WORKER_MODE_PREPARE = 2
 _WORKER_STATUS_NAMES = {
     _WORKER_STARTING: "starting",
     _WORKER_INITIALIZING: "initializing",
     _WORKER_IDLE: "idle",
     _WORKER_BUSY: "busy",
 }
+_WORKER_MODE_NAMES = {
+    _WORKER_MODE_NONE: "-",
+    _WORKER_MODE_SEARCH: "search",
+    _WORKER_MODE_PREPARE: "prepare",
+}
+
+
+def _root_square_notation(root_position):
+    if not isinstance(root_position, int) or not 1 <= root_position <= 64:
+        return "-"
+    return POS(root_position).name
 
 
 @dataclass(frozen=True)
@@ -150,7 +166,9 @@ class _RootEvaluation:
     reliable: bool = True
 
 
-def _set_current_worker_status(status):
+def _set_current_worker_status(
+    status, mode=_WORKER_MODE_NONE, root_position=0
+):
     if (
         _WORKER_STATUS_VALUES is None
         or _WORKER_STATUS_LOCK is None
@@ -159,6 +177,18 @@ def _set_current_worker_status(status):
         return
     with _WORKER_STATUS_LOCK:
         _WORKER_STATUS_VALUES[_WORKER_STATUS_INDEX] = status
+        if _WORKER_MODE_VALUES is not None:
+            _WORKER_MODE_VALUES[_WORKER_STATUS_INDEX] = mode
+        if _WORKER_ROOT_VALUES is not None:
+            _WORKER_ROOT_VALUES[_WORKER_STATUS_INDEX] = (
+                root_position
+                if (
+                    mode != _WORKER_MODE_NONE
+                    and isinstance(root_position, int)
+                    and 1 <= root_position <= 64
+                )
+                else 0
+            )
 
 
 def _set_current_worker_cache_entries(entry_count):
@@ -185,12 +215,14 @@ def _set_current_worker_visited_nodes(visited_nodes):
 
 def _initialize_search_worker(
     ready_count, probe_started_count, probe_release_event, search_cancel_event,
-    worker_status_values, worker_status_pids, worker_cache_entry_values,
-    worker_node_values, worker_status_lock,
+    worker_status_values, worker_status_pids, worker_mode_values,
+    worker_root_values, worker_cache_entry_values, worker_node_values,
+    worker_status_lock,
 ):
     global _WORKER_PROBE_RELEASE_EVENT, _WORKER_PROBE_STARTED_COUNT
     global _WORKER_SEARCH_CANCEL_EVENT
     global _WORKER_STATUS_VALUES, _WORKER_STATUS_PIDS
+    global _WORKER_MODE_VALUES, _WORKER_ROOT_VALUES
     global _WORKER_CACHE_ENTRY_VALUES, _WORKER_NODE_VALUES
     global _WORKER_STATUS_LOCK
     global _WORKER_STATUS_INDEX
@@ -199,6 +231,8 @@ def _initialize_search_worker(
     _WORKER_SEARCH_CANCEL_EVENT = search_cancel_event
     _WORKER_STATUS_VALUES = worker_status_values
     _WORKER_STATUS_PIDS = worker_status_pids
+    _WORKER_MODE_VALUES = worker_mode_values
+    _WORKER_ROOT_VALUES = worker_root_values
     _WORKER_CACHE_ENTRY_VALUES = worker_cache_entry_values
     _WORKER_NODE_VALUES = worker_node_values
     _WORKER_STATUS_LOCK = worker_status_lock
@@ -214,6 +248,8 @@ def _initialize_search_worker(
         if _WORKER_STATUS_INDEX is None:
             raise RuntimeError("No worker status slot is available")
         _WORKER_STATUS_PIDS[_WORKER_STATUS_INDEX] = os.getpid()
+        _WORKER_MODE_VALUES[_WORKER_STATUS_INDEX] = _WORKER_MODE_NONE
+        _WORKER_ROOT_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_CACHE_ENTRY_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_NODE_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_STATUS_VALUES[_WORKER_STATUS_INDEX] = _WORKER_STARTING
@@ -250,7 +286,8 @@ def _evaluate_root_action(
         node_progress_callback or _set_current_worker_visited_nodes)
     _set_current_worker_cache_entries(0)
     node_progress_callback(0)
-    _set_current_worker_status(_WORKER_BUSY)
+    _set_current_worker_status(
+        _WORKER_BUSY, _WORKER_MODE_SEARCH, action.source)
     root_bound = None
     reliable = False
     try:
@@ -303,7 +340,8 @@ def _evaluate_root_action(
 
 def _expand_ponder_white_action(state, action):
     """Expand one white action into every completed white-turn root below it."""
-    _set_current_worker_status(_WORKER_BUSY)
+    _set_current_worker_status(
+        _WORKER_BUSY, _WORKER_MODE_PREPARE, action.source)
     try:
         first_child = GameSimulation._apply_generated_action(state, action)
         roots = []
@@ -384,11 +422,15 @@ class ChessAI:
         self._worker_search_cancel_event = None
         self._worker_status_values = None
         self._worker_status_pids = None
+        self._worker_mode_values = None
+        self._worker_root_values = None
         self._worker_cache_entry_values = None
         self._worker_node_values = None
         self._worker_status_process_lock = None
         self._worker_pool_state = "not-started"
         self._local_worker_busy = False
+        self._local_worker_mode = _WORKER_MODE_NONE
+        self._local_worker_root_position = 0
         self._local_worker_cache_entries = 0
         self._local_worker_visited_nodes = 0
         self._ponder_state_lock = Lock()
@@ -432,6 +474,8 @@ class ChessAI:
             search_cancel_event = context.Event()
             worker_status_values = context.RawArray("i", self.max_workers)
             worker_status_pids = context.RawArray("i", self.max_workers)
+            worker_mode_values = context.RawArray("i", self.max_workers)
+            worker_root_values = context.RawArray("i", self.max_workers)
             worker_cache_entry_values = context.RawArray("i", self.max_workers)
             worker_node_values = context.RawArray("q", self.max_workers)
             worker_status_lock = context.Lock()
@@ -446,6 +490,8 @@ class ChessAI:
                     search_cancel_event,
                     worker_status_values,
                     worker_status_pids,
+                    worker_mode_values,
+                    worker_root_values,
                     worker_cache_entry_values,
                     worker_node_values,
                     worker_status_lock,
@@ -459,6 +505,8 @@ class ChessAI:
             with self._worker_metrics_lock:
                 self._worker_status_values = worker_status_values
                 self._worker_status_pids = worker_status_pids
+                self._worker_mode_values = worker_mode_values
+                self._worker_root_values = worker_root_values
                 self._worker_cache_entry_values = worker_cache_entry_values
                 self._worker_node_values = worker_node_values
                 self._worker_status_process_lock = worker_status_lock
@@ -653,11 +701,15 @@ class ChessAI:
         with self._worker_metrics_lock:
             status_values = self._worker_status_values
             status_pids = self._worker_status_pids
+            mode_values = self._worker_mode_values
+            root_values = self._worker_root_values
             cache_entry_values = self._worker_cache_entry_values
             node_values = self._worker_node_values
             process_lock = self._worker_status_process_lock
             pool_state = self._worker_pool_state
             local_worker_busy = self._local_worker_busy
+            local_worker_mode = self._local_worker_mode
+            local_worker_root_position = self._local_worker_root_position
             local_worker_cache_entries = self._local_worker_cache_entries
             local_worker_visited_nodes = self._local_worker_visited_nodes
 
@@ -670,6 +722,11 @@ class ChessAI:
                         is_local=True,
                         cache_entries=local_worker_cache_entries,
                         visited_nodes=local_worker_visited_nodes,
+                        mode=_WORKER_MODE_NAMES.get(
+                            local_worker_mode, "-"),
+                        root=_root_square_notation(
+                            local_worker_root_position)
+                        if local_worker_busy else "-",
                     ),
                 )
             status = "starting" if pool_state == "starting" else "not-started"
@@ -685,6 +742,10 @@ class ChessAI:
                         is_local=True,
                         cache_entries=local_worker_cache_entries,
                         visited_nodes=local_worker_visited_nodes,
+                        mode=_WORKER_MODE_NAMES.get(
+                            local_worker_mode, "-"),
+                        root=_root_square_notation(
+                            local_worker_root_position),
                     ),
                 )
             return workers
@@ -699,24 +760,35 @@ class ChessAI:
                         if cache_entry_values is not None else None
                     ),
                     node_values[index] if node_values is not None else None,
+                    (
+                        mode_values[index]
+                        if mode_values is not None else _WORKER_MODE_NONE
+                    ),
+                    root_values[index] if root_values is not None else 0,
                 )
                 for index in range(self.max_workers)
             )
 
         workers = []
         for index, (
-            status_code, worker_pid, cache_entries, visited_nodes
+            status_code, worker_pid, cache_entries, visited_nodes,
+            mode_code, root_position,
         ) in enumerate(
             process_states
         ):
             if worker_pid == 0:
                 status = "starting" if pool_state == "starting" else "not-started"
                 worker_pid = None
+                mode_code = _WORKER_MODE_NONE
+                root_position = 0
             else:
                 status = _WORKER_STATUS_NAMES.get(status_code, "unknown")
             workers.append(AIWorkerStats(
                 index + 1, status, worker_pid,
-                cache_entries=cache_entries, visited_nodes=visited_nodes))
+                cache_entries=cache_entries,
+                visited_nodes=visited_nodes,
+                mode=_WORKER_MODE_NAMES.get(mode_code, "-"),
+                root=_root_square_notation(root_position)))
         if local_worker_busy:
             workers.append(
                 AIWorkerStats(
@@ -725,12 +797,19 @@ class ChessAI:
                     is_local=True,
                     cache_entries=local_worker_cache_entries,
                     visited_nodes=local_worker_visited_nodes,
+                    mode=_WORKER_MODE_NAMES.get(local_worker_mode, "-"),
+                    root=_root_square_notation(local_worker_root_position),
                 ))
         return tuple(workers)
 
-    def _set_local_worker_busy(self, is_busy):
+    def _set_local_worker_busy(
+        self, is_busy, mode=_WORKER_MODE_NONE, root_position=0
+    ):
         with self._worker_metrics_lock:
             self._local_worker_busy = is_busy
+            self._local_worker_mode = mode if is_busy else _WORKER_MODE_NONE
+            self._local_worker_root_position = (
+                root_position if is_busy else 0)
             if not is_busy:
                 self._local_worker_cache_entries = 0
                 self._local_worker_visited_nodes = 0
@@ -909,7 +988,8 @@ class ChessAI:
 
                 if executor is None:
                     for action_index, action in enumerate(ordered_actions):
-                        self._set_local_worker_busy(True)
+                        self._set_local_worker_busy(
+                            True, _WORKER_MODE_SEARCH, action.source)
                         try:
                             result = _evaluate_root_action(
                                 state, action, depth, self.config, self._deadline,

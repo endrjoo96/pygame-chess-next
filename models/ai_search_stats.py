@@ -10,6 +10,8 @@ class AIWorkerStats:
     is_local: bool = False
     cache_entries: Optional[int] = None
     visited_nodes: Optional[int] = None
+    mode: str = "-"
+    root: str = "-"
 
 
 @dataclass(frozen=True)

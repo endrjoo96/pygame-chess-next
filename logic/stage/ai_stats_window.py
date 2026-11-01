@@ -8,15 +8,15 @@ class AIStatsWindow:
     def __init__(self):
         self._window = Window(
             "Statystyki AI",
-            size=(620, 620),
+            size=(700, 720),
             position=(0, 0),
             borderless=True,
         )
         self._dragging = False
         self._worker_scroll = 0
-        self._title_font = pygame.font.SysFont(None, 30)
-        self._body_font = pygame.font.SysFont(None, 22)
-        self._detail_font = pygame.font.SysFont(None, 18)
+        self._title_font = pygame.font.SysFont(None, 29)
+        self._body_font = pygame.font.SysFont(None, 21)
+        self._detail_font = pygame.font.SysFont(None, 17)
 
     def handle_event(self, event):
         if self._window is None or not self.owns_event(event):
@@ -54,7 +54,7 @@ class AIStatsWindow:
         surface.fill((24, 24, 24))
 
         title = self._title_font.render("Statystyki AI", True, (255, 255, 255))
-        surface.blit(title, (20, 18))
+        surface.blit(title, (16, 14))
 
         if stats.is_searching:
             self._draw_candidate(surface, stats)
@@ -63,7 +63,7 @@ class AIStatsWindow:
         else:
             message = self._body_font.render(
                 "Oczekiwanie na ruch bota...", True, (220, 220, 220))
-            surface.blit(message, (20, 75))
+            surface.blit(message, (16, 60))
 
         self._draw_live_progress(surface, stats)
         self._draw_engine_diagnostics(surface, stats)
@@ -72,33 +72,33 @@ class AIStatsWindow:
     def _draw_candidate(self, surface, stats):
         caption = self._body_font.render(
             "Myślę, że najlepszy ruch to...", True, (220, 220, 220))
-        surface.blit(caption, (20, 70))
+        surface.blit(caption, (16, 60))
 
         if stats.candidate_move is None:
             message = self._body_font.render(
                 "Wyszukiwanie w toku...", True, (255, 255, 255))
-            surface.blit(message, (20, 106))
+            surface.blit(message, (16, 90))
             return
 
         move = self._title_font.render(
             stats.candidate_move, True, (255, 255, 255))
-        surface.blit(move, (20, 104))
+        surface.blit(move, (16, 90))
         detail = "Ocena heurystyczna (czarne): {:+.2f} | głębokość: {}".format(
             stats.candidate_score,
             stats.candidate_depth,
         )
         rendered_detail = self._detail_font.render(
             detail, True, (220, 220, 220))
-        surface.blit(rendered_detail, (20, 146))
+        surface.blit(rendered_detail, (16, 126))
 
     def _draw_final_result(self, surface, stats):
         caption = self._body_font.render(
             "Ostatni wybrany ruch", True, (220, 220, 220))
-        surface.blit(caption, (20, 70))
+        surface.blit(caption, (16, 60))
 
         move = self._title_font.render(
             stats.final_move, True, (255, 255, 255))
-        surface.blit(move, (20, 104))
+        surface.blit(move, (16, 90))
 
         score = self._detail_font.render(
             "Wynik wyszukiwania (czarne): {:+.2f}".format(stats.final_score),
@@ -116,9 +116,9 @@ class AIStatsWindow:
             True,
             (220, 220, 220),
         )
-        surface.blit(score, (20, 146))
-        surface.blit(depth, (20, 174))
-        surface.blit(nodes, (20, 202))
+        surface.blit(score, (16, 126))
+        surface.blit(depth, (16, 150))
+        surface.blit(nodes, (16, 174))
 
     def _draw_live_progress(self, surface, stats):
         phase = stats.search_phase or (
@@ -154,13 +154,13 @@ class AIStatsWindow:
         for line_index, text in enumerate(lines):
             surface.blit(
                 self._detail_font.render(text, True, (220, 220, 220)),
-                (20, 218 + line_index * 20),
+                (16, 196 + line_index * 18),
             )
 
     def _draw_engine_diagnostics(self, surface, stats):
         cache_title = self._body_font.render(
             "Cache", True, (220, 220, 220))
-        surface.blit(cache_title, (20, 284))
+        surface.blit(cache_title, (16, 260))
 
         if stats.cache_enabled is False:
             cache_text = "Wyłączony"
@@ -187,7 +187,7 @@ class AIStatsWindow:
             cache_text = "Brak danych"
         cache_detail = self._detail_font.render(
             cache_text, True, (220, 220, 220))
-        surface.blit(cache_detail, (20, 312))
+        surface.blit(cache_detail, (16, 282))
 
         if stats.cache_enabled is False:
             cache_depth = "wyłączony"
@@ -202,10 +202,10 @@ class AIStatsWindow:
             True,
             (220, 220, 220),
         )
-        surface.blit(cache_depth_text, (20, 334))
+        surface.blit(cache_depth_text, (16, 304))
 
         total_workers = len(stats.workers)
-        visible_workers = 24
+        visible_workers = 17
         self._worker_scroll = min(
             max(0, self._worker_scroll),
             max(0, total_workers - visible_workers),
@@ -218,14 +218,25 @@ class AIStatsWindow:
         )
         surface.blit(
             self._body_font.render(worker_heading, True, (220, 220, 220)),
-            (20, 356),
+            (16, 328),
         )
+
+        for header, x in (
+            ("Worker", 16),
+            ("Stan", 236),
+            ("Tryb", 350),
+            ("Root", 470),
+        ):
+            surface.blit(
+                self._detail_font.render(header, True, (160, 160, 160)),
+                (x, 352),
+            )
 
         if not stats.workers:
             surface.blit(
                 self._detail_font.render(
                     "Brak danych o workerach", True, (180, 180, 180)),
-                (20, 380),
+                (16, 374),
             )
         else:
             state_colors = {
@@ -235,29 +246,34 @@ class AIStatsWindow:
                 "starting": (255, 220, 120),
             }
             for visible_index, worker in enumerate(stats.workers[start:end]):
-                column = visible_index % 2
-                row = visible_index // 2
                 if worker.is_local:
                     name = "Lokalny"
                 else:
                     name = f"W{worker.worker_id:02d}"
                     if worker.pid is not None:
                         name += " PID {}".format(worker.pid)
-                text = "{}: {}".format(name, worker.state)
-                surface.blit(
-                    self._detail_font.render(
-                        text,
-                        True,
+                y = 374 + visible_index * 18
+                worker_values = (
+                    (name, 16, (200, 200, 200)),
+                    (
+                        worker.state,
+                        236,
                         state_colors.get(worker.state, (200, 200, 200)),
                     ),
-                    (20 + column * 300, 380 + row * 18),
+                    (worker.mode, 350, (220, 220, 220)),
+                    (worker.root, 470, (220, 220, 220)),
                 )
+                for text, x, color in worker_values:
+                    surface.blit(
+                        self._detail_font.render(text, True, color),
+                        (x, y),
+                    )
 
         if total_workers > visible_workers:
             surface.blit(
                 self._detail_font.render(
                     "Kółko myszy: przewijanie listy", True, (160, 160, 160)),
-                (20, 600),
+                (16, 692),
             )
 
     def close(self):

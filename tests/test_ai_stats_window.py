@@ -4,13 +4,29 @@ from logic.stage.ai_stats_window import AIStatsWindow
 from models.ai_search_stats import AISearchStats, AIWorkerStats
 
 
+class RecordingSurface:
+    def __init__(self, size):
+        self._surface = pygame.Surface(size)
+        self.blits = []
+
+    def fill(self, color):
+        self._surface.fill(color)
+
+    def blit(self, source, destination):
+        self.blits.append((destination, source.get_size()))
+        return self._surface.blit(source, destination)
+
+    def get_size(self):
+        return self._surface.get_size()
+
+
 class FakeWindow:
     def __init__(self, title, size, position, borderless):
         self.title = title
         self.position = position
         self.borderless = borderless
         self.id = 42
-        self.surface = pygame.Surface(size)
+        self.surface = RecordingSurface(size)
         self.flip_count = 0
         self.destroyed = False
 
@@ -28,20 +44,28 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     import logic.stage.ai_stats_window as ai_stats_window
 
     rendered_text = []
+    font_sizes = []
 
     class RecordingFont:
-        @staticmethod
-        def render(text, _antialias, color):
+        def __init__(self, font_size):
+            self.font_size = font_size
+
+        def render(self, text, _antialias, color):
             rendered_text.append(text)
-            image = pygame.Surface((max(1, len(text) * 8), 20), pygame.SRCALPHA)
+            image = pygame.Surface(
+                (max(1, len(text) * 8), self.font_size), pygame.SRCALPHA)
             image.fill(color)
             return image
+
+    def create_font(_font_name, font_size):
+        font_sizes.append(font_size)
+        return RecordingFont(font_size)
 
     monkeypatch.setattr("logic.stage.ai_stats_window.Window", FakeWindow)
     monkeypatch.setattr(
         ai_stats_window.pygame.font,
         "SysFont",
-        lambda *args, **kwargs: RecordingFont(),
+        create_font,
     )
     window = AIStatsWindow()
 
@@ -56,14 +80,19 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         cache_evictions=3,
         cache_deepest_entry_depth=3,
         workers=(
-            AIWorkerStats(1, "idle", pid=123, cache_entries=12),
-            AIWorkerStats(2, "busy", pid=456, cache_entries=20),
+            AIWorkerStats(
+                1, "idle", pid=123, cache_entries=12,
+                mode="search", root="C2"),
+            AIWorkerStats(
+                2, "busy", pid=456, cache_entries=20,
+                mode="prepare", root="D7"),
         ),
         search_phase="searching",
         current_depth=3,
         completed_search_depth=2,
         live_visited_nodes=9876,
     ))
+    candidate_blits = window._window.surface.blits[:]
     window.draw(AISearchStats(
         final_move="Wb8",
         final_score=1.5,
@@ -81,9 +110,33 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     ))
 
     assert window._window.flip_count == 3
-    assert window._window.surface.get_size() == (620, 620)
+    assert window._window.surface.get_size() == (700, 720)
     assert window._window.position == (0, 0)
     assert window._window.borderless
+    assert font_sizes == [29, 21, 17]
+    blits_by_x = {}
+    for (x, y), (_, height) in candidate_blits:
+        blits_by_x.setdefault(x, []).append((y, height))
+    for column_blits in blits_by_x.values():
+        column_blits.sort()
+        assert all(
+            next_y >= y + height
+            for (y, height), (next_y, _) in zip(
+                column_blits, column_blits[1:])
+        )
+    progress_ys = [
+        position[1]
+        for position, _ in candidate_blits
+        if position[0] == 16 and 196 <= position[1] <= 232
+    ]
+    assert progress_ys == [196, 214, 232]
+    for column_x in (16, 236, 350, 470):
+        worker_row_ys = [
+            position[1]
+            for position, _ in candidate_blits
+            if position[0] == column_x and position[1] >= 374
+        ]
+        assert worker_row_ys == [374, 392]
     assert "Myślę, że najlepszy ruch to..." in rendered_text
     assert "Ocena heurystyczna (czarne): +1.50 | głębokość: 3" in rendered_text
     assert "Ostatni wybrany ruch" in rendered_text
@@ -96,8 +149,17 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert "Główny: 42 / 256 | workery: 32 | wyparcia: 3" in rendered_text
     assert "Maks. głębokość wpisu cache: 3" in rendered_text
     assert "Głębokość ponderingu: aktualnie 0 | ukończona 0" in rendered_text
-    assert "W01 PID 123: idle" in rendered_text
-    assert "W02 PID 456: busy" in rendered_text
+    assert "W01 PID 123" in rendered_text
+    assert "idle" in rendered_text
+    assert "search" in rendered_text
+    assert "C2" in rendered_text
+    assert "W02 PID 456" in rendered_text
+    assert "busy" in rendered_text
+    assert "prepare" in rendered_text
+    assert "D7" in rendered_text
+    assert "Stan" in rendered_text
+    assert "Tryb" in rendered_text
+    assert "Root" in rendered_text
 
 
 def test_stats_window_scrolls_worker_lists_over_visible_limit(monkeypatch):
@@ -127,9 +189,10 @@ def test_stats_window_scrolls_worker_lists_over_visible_limit(monkeypatch):
     stats = AISearchStats(workers=workers)
 
     window.draw(stats)
-    assert "Workery (1-24 z 28)" in rendered_text
-    assert "W01: idle" in rendered_text
-    assert "W24: idle" in rendered_text
+    assert "Workery (1-17 z 28)" in rendered_text
+    assert "W01" in rendered_text
+    assert "W17" in rendered_text
+    assert "W24" not in rendered_text
 
     rendered_text.clear()
     scroll_down = pygame.event.Event(
@@ -141,10 +204,11 @@ def test_stats_window_scrolls_worker_lists_over_visible_limit(monkeypatch):
     assert not window.handle_event(scroll_down)
     window.draw(stats)
 
-    assert "Workery (3-26 z 28)" in rendered_text
-    assert "W03: idle" in rendered_text
-    assert "W26: idle" in rendered_text
-    assert "W01: idle" not in rendered_text
+    assert "Workery (3-19 z 28)" in rendered_text
+    assert "W03" in rendered_text
+    assert "W19" in rendered_text
+    assert "W20" not in rendered_text
+    assert "W01" not in rendered_text
 
 
 def test_stats_window_close_event_does_not_match_another_window(monkeypatch):

@@ -8,6 +8,7 @@ import pytest
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
+from constants.pos import POS
 from logic.chess_ai import (
     ChessAI,
     SearchConfig,
@@ -986,11 +987,18 @@ def test_prepared_worker_pool_reports_readiness_and_is_reused():
         assert progress[1][3] - progress[0][3] >= 0.05
         prepared_workers = ai.worker_stats()
         assert [worker.state for worker in prepared_workers] == ["idle", "idle"]
+        assert [worker.mode for worker in prepared_workers] == ["-", "-"]
+        assert [worker.root for worker in prepared_workers] == ["-", "-"]
         assert len({worker.pid for worker in prepared_workers}) == 2
         assert [worker.cache_entries for worker in prepared_workers] == [0, 0]
         assert [worker.visited_nodes for worker in prepared_workers] == [0, 0]
         ai.choose_action(observation)
         assert ai._worker_pool is worker_pool
+        completed_workers = ai.worker_stats()
+        assert [worker.state for worker in completed_workers] == [
+            "idle", "idle"]
+        assert [worker.mode for worker in completed_workers] == ["-", "-"]
+        assert [worker.root for worker in completed_workers] == ["-", "-"]
         ai.choose_action(observation)
         assert ai._worker_pool is worker_pool
     finally:
@@ -1017,7 +1025,10 @@ def test_cache_and_local_worker_diagnostics():
     assert ai.cache_stats() == (True, 2, 2, 1)
 
     ai._set_local_worker_busy(True)
-    assert [worker.state for worker in ai.worker_stats()] == ["busy"]
+    local_worker = ai.worker_stats()[0]
+    assert local_worker.state == "busy"
+    assert local_worker.mode == "-"
+    assert local_worker.root == "-"
     ai._set_local_worker_busy(False)
 
     disabled_cache = ChessAI(
@@ -1025,6 +1036,160 @@ def test_cache_and_local_worker_diagnostics():
         max_workers=1,
     )
     assert disabled_cache.cache_stats() == (False, 0, 2, 0)
+
+
+def test_worker_stats_reports_active_mode_and_root(monkeypatch):
+    import logic.chess_ai as chess_ai_module
+
+    ai = ChessAI(max_workers=2)
+    shared_lock = Lock()
+    status_values = [chess_ai_module._WORKER_IDLE] * 2
+    status_pids = [101, 202]
+    mode_values = [chess_ai_module._WORKER_MODE_NONE] * 2
+    root_values = [0, 0]
+    cache_entry_values = [0, 0]
+    node_values = [0, 0]
+
+    ai._worker_status_values = status_values
+    ai._worker_status_pids = status_pids
+    ai._worker_mode_values = mode_values
+    ai._worker_root_values = root_values
+    ai._worker_cache_entry_values = cache_entry_values
+    ai._worker_node_values = node_values
+    ai._worker_status_process_lock = shared_lock
+    monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_VALUES", status_values)
+    monkeypatch.setattr(chess_ai_module, "_WORKER_MODE_VALUES", mode_values)
+    monkeypatch.setattr(chess_ai_module, "_WORKER_ROOT_VALUES", root_values)
+    monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_LOCK", shared_lock)
+    monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_INDEX", 0)
+
+    chess_ai_module._set_current_worker_status(
+        chess_ai_module._WORKER_BUSY,
+        chess_ai_module._WORKER_MODE_SEARCH,
+        POS.C2.value,
+    )
+    worker = ai.worker_stats()[0]
+    assert (worker.state, worker.mode, worker.root) == ("busy", "search", "C2")
+
+    chess_ai_module._set_current_worker_status(
+        chess_ai_module._WORKER_BUSY,
+        chess_ai_module._WORKER_MODE_PREPARE,
+        POS.D2.value,
+    )
+    worker = ai.worker_stats()[0]
+    assert (worker.state, worker.mode, worker.root) == (
+        "busy", "prepare", "D2")
+
+    chess_ai_module._set_current_worker_status(chess_ai_module._WORKER_IDLE)
+    worker = ai.worker_stats()[0]
+    assert (worker.state, worker.mode, worker.root) == ("idle", "-", "-")
+
+
+def test_worker_tasks_publish_and_clear_their_mode(monkeypatch):
+    import logic.chess_ai as chess_ai_module
+
+    status_calls = []
+    monkeypatch.setattr(
+        chess_ai_module,
+        "_set_current_worker_status",
+        lambda status, mode=0, root_position=0: status_calls.append(
+            (status, mode, root_position)),
+    )
+    monkeypatch.setattr(
+        GameSimulation,
+        "_apply_generated_action",
+        lambda _state, _action: object(),
+    )
+    monkeypatch.setattr(
+        ChessAI,
+        "_search_with_proof",
+        lambda _self, _state, _depth, _alpha, _beta, allow_lmr=True: (
+            1.0, True),
+    )
+    search_action = GameAction(
+        GameActionType.MOVE, POS.C2.value, POS.C4.value)
+    _evaluate_root_action(
+        object(),
+        search_action,
+        1,
+        SearchConfig(max_depth=1),
+        time.monotonic() + 1,
+        cache_size_callback=lambda _size: None,
+        node_progress_callback=lambda _nodes: None,
+    )
+    assert status_calls == [
+        (
+            chess_ai_module._WORKER_BUSY,
+            chess_ai_module._WORKER_MODE_SEARCH,
+            POS.C2.value,
+        ),
+        (
+            chess_ai_module._WORKER_IDLE,
+            chess_ai_module._WORKER_MODE_NONE,
+            0,
+        ),
+    ]
+
+    class BlackRoot:
+        current_turn = COLOR.BLACK
+
+        @staticmethod
+        def get_winner():
+            return None
+
+    status_calls.clear()
+    monkeypatch.setattr(
+        GameSimulation,
+        "_apply_generated_action",
+        lambda _state, _action: BlackRoot(),
+    )
+    prepare_action = GameAction(
+        GameActionType.MOVE, POS.D2.value, POS.D4.value)
+    roots = chess_ai_module._expand_ponder_white_action(
+        object(), prepare_action)
+    assert len(roots) == 1
+    assert status_calls == [
+        (
+            chess_ai_module._WORKER_BUSY,
+            chess_ai_module._WORKER_MODE_PREPARE,
+            POS.D2.value,
+        ),
+        (
+            chess_ai_module._WORKER_IDLE,
+            chess_ai_module._WORKER_MODE_NONE,
+            0,
+        ),
+    ]
+
+    def raise_failure(_state, _action):
+        raise RuntimeError("worker task failed")
+
+    status_calls.clear()
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action", raise_failure)
+    with pytest.raises(RuntimeError, match="worker task failed"):
+        _evaluate_root_action(
+            object(),
+            search_action,
+            1,
+            SearchConfig(max_depth=1),
+            time.monotonic() + 1,
+            cache_size_callback=lambda _size: None,
+            node_progress_callback=lambda _nodes: None,
+        )
+    assert [call[0] for call in status_calls] == [
+        chess_ai_module._WORKER_BUSY,
+        chess_ai_module._WORKER_IDLE,
+    ]
+
+    status_calls.clear()
+    with pytest.raises(RuntimeError, match="worker task failed"):
+        chess_ai_module._expand_ponder_white_action(
+            object(), prepare_action)
+    assert [call[0] for call in status_calls] == [
+        chess_ai_module._WORKER_BUSY,
+        chess_ai_module._WORKER_IDLE,
+    ]
 
 
 def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
@@ -1044,8 +1209,11 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
         worker = ai.worker_stats()[0]
         observed_cache_sizes.append((
             worker.state,
+            worker.mode,
+            worker.root,
             worker.cache_entries,
             worker.visited_nodes,
+            action.source,
             ai.search_progress_stats(),
         ))
         return _RootEvaluation(0.0, 128)
@@ -1059,17 +1227,18 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
 
     assert observed_cache_sizes
     assert all(
-        value[:3] == ("busy", 7, 128)
+        value[:5] == (
+            "busy", "search", POS(value[5]).name, 7, 128)
         for value in observed_cache_sizes
     )
-    assert observed_cache_sizes[0][3] == ("searching", 1, 0, 128)
+    assert observed_cache_sizes[0][6] == ("searching", 1, 0, 128)
     assert all(
         phase == "searching"
         and current_depth == 1
         and completed_depth == 0
         and visited_nodes >= 128
         for phase, current_depth, completed_depth, visited_nodes
-        in (value[3] for value in observed_cache_sizes)
+        in (value[6] for value in observed_cache_sizes)
     )
     assert ai.worker_stats()[0].cache_entries == 0
     assert ai.worker_stats()[0].visited_nodes == 0
