@@ -1,6 +1,6 @@
 import math
 import random
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from threading import Lock
 from typing import Optional
 
@@ -128,6 +128,21 @@ class GameLogicLoop(object):
             self.pieces_locations[position.value] = Piece(
                 piece.get_color(), piece.get_type(), position.value)
         self.__schedule_next_board_card()
+
+    def close(self):
+        """Kończy wyszukiwanie i zamyka zasoby AI przy zamykaniu aplikacji."""
+        if self._ai_future is not None and not self._ai_future.done():
+            self._ai_future.cancel()
+        self._ai_executor.shutdown(wait=True, cancel_futures=True)
+        if self._ai_future is not None:
+            try:
+                self._ai_future.result()
+            except CancelledError:
+                pass
+            except Exception as error:
+                log_error("AI search failed during shutdown: {}".format(error))
+        if isinstance(self.black_ai, ChessAI):
+            self.black_ai.shutdown_worker_pool()
 
     def play_turn(self):
         """Rysuje informacje o turze, obsługuje jej wejście i zwraca zwycięzcę, jeśli jest."""

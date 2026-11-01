@@ -1,14 +1,22 @@
 import os
+import textwrap
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event, Lock
+from typing import Optional
 
 import pygame
 from pygame._sdl2 import Window
 from pygame.locals import *
 
-from logic.chess_ai import ChessAI
+from logic.chess_ai import ChessAI, WorkerPoolInitializationCancelled
 from logic.stage.game_logic_loop import GameLogicLoop
 from utils.gamecontext import GameContext
 from utils import utils
+from utils.logging import log_error
 from utils.run_config import resolve_game_seed
+
+
+_WORKER_PROGRESS_DISPLAY_SECONDS = 0.06
 
 
 class Game:
@@ -25,6 +33,15 @@ class Game:
         self.winner = None
         # base folder for program resources
         self.resources = "res"
+        self._startup_executor = ThreadPoolExecutor(max_workers=1)
+        self._loading = False
+        self._loading_future: Optional[Future] = None
+        self._loading_ai = None
+        self._loading_seed = None
+        self._loading_cancel_event = Event()
+        self._loading_progress_lock = Lock()
+        self._loading_progress = ("", 0, 0)
+        self._loading_error = None
 
         # initialize game window
         pygame.display.init()
@@ -74,37 +91,41 @@ class Game:
 
         # create class object that handles the gameplay logic
         # game loop
-        while self.running:
-            self.clock.tick(20)
-            # poll events
-            events = pygame.event.get()
-            utils.begin_input_frame(events)
-            for event in events:
-                # get keys pressed
-                key_pressed = pygame.key.get_pressed()
-                # check if the game has been closed by the user
-                if event.type == pygame.QUIT or key_pressed[K_ESCAPE]:
-                    # set flag to break out of the game loop
-                    self.running = False
-                elif key_pressed[K_SPACE]:
-                    if self.chess is not None:
-                        self.chess.reset()
+        try:
+            while self.running:
+                self.clock.tick(20)
+                events = pygame.event.get()
+                utils.begin_input_frame(events)
+                for event in events:
+                    key_pressed = pygame.key.get_pressed()
+                    if event.type == pygame.QUIT or key_pressed[K_ESCAPE]:
+                        self.running = False
+                    elif (
+                        self._loading_error is not None
+                        and event.type == pygame.KEYDOWN
+                        and event.key == K_RETURN
+                    ):
+                        self._dismiss_loading_error()
+                    elif key_pressed[K_SPACE]:
+                        if self.chess is not None:
+                            self.chess.reset()
 
-            if not self.menu_showed:
-                self.menu()
-            else:
-                self.game()
+                if self.running and self._loading:
+                    self._finish_startup_if_ready()
+                if self._loading or self._loading_error is not None:
+                    self.draw_loading_screen()
+                elif not self.menu_showed:
+                    self.menu()
+                else:
+                    self.game()
 
-            # for testing mechanics of the game
-            # self.game()
-
-            # update display
-            pygame.display.flip()
-            # update events
-            pygame.event.pump()
-
-        # call method to stop pygame
-        pygame.quit()
+                pygame.display.flip()
+                pygame.event.pump()
+        finally:
+            try:
+                self._shutdown_resources()
+            finally:
+                pygame.quit()
 
     def menu(self):
         """Rysuje menu startowe i przełącza do gry po kliknięciu lub Enterze."""
@@ -184,9 +205,139 @@ class Game:
     def _start_new_game(self):
         """Tworzy nową partię dopiero po wybraniu jej seeda przy starcie."""
         seed = resolve_game_seed()
-        ai = ChessAI() if self.play_against_ai else None
-        self.chess = GameLogicLoop(self.screen, black_ai=ai, seed=seed)
-        self.menu_showed = True
+        if not self.play_against_ai:
+            self.chess = GameLogicLoop(self.screen, black_ai=None, seed=seed)
+            self.menu_showed = True
+            return
+
+        self._loading_ai = ChessAI()
+        self._loading_seed = seed
+        self._loading_error = None
+        self._loading_cancel_event.clear()
+        self._report_loading_progress(
+            "Uruchamianie workerów AI", 0, self._loading_ai.max_workers)
+        self._loading = True
+        try:
+            self._loading_future = self._startup_executor.submit(
+                self._loading_ai.prepare_workers,
+                self._report_worker_progress,
+                self._loading_cancel_event,
+                minimum_progress_interval_seconds=(
+                    _WORKER_PROGRESS_DISPLAY_SECONDS
+                ),
+            )
+        except Exception as error:
+            log_error("AI worker initialization could not be scheduled: {}".format(error))
+            self._loading = False
+            self._loading_error = str(error)
+
+    def _report_worker_progress(self, ready_workers, worker_count):
+        self._report_loading_progress(
+            "Uruchamianie workerów AI", ready_workers, worker_count)
+
+    def _report_loading_progress(self, step, completed, total):
+        with self._loading_progress_lock:
+            self._loading_progress = (step, completed, total)
+
+    def _finish_startup_if_ready(self):
+        if self._loading_future is None or not self._loading_future.done():
+            return
+
+        try:
+            self._loading_future.result()
+            self.chess = GameLogicLoop(
+                self.screen,
+                black_ai=self._loading_ai,
+                seed=self._loading_seed,
+            )
+        except WorkerPoolInitializationCancelled:
+            self._loading_error = "Inicjalizacja workerów AI została anulowana."
+            self._loading = False
+        except Exception as error:
+            log_error("Game startup failed: {}".format(error))
+            self._loading_error = str(error)
+            self._loading = False
+            if self._loading_ai is not None:
+                self._loading_ai.shutdown_worker_pool()
+        else:
+            self.menu_showed = True
+            self._loading = False
+        finally:
+            self._loading_future = None
+            self._loading_ai = None if self.menu_showed else self._loading_ai
+            self._loading_seed = None if self.menu_showed else self._loading_seed
+
+    def draw_loading_screen(self):
+        """Wyświetla postęp przygotowania workerów przed rozpoczęciem partii."""
+        self.screen.fill((24, 24, 24))
+        title_font = pygame.font.SysFont(None, 36)
+        detail_font = pygame.font.SysFont(None, 22)
+        center_x = self.screen.get_width() // 2
+        center_y = self.screen.get_height() // 2
+
+        if self._loading_error is not None:
+            title = title_font.render("Nie udało się uruchomić gry", True, (255, 255, 255))
+            self.screen.blit(
+                title, (center_x - title.get_width() // 2, center_y - 90))
+            lines = textwrap.wrap(self._loading_error, width=58) or [""]
+            for index, line in enumerate(lines[:4]):
+                rendered = detail_font.render(line, True, (255, 190, 190))
+                self.screen.blit(
+                    rendered,
+                    (center_x - rendered.get_width() // 2, center_y - 40 + index * 26),
+                )
+            prompt = detail_font.render(
+                "Naciśnij Enter, aby wrócić do menu", True, (220, 220, 220))
+            self.screen.blit(
+                prompt, (center_x - prompt.get_width() // 2, center_y + 90))
+            return
+
+        title = title_font.render("Przygotowywanie gry...", True, (255, 255, 255))
+        self.screen.blit(title, (center_x - title.get_width() // 2, center_y - 75))
+        with self._loading_progress_lock:
+            step, completed, total = self._loading_progress
+
+        bar_width = min(440, max(180, self.screen.get_width() - 80))
+        bar_rect = pygame.Rect(
+            center_x - bar_width // 2, center_y, bar_width, 24)
+        pygame.draw.rect(self.screen, (90, 90, 90), bar_rect, border_radius=8)
+        fraction = min(1.0, completed / total) if total else 0.0
+        fill_rect = bar_rect.copy()
+        fill_rect.width = round(bar_width * fraction)
+        if fill_rect.width:
+            pygame.draw.rect(
+                self.screen, (80, 190, 110), fill_rect, border_radius=8)
+
+        detail = "{} ({}/{})".format(step, completed, total)
+        rendered_detail = detail_font.render(detail, True, (230, 230, 230))
+        self.screen.blit(
+            rendered_detail,
+            (center_x - rendered_detail.get_width() // 2, center_y + 38),
+        )
+
+    def _dismiss_loading_error(self):
+        self._loading_error = None
+        self._loading_ai = None
+        self._loading_seed = None
+        with self._loading_progress_lock:
+            self._loading_progress = ("", 0, 0)
+
+    def _shutdown_resources(self):
+        self._loading_cancel_event.set()
+        if self._loading_future is not None:
+            try:
+                self._loading_future.result()
+            except WorkerPoolInitializationCancelled:
+                pass
+            except Exception as error:
+                log_error("AI worker initialization failed during shutdown: {}".format(error))
+        try:
+            if self.chess is not None:
+                self.chess.close()
+            elif self._loading_ai is not None:
+                self._loading_ai.shutdown_worker_pool()
+        finally:
+            self._startup_executor.shutdown(wait=True, cancel_futures=True)
 
     def game(self):
         """Rysuje planszę, wykonuje turę i wyświetla ekran zwycięzcy po zakończeniu."""

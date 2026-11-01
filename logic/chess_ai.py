@@ -1,9 +1,10 @@
 import math
+import multiprocessing
 import os
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
-from threading import Lock
+from threading import Event, Lock
 from typing import Callable, Optional
 
 from constants.piece_color import COLOR
@@ -64,6 +65,9 @@ CARD_VALUES = {
 CARD_MOVEMENT_TYPES = GameSimulation.MOVEMENT_CARDS
 _LMR_ENABLED = True
 _WORKER_CACHE_LIMIT = 256
+_WORKER_STARTUP_TIMEOUT_SECONDS = 60.0
+_WORKER_PROBE_RELEASE_EVENT = None
+_WORKER_PROBE_STARTED_COUNT = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,10 @@ class _SearchTimeout(Exception):
     pass
 
 
+class WorkerPoolInitializationCancelled(Exception):
+    """Sygnalizuje anulowanie przygotowania puli workerów."""
+
+
 @dataclass(frozen=True)
 class _RootEvaluation:
     score: Optional[float]
@@ -108,6 +116,26 @@ class _RootEvaluation:
     hits: int = 0
     score_hits: int = 0
     hints: int = 0
+
+
+def _initialize_search_worker(ready_count, probe_started_count, probe_release_event):
+    global _WORKER_PROBE_RELEASE_EVENT, _WORKER_PROBE_STARTED_COUNT
+    _WORKER_PROBE_RELEASE_EVENT = probe_release_event
+    _WORKER_PROBE_STARTED_COUNT = probe_started_count
+    with ready_count.get_lock():
+        ready_count.value += 1
+
+
+def _prewarm_search_worker():
+    if (
+        _WORKER_PROBE_RELEASE_EVENT is None
+        or _WORKER_PROBE_STARTED_COUNT is None
+    ):
+        raise RuntimeError("AI worker was not initialized before its probe")
+    with _WORKER_PROBE_STARTED_COUNT.get_lock():
+        _WORKER_PROBE_STARTED_COUNT.value += 1
+    _WORKER_PROBE_RELEASE_EVENT.wait()
+    return os.getpid()
 
 
 def _evaluate_root_action(state, action, depth, config, deadline, cache_snapshot=()):
@@ -162,6 +190,145 @@ class ChessAI:
         self._cache_hits = 0
         self._cache_score_hits = 0
         self._cache_hints = 0
+        self._worker_pool_lock = Lock()
+        self._worker_pool = None
+        self._worker_ready_count = None
+        self._worker_probe_started_count = None
+        self._worker_probe_release_event = None
+
+    def prepare_workers(
+        self,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        cancellation_event: Optional[Event] = None,
+        timeout_seconds: float = _WORKER_STARTUP_TIMEOUT_SECONDS,
+        minimum_progress_interval_seconds: float = 0.0,
+    ):
+        """Uruchamia pulę procesów i czeka na gotowość każdego workera."""
+        if cancellation_event is not None and cancellation_event.is_set():
+            raise WorkerPoolInitializationCancelled(
+                "AI worker initialization was cancelled")
+        if minimum_progress_interval_seconds < 0:
+            raise ValueError("The worker progress interval cannot be negative")
+        if self.max_workers <= 1:
+            if progress_callback is not None:
+                progress_callback(1, 1)
+            return
+
+        with self._worker_pool_lock:
+            if self._worker_pool is not None:
+                if progress_callback is not None:
+                    progress_callback(self.max_workers, self.max_workers)
+                return
+            if timeout_seconds <= 0:
+                raise TimeoutError("No time remains to start AI search workers")
+
+            context = multiprocessing.get_context("spawn")
+            ready_count = context.Value("i", 0)
+            probe_started_count = context.Value("i", 0)
+            probe_release_event = context.Event()
+            executor = ProcessPoolExecutor(
+                max_workers=self.max_workers,
+                mp_context=context,
+                initializer=_initialize_search_worker,
+                initargs=(ready_count, probe_started_count, probe_release_event),
+            )
+            self._worker_pool = executor
+            self._worker_ready_count = ready_count
+            self._worker_probe_started_count = probe_started_count
+            self._worker_probe_release_event = probe_release_event
+            warmup_futures = []
+            try:
+                deadline = time.monotonic() + timeout_seconds
+                for worker_index in range(1, self.max_workers + 1):
+                    if cancellation_event is not None and cancellation_event.is_set():
+                        raise WorkerPoolInitializationCancelled(
+                            "AI worker initialization was cancelled")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "Timed out waiting for AI search workers to start")
+
+                    future = executor.submit(_prewarm_search_worker)
+                    warmup_futures.append(future)
+                    while (
+                        ready_count.value < worker_index
+                        or probe_started_count.value < worker_index
+                    ):
+                        if (
+                            cancellation_event is not None
+                            and cancellation_event.is_set()
+                        ):
+                            raise WorkerPoolInitializationCancelled(
+                                "AI worker initialization was cancelled")
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                "Timed out waiting for AI search workers to start")
+                        for warmup_future in warmup_futures:
+                            if warmup_future.done():
+                                warmup_future.result()
+                        if cancellation_event is not None:
+                            cancellation_event.wait(0.01)
+                        else:
+                            time.sleep(0.01)
+
+                    if progress_callback is not None:
+                        progress_callback(worker_index, self.max_workers)
+                    if minimum_progress_interval_seconds:
+                        if cancellation_event is not None:
+                            if cancellation_event.wait(
+                                minimum_progress_interval_seconds
+                            ):
+                                raise WorkerPoolInitializationCancelled(
+                                    "AI worker initialization was cancelled")
+                        else:
+                            time.sleep(minimum_progress_interval_seconds)
+
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise WorkerPoolInitializationCancelled(
+                        "AI worker initialization was cancelled")
+                probe_release_event.set()
+                worker_process_ids = [
+                    future.result() for future in warmup_futures
+                ]
+                if len(set(worker_process_ids)) != self.max_workers:
+                    raise RuntimeError(
+                        "AI worker probes did not run in distinct processes")
+            except Exception:
+                probe_release_event.set()
+                for future in warmup_futures:
+                    future.cancel()
+                executor.shutdown(wait=True, cancel_futures=True)
+                self._clear_worker_pool(executor)
+                raise
+
+    def shutdown_worker_pool(self):
+        """Zamyka pulę procesów; wielokrotne wywołanie jest bezpieczne."""
+        with self._worker_pool_lock:
+            executor = self._worker_pool
+            # Keep synchronization handles alive until worker processes exit.
+            ready_count = self._worker_ready_count
+            probe_started_count = self._worker_probe_started_count
+            probe_release_event = self._worker_probe_release_event
+            self._clear_worker_pool(executor)
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def _clear_worker_pool(self, executor):
+        if self._worker_pool is executor:
+            self._worker_pool = None
+            self._worker_ready_count = None
+            self._worker_probe_started_count = None
+            self._worker_probe_release_event = None
+
+    def _discard_worker_pool(self, executor):
+        with self._worker_pool_lock:
+            if self._worker_pool is not executor:
+                return
+            # Keep synchronization handles alive until worker processes exit.
+            ready_count = self._worker_ready_count
+            probe_started_count = self._worker_probe_started_count
+            probe_release_event = self._worker_probe_release_event
+            self._clear_worker_pool(executor)
+        executor.shutdown(wait=True, cancel_futures=True)
 
     def clear_search_cache(self):
         with self._cache_lock:
@@ -234,12 +401,23 @@ class ChessAI:
                 worker_count,
             )
         )
-        executor = (
-            ProcessPoolExecutor(max_workers=worker_count)
-            if worker_count > 1
-            else None
-        )
         interrupted = False
+        if worker_count > 1 and self._worker_pool is None:
+            startup_time_remaining = self._deadline - time.monotonic()
+            if startup_time_remaining <= 0:
+                interrupted = True
+            else:
+                try:
+                    self.prepare_workers(timeout_seconds=startup_time_remaining)
+                except TimeoutError:
+                    if time.monotonic() >= self._deadline:
+                        interrupted = True
+                    else:
+                        raise
+        executor = (
+            self._worker_pool
+            if worker_count > 1 and not interrupted else None
+        )
         try:
             for depth in range(1, self.config.max_depth + 1):
                 if time.monotonic() >= self._deadline:
@@ -346,8 +524,6 @@ class ChessAI:
                         interrupted = True
                         for future in pending:
                             future.cancel()
-                        executor.shutdown(wait=True, cancel_futures=True)
-                        executor = None
                         for future, task_index in sorted(
                             pending.items(), key=lambda item: item[1]
                         ):
@@ -400,9 +576,10 @@ class ChessAI:
                         key=lambda item: (item[0], -action_order[item[1]]),
                         reverse=True)
                 ]
-        finally:
+        except Exception:
             if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=True)
+                self._discard_worker_pool(executor)
+            raise
 
         best_action = max(
             best_known_scores,

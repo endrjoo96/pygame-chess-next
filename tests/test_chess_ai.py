@@ -1,11 +1,19 @@
 import os
 import random
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
-from logic.chess_ai import ChessAI, SearchConfig, _RootEvaluation
+from logic.chess_ai import (
+    ChessAI,
+    SearchConfig,
+    WorkerPoolInitializationCancelled,
+    _RootEvaluation,
+)
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
@@ -250,6 +258,111 @@ def test_explicit_worker_count_overrides_cpu_percentage():
 
 def test_worker_count_is_capped_by_available_search_tasks():
     assert ChessAI(max_workers=8)._worker_count_for_tasks(3) == 3
+
+
+def test_prepared_worker_pool_reports_readiness_and_is_reused():
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    ai = ChessAI(SearchConfig(time_limit_seconds=5, max_depth=1), max_workers=2)
+    progress = []
+
+    def report_progress(ready, total):
+        progress.append((
+            ready,
+            total,
+            ai._worker_probe_started_count.value,
+            time.monotonic(),
+        ))
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as startup_executor:
+            startup_executor.submit(
+                ai.prepare_workers,
+                report_progress,
+                minimum_progress_interval_seconds=0.06,
+            ).result()
+        worker_pool = ai._worker_pool
+
+        assert worker_pool is not None
+        assert [(ready, total, started) for ready, total, started, _ in progress] == [
+            (1, 2, 1),
+            (2, 2, 2),
+        ]
+        assert progress[1][3] - progress[0][3] >= 0.05
+        ai.choose_action(observation)
+        assert ai._worker_pool is worker_pool
+        ai.choose_action(observation)
+        assert ai._worker_pool is worker_pool
+    finally:
+        ai.shutdown_worker_pool()
+
+    assert ai._worker_pool is None
+    ai.shutdown_worker_pool()
+
+
+def test_prepared_worker_pool_survives_search_timeout():
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=1e-12, max_depth=2),
+        max_workers=2,
+    )
+
+    try:
+        ai.prepare_workers()
+        worker_pool = ai._worker_pool
+        decision = ai.choose_action(observation)
+
+        assert decision.action in GameSimulation.available_actions(state)
+        assert ai._worker_pool is worker_pool
+    finally:
+        ai.shutdown_worker_pool()
+
+
+def test_worker_pool_preparation_honors_cancellation_before_start():
+    cancellation_event = Event()
+    cancellation_event.set()
+    ai = ChessAI(max_workers=2)
+
+    with pytest.raises(WorkerPoolInitializationCancelled):
+        ai.prepare_workers(cancellation_event=cancellation_event)
+
+    assert ai._worker_pool is None
+
+
+def test_worker_pool_preparation_cleans_up_when_cancelled_mid_start():
+    cancellation_event = Event()
+    ai = ChessAI(max_workers=2)
+
+    def cancel_after_first_worker(ready_workers, worker_count):
+        if ready_workers == 1:
+            cancellation_event.set()
+
+    with pytest.raises(WorkerPoolInitializationCancelled):
+        ai.prepare_workers(
+            cancel_after_first_worker,
+            cancellation_event,
+            minimum_progress_interval_seconds=30,
+        )
+
+    assert ai._worker_pool is None
+
+
+def test_expired_search_budget_does_not_wait_for_worker_startup():
+    state = make_black_to_move_state()
+    state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=1e-12, max_depth=2),
+        max_workers=2,
+    )
+
+    decision = ai.choose_action(observation)
+
+    assert decision.action in GameSimulation.available_actions(state)
+    assert ai._worker_pool is None
 
 
 @pytest.mark.parametrize("cpu_percent", [0, 101])
