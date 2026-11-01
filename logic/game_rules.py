@@ -60,10 +60,19 @@ class GameRules:
     """Mutowalne reguły przejścia stanu, niezależne od interfejsu gry."""
 
     @classmethod
-    def apply_action(cls, state: GameState, action: GameAction) -> GameState:
-        """Zastosowuje legalną akcję do stanu przekazanego przez wywołującego."""
-        rng = random.Random(GAME_SEED if GAME_SEED is not None else 0)
-        rng.setstate(state.random_state)
+    def apply_action(
+        cls,
+        state: GameState,
+        action: GameAction,
+        *,
+        advance_board_card_clock: bool = True,
+    ) -> GameState:
+        """Stosuje akcję, opcjonalnie aktualizując zegar kart planszowych."""
+        rng = None
+        if advance_board_card_clock:
+            rng = random.Random(GAME_SEED if GAME_SEED is not None else 0)
+            rng.setstate(state.random_state)
+
         state.selected_piece_position = action.source
         state.selected_card = (
             (state.current_turn, action.card_index)
@@ -74,7 +83,8 @@ class GameRules:
             target = state.pieces_locations[action.destination]
             if target.exists() and not cls._is_rook_tower_throw_selected(state):
                 cls._capture_piece(state, target)
-            cls._move_piece(state, action.destination, rng)
+            cls._move_piece(
+                state, action.destination, rng, advance_board_card_clock)
         elif action.action_type == GameActionType.APPLY_PASSIVE:
             enchantment = state.get_cards_for(state.current_turn)[action.card_index]
             cls._apply_selected_passive(state, action.source, enchantment)
@@ -90,7 +100,8 @@ class GameRules:
             state.selected_piece_position = 0
             cls._end_turn(state)
         elif action.action_type == GameActionType.RETURN_TO_START:
-            cls._move_piece(state, action.destination, rng)
+            cls._move_piece(
+                state, action.destination, rng, advance_board_card_clock)
         elif action.action_type == GameActionType.RESURRECT:
             piece = state.get_captured_for(action.captured_color).pop(action.captured_index)
             state.pieces_locations[action.destination] = piece
@@ -101,7 +112,8 @@ class GameRules:
             state.selected_piece_position = 0
             cls._end_turn(state)
 
-        state.random_state = rng.getstate()
+        if rng is not None:
+            state.random_state = rng.getstate()
         return state
 
     @staticmethod
@@ -192,7 +204,7 @@ class GameRules:
         captured.append(piece)
 
     @classmethod
-    def _move_piece(cls, state, destination, rng):
+    def _move_piece(cls, state, destination, rng, advance_board_card_clock):
         source_position = state.selected_piece_position
         if source_position <= 0:
             return
@@ -229,7 +241,8 @@ class GameRules:
         ):
             return
 
-        cls._finish_piece_move(state, collected_board_card, rng)
+        cls._finish_piece_move(
+            state, collected_board_card, rng, advance_board_card_clock)
 
     @staticmethod
     def _get_used_card(state, moving_color):
@@ -353,11 +366,14 @@ class GameRules:
         return False
 
     @classmethod
-    def _finish_piece_move(cls, state, collected_board_card, rng):
+    def _finish_piece_move(
+        cls, state, collected_board_card, rng, advance_board_card_clock,
+    ):
         cls._end_turn(state)
-        if collected_board_card and state.pending_board_card_delay is None:
-            cls._schedule_next_board_card(state, rng)
-        cls._advance_board_card_clock(state, rng)
+        if advance_board_card_clock:
+            if collected_board_card and state.pending_board_card_delay is None:
+                cls._schedule_next_board_card(state, rng)
+            cls._advance_board_card_clock(state, rng)
 
         state.selected_piece_position = 0
         state.selected_card = None
@@ -375,7 +391,7 @@ class GameRules:
 
     @classmethod
     def _advance_board_card_clock(cls, state, rng):
-        """Zmniejsza licznik od chwili wyłożenia karty i wykłada kolejną po zebraniu."""
+        """Zmniejsza licznik i wykłada kolejną kartę po zebraniu poprzedniej."""
         if state.pending_board_card_delay is None:
             return
         if state.pending_board_card_delay > 0:

@@ -1,3 +1,5 @@
+from typing import Optional
+
 import pygame
 from pygame._sdl2 import Window
 
@@ -46,7 +48,12 @@ class AIStatsWindow:
             and event_window_id == self._window.id
         )
 
-    def draw(self, stats: AISearchStats):
+    def draw(
+        self,
+        stats: AISearchStats,
+        board_card_available: bool = False,
+        board_card_delay: Optional[int] = None,
+    ):
         if self._window is None:
             raise RuntimeError("The AI statistics window is closed")
 
@@ -55,6 +62,14 @@ class AIStatsWindow:
 
         title = self._title_font.render("Statystyki AI", True, (255, 255, 255))
         surface.blit(title, (16, 14))
+
+        countdown_text = self._board_card_countdown_text(
+            board_card_available, board_card_delay)
+        if countdown_text is not None:
+            surface.blit(
+                self._detail_font.render(countdown_text, True, (220, 220, 220)),
+                (16, 43),
+            )
 
         if stats.is_searching:
             self._draw_candidate(surface, stats)
@@ -68,6 +83,23 @@ class AIStatsWindow:
         self._draw_live_progress(surface, stats)
         self._draw_engine_diagnostics(surface, stats)
         self._window.flip()
+
+    @staticmethod
+    def _board_card_countdown_text(
+        card_available: bool, delay: Optional[int],
+    ) -> Optional[str]:
+        if delay is None:
+            return None
+        if card_available and delay == 0:
+            return "Kolejna karta pojawi się po zakończeniu tury"
+        unit = "turę" if delay == 1 else (
+            "tury"
+            if delay % 10 in (2, 3, 4) and delay % 100 not in (12, 13, 14)
+            else "tur"
+        )
+        if card_available:
+            return "Kolejna karta pojawi się za {} {}".format(delay, unit)
+        return "Karta pojawi się na planszy za {} {}".format(delay, unit)
 
     def _draw_candidate(self, surface, stats):
         caption = self._body_font.render(
@@ -204,7 +236,8 @@ class AIStatsWindow:
         )
         surface.blit(cache_depth_text, (16, 304))
 
-        total_workers = len(stats.workers)
+        workers = sorted(stats.workers, key=self._worker_sort_key)
+        total_workers = len(workers)
         visible_workers = 17
         self._worker_scroll = min(
             max(0, self._worker_scroll),
@@ -245,7 +278,7 @@ class AIStatsWindow:
                 "initializing": (255, 220, 120),
                 "starting": (255, 220, 120),
             }
-            for visible_index, worker in enumerate(stats.workers[start:end]):
+            for visible_index, worker in enumerate(workers[start:end]):
                 if worker.is_local:
                     name = "Lokalny"
                 else:
@@ -275,6 +308,20 @@ class AIStatsWindow:
                     "Kółko myszy: przewijanie listy", True, (160, 160, 160)),
                 (16, 692),
             )
+
+    @staticmethod
+    def _worker_sort_key(worker):
+        if worker.state == "busy":
+            mode_order = {"search": 0, "prepare": 1}
+            return 0, mode_order.get(worker.mode, 2), worker.worker_id
+
+        state_order = {
+            "idle": 0,
+            "initializing": 1,
+            "starting": 2,
+            "not-started": 3,
+        }
+        return 1, state_order.get(worker.state, 4), worker.worker_id
 
     def close(self):
         if self._window is not None:

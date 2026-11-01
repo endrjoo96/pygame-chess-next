@@ -80,19 +80,27 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         cache_evictions=3,
         cache_deepest_entry_depth=3,
         workers=(
+            AIWorkerStats(3, "idle", pid=789),
             AIWorkerStats(
-                1, "idle", pid=123, cache_entries=12,
+                4, "busy", pid=456, mode="prepare", root="D7"),
+            AIWorkerStats(
+                2, "busy", pid=234, cache_entries=20,
                 mode="search", root="C2"),
             AIWorkerStats(
-                2, "busy", pid=456, cache_entries=20,
-                mode="prepare", root="D7"),
+                1, "idle", pid=123, cache_entries=12),
+            AIWorkerStats(
+                5, "busy", pid=567, mode="search", root="A1"),
+            AIWorkerStats(
+                6, "busy", pid=678, mode="prepare", root="E2"),
+            AIWorkerStats(7, "starting"),
         ),
         search_phase="searching",
         current_depth=3,
         completed_search_depth=2,
         live_visited_nodes=9876,
-    ))
+    ), board_card_available=True, board_card_delay=3)
     candidate_blits = window._window.surface.blits[:]
+    candidate_rendered_text = rendered_text[:]
     window.draw(AISearchStats(
         final_move="Wb8",
         final_score=1.5,
@@ -130,13 +138,27 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         if position[0] == 16 and 196 <= position[1] <= 232
     ]
     assert progress_ys == [196, 214, 232]
+    expected_worker_rows = [374 + row * 18 for row in range(7)]
     for column_x in (16, 236, 350, 470):
         worker_row_ys = [
             position[1]
             for position, _ in candidate_blits
             if position[0] == column_x and position[1] >= 374
         ]
-        assert worker_row_ys == [374, 392]
+        assert worker_row_ys == expected_worker_rows
+    worker_labels = [
+        text for text in candidate_rendered_text
+        if text.startswith("W") and text[1:3].isdigit()
+    ]
+    assert worker_labels == [
+        "W02 PID 234",
+        "W05 PID 567",
+        "W04 PID 456",
+        "W06 PID 678",
+        "W01 PID 123",
+        "W03 PID 789",
+        "W07",
+    ]
     assert "Myślę, że najlepszy ruch to..." in rendered_text
     assert "Ocena heurystyczna (czarne): +1.50 | głębokość: 3" in rendered_text
     assert "Ostatni wybrany ruch" in rendered_text
@@ -146,6 +168,7 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert "Aktywność: wyszukiwanie" in rendered_text
     assert "Odwiedzone węzły: 9 876" in rendered_text
     assert "Głębokość wyszukiwania: aktualnie 3 | ukończona 2" in rendered_text
+    assert "Kolejna karta pojawi się za 3 tury" in rendered_text
     assert "Główny: 42 / 256 | workery: 32 | wyparcia: 3" in rendered_text
     assert "Maks. głębokość wpisu cache: 3" in rendered_text
     assert "Głębokość ponderingu: aktualnie 0 | ukończona 0" in rendered_text
@@ -153,13 +176,28 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert "idle" in rendered_text
     assert "search" in rendered_text
     assert "C2" in rendered_text
-    assert "W02 PID 456" in rendered_text
+    assert "A1" in rendered_text
+    assert "W02 PID 234" in rendered_text
+    assert "W04 PID 456" in rendered_text
     assert "busy" in rendered_text
     assert "prepare" in rendered_text
     assert "D7" in rendered_text
+    assert "E2" in rendered_text
     assert "Stan" in rendered_text
     assert "Tryb" in rendered_text
     assert "Root" in rendered_text
+
+
+def test_board_card_countdown_text_uses_current_card_state():
+    assert AIStatsWindow._board_card_countdown_text(True, 3) == (
+        "Kolejna karta pojawi się za 3 tury")
+    assert AIStatsWindow._board_card_countdown_text(True, 1) == (
+        "Kolejna karta pojawi się za 1 turę")
+    assert AIStatsWindow._board_card_countdown_text(True, 0) == (
+        "Kolejna karta pojawi się po zakończeniu tury")
+    assert AIStatsWindow._board_card_countdown_text(False, 2) == (
+        "Karta pojawi się na planszy za 2 tury")
+    assert AIStatsWindow._board_card_countdown_text(False, None) is None
 
 
 def test_stats_window_scrolls_worker_lists_over_visible_limit(monkeypatch):

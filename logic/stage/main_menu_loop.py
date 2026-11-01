@@ -132,7 +132,14 @@ class Game:
                 else:
                     self.game()
                 if self.ai_stats_window is not None and self.chess is not None:
-                    self.ai_stats_window.draw(self.chess.ai_search_stats)
+                    self.ai_stats_window.draw(
+                        self.chess.ai_search_stats,
+                        board_card_available=(
+                            bool(self.chess.board_cards)
+                            or self.chess.board_card_available
+                        ),
+                        board_card_delay=self.chess.pending_board_card_delay,
+                    )
 
                 pygame.display.flip()
                 pygame.event.pump()

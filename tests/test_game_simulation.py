@@ -432,57 +432,48 @@ def test_delayed_passive_activates_at_players_next_turn(empty_state):
     assert empty_state.pieces_locations[29].get_type() == PIECE_TYPE.KNIGHT
 
 
-def test_board_card_replacement_uses_state_rng_deterministically(empty_state, monkeypatch):
-    import logic.game_rules as game_rules
-    import models.enchantment_cards as enchantment_cards
-    from utils.run_config import RunMode
-
+@pytest.mark.parametrize("pending_delay", [None, 1])
+def test_collecting_current_board_card_does_not_spawn_a_future_card(
+    empty_state, pending_delay,
+):
     empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
     empty_state.board_card_available = True
     empty_state.board_card_position = 2
     empty_state.board_enchantment = EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.create(
         uses=2
     )
-    empty_state.random_state = random.Random(2).getstate()
-    monkeypatch.setattr(game_rules, "RUN_MODE", RunMode.PROD)
-    monkeypatch.setattr(enchantment_cards, "RUN_MODE", RunMode.PROD)
+    empty_state.pending_board_card_delay = pending_delay
+    initial_random_state = empty_state.random_state
     action = next(
         action for action in GameSimulation.available_actions(empty_state)
         if action.source == 1 and action.destination == 2
     )
 
-    first_result = GameSimulation.apply(empty_state, action)
-    second_result = GameSimulation.apply(empty_state, action)
+    result = GameSimulation.apply(empty_state, action)
 
-    assert first_result.random_state == second_result.random_state
-    assert first_result.board_card_position == second_result.board_card_position
-    assert (
-        first_result.board_enchantment.get_card_type()
-        == second_result.board_enchantment.get_card_type()
-    )
-    assert (
-        first_result.board_enchantment.get_remaining_uses()
-        == second_result.board_enchantment.get_remaining_uses()
-    )
-    assert first_result.random_state != empty_state.random_state
+    assert not result.board_card_available
+    assert result.board_cards == []
+    assert result.board_enchantment is None
+    assert result.pending_board_card_delay == pending_delay
+    assert result.random_state == initial_random_state
+    assert len(result.white_cards) == 1
+    assert result.white_cards[0].get_card_type() == (
+        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD)
     assert empty_state.board_card_available
     assert empty_state.board_card_position == 2
     assert empty_state.white_cards == []
 
 
-def test_board_card_countdown_places_cards_without_waiting_for_collection(empty_state, monkeypatch):
-    import logic.game_rules as game_rules
-    import models.enchantment_cards as enchantment_cards
-    from utils.run_config import RunMode
-
-    monkeypatch.setattr(game_rules, "RUN_MODE", RunMode.PROD)
-    monkeypatch.setattr(enchantment_cards, "RUN_MODE", RunMode.PROD)
+def test_board_card_countdown_does_not_advance_in_simulation(empty_state):
     empty_state.pieces_locations[1] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
     empty_state.pieces_locations[57] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
     empty_state.board_card_available = True
     empty_state.board_card_position = 17
     empty_state.board_enchantment = EnchantmentCardType.PIECE_TELEPORT.create()
     empty_state.pending_board_card_delay = 1
+    empty_state.board_cards = [
+        (17, empty_state.board_enchantment),
+    ]
 
     white_move = next(
         action for action in GameSimulation.available_actions(empty_state)
@@ -491,8 +482,8 @@ def test_board_card_countdown_places_cards_without_waiting_for_collection(empty_
     after_white_move = GameSimulation.apply(empty_state, white_move)
 
     assert after_white_move.board_card_available
-    assert after_white_move.pending_board_card_delay in range(1, 6)
-    assert len(after_white_move.board_cards) == 2
+    assert after_white_move.pending_board_card_delay == 1
+    assert [position for position, _ in after_white_move.board_cards] == [17]
 
     black_move = next(
         action for action in GameSimulation.available_actions(after_white_move)
@@ -500,53 +491,5 @@ def test_board_card_countdown_places_cards_without_waiting_for_collection(empty_
     )
     after_black_move = GameSimulation.apply(after_white_move, black_move)
     assert after_black_move.board_card_available
-    assert len(after_black_move.board_cards) >= 2
-
-    collect_card = next(
-        action for action in GameSimulation.available_actions(after_black_move)
-        if action.source == 9 and action.destination == 17
-    )
-    after_collection = GameSimulation.apply(after_black_move, collect_card)
-
-    assert after_collection.board_card_available
-    assert all(position != 17 for position, _ in after_collection.board_cards)
-    assert 1 <= after_collection.pending_board_card_delay <= 5
-
-
-def test_board_card_placement_starts_next_card_countdown(empty_state, monkeypatch):
-    import logic.game_rules as game_rules
-    import models.enchantment_cards as enchantment_cards
-    from utils.run_config import RunMode
-
-    class FixedRng:
-        @staticmethod
-        def choice(values):
-            return values[0]
-
-        @staticmethod
-        def randint(minimum, maximum):
-            assert (minimum, maximum) == (1, 5)
-            return 3
-
-    monkeypatch.setattr(game_rules, "RUN_MODE", RunMode.PROD)
-    monkeypatch.setattr(enchantment_cards, "RUN_MODE", RunMode.PROD)
-    monkeypatch.setattr(
-        EnchantmentCardType,
-        "create_random",
-        staticmethod(lambda rng: EnchantmentCardType.PIECE_TELEPORT.create()),
-    )
-
-    game_rules.GameRules._place_next_board_card(empty_state, FixedRng())
-
-    assert empty_state.board_card_available
-    assert empty_state.pending_board_card_delay == 3
-
-    game_rules.GameRules._advance_board_card_clock(empty_state, FixedRng())
-    assert empty_state.board_card_available
-    assert empty_state.pending_board_card_delay == 2
-    game_rules.GameRules._advance_board_card_clock(empty_state, FixedRng())
-    game_rules.GameRules._advance_board_card_clock(empty_state, FixedRng())
-
-    assert empty_state.board_card_available
-    assert len(empty_state.board_cards) == 2
-    assert empty_state.pending_board_card_delay == 3
+    assert after_black_move.pending_board_card_delay == 1
+    assert [position for position, _ in after_black_move.board_cards] == [17]

@@ -472,14 +472,3 @@ def test_board_card_countdown_places_another_card_while_one_is_available(monkeyp
     assert game.board_card_available
     assert game.pending_board_card_delay == 3
     assert len(game.board_cards) == 2
-
-
-def test_board_card_countdown_text_shows_clock_started_at_placement():
-    assert GameLogicLoop._board_card_countdown_text(True, 3) == (
-        "Kolejna karta pojawi się za 3 tury")
-    assert GameLogicLoop._board_card_countdown_text(True, 1) == (
-        "Kolejna karta pojawi się za 1 turę")
-    assert GameLogicLoop._board_card_countdown_text(True, 0) == (
-        "Kolejna karta pojawi się po zakończeniu tury")
-    assert GameLogicLoop._board_card_countdown_text(False, 2) == (
-        "Karta pojawi się na planszy za 2 tury")

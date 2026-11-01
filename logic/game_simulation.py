@@ -199,8 +199,14 @@ class GameSimulation:
         return actions
 
     @classmethod
-    def apply(cls, state: GameState, action: GameAction) -> GameState:
-        """Zastosowuje legalną akcję na kopii stanu i pozostawia wejście nietknięte."""
+    def apply(
+        cls,
+        state: GameState,
+        action: GameAction,
+        *,
+        advance_board_card_clock: bool = False,
+    ) -> GameState:
+        """Stosuje akcję na kopii; domyślnie nie przewiduje przyszłych kart planszowych."""
         if action not in cls.available_actions(state):
             log_error(
                 "Rejected illegal simulated action {} for {}".format(
@@ -208,9 +214,20 @@ class GameSimulation:
             )
             raise ValueError("The action is not legal in the supplied game state")
 
-        return cls._apply_generated_action(state, action)
+        return cls._apply_generated_action(
+            state, action, advance_board_card_clock=advance_board_card_clock)
 
     @classmethod
-    def _apply_generated_action(cls, state: GameState, action: GameAction) -> GameState:
+    def _apply_generated_action(
+        cls,
+        state: GameState,
+        action: GameAction,
+        *,
+        advance_board_card_clock: bool = False,
+    ) -> GameState:
         """Stosuje akcję wygenerowaną dla niezmienionego stanu bez ponownej walidacji."""
-        return GameRules.apply_action(state.clone(), action)
+        return GameRules.apply_action(
+            state.clone(),
+            action,
+            advance_board_card_clock=advance_board_card_clock,
+        )

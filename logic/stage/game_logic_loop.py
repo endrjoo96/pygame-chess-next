@@ -170,21 +170,6 @@ class GameLogicLoop(object):
         # show welcome text
         self.screen.blit(rendered_text, ((self.screen.get_width() - rendered_text.get_width()) // 2,
                                          self.context.board_offset_y - rendered_text.get_height() - 5))
-        countdown_text = self._board_card_countdown_text(
-            bool(getattr(self, "board_cards", [])) or self.board_card_available,
-            self.pending_board_card_delay,
-        )
-        if countdown_text is not None:
-            countdown_font = SysFont(self.context.comic_sans_font, 16)
-            rendered_countdown = countdown_font.render(
-                countdown_text, True, white_color)
-            self.screen.blit(
-                rendered_countdown,
-                (
-                    (self.screen.get_width() - rendered_countdown.get_width()) // 2,
-                    8,
-                ),
-            )
         self.print_annotations()
         winner = self.capture_processor.get_winner()
         if winner is None:
@@ -197,21 +182,6 @@ class GameLogicLoop(object):
             log_info("Game winner: {}".format(winner.value))
 
         return winner
-
-    @staticmethod
-    def _board_card_countdown_text(card_available, delay):
-        if delay is None:
-            return None
-        if card_available and delay == 0:
-            return "Kolejna karta pojawi się po zakończeniu tury"
-        unit = "turę" if delay == 1 else (
-            "tury"
-            if delay % 10 in (2, 3, 4) and delay % 100 not in (12, 13, 14)
-            else "tur"
-        )
-        if card_available:
-            return "Kolejna karta pojawi się za {} {}".format(delay, unit)
-        return "Karta pojawi się na planszy za {} {}".format(delay, unit)
 
     def play_ai_turn(self):
         """Asynchronicznie wyszukuje ruch i zatwierdza go po zakończeniu obliczeń."""
@@ -480,7 +450,8 @@ class GameLogicLoop(object):
 
     def __apply_domain_action(self, action):
         state = GameState.from_game(self)
-        result = GameSimulation.apply(state, action)
+        result = GameSimulation.apply(
+            state, action, advance_board_card_clock=True)
 
         self.pieces_locations = result.pieces_locations
         self.current_turn = result.current_turn
