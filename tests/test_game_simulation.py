@@ -1132,6 +1132,30 @@ def test_trebuchet_can_launch_an_opposing_pawn_and_stuns_the_rook(empty_state):
     assert result.current_turn == COLOR.BLACK
 
 
+def test_trebuchet_can_launch_to_any_empty_square_within_five_fields(empty_state):
+    rook_position = POS.A1.value
+    pawn_position = POS.A2.value
+    destination = POS.F5.value
+    blocked_line_destination = POS.F6.value
+    beyond_range = POS.G7.value
+    empty_state.pieces_locations[rook_position] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    empty_state.pieces_locations[pawn_position] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+    empty_state.pieces_locations[POS.C3.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.BISHOP)
+    empty_state.white_cards.append(EnchantmentCardType.ROOK_TREBUCHET.create())
+
+    trebuchet_destinations = {
+        action.destination for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.TREBUCHET
+        and action.source == rook_position
+        and action.secondary_source == pawn_position
+    }
+
+    assert destination in trebuchet_destinations
+    assert blocked_line_destination in trebuchet_destinations
+    assert beyond_range not in trebuchet_destinations
+
+
 def test_recruit_creates_a_pawn_on_an_empty_home_square(empty_state):
     empty_state.white_cards.append(EnchantmentCardType.RECRUIT_PAWN.create(uses=2))
     destination = POS.A1.value

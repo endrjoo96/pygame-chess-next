@@ -212,6 +212,20 @@ class AIStatsWindow:
                 "{}: aktualnie {} | ukończona {}".format(
                     depth_label, current_depth, completed_depth),
             )
+        if stats.ponder_dangerous_white_candidates:
+            lines += ("Najgroźniejsze ruchy białych dla czarnych:",)
+            lines += tuple(
+                "{}. {} | czarne: {:+.2f} | {}".format(
+                    rank,
+                    move,
+                    score,
+                    "po ruchu białych" if depth == 1
+                    else "po odpowiedzi czarnych" if depth == 2
+                    else "głębokość: {}".format(depth),
+                )
+                for rank, (move, score, depth) in enumerate(
+                    stats.ponder_dangerous_white_candidates, start=1)
+            )
         for line_index, text in enumerate(lines):
             surface.blit(
                 self._detail_font.render(text, True, (220, 220, 220)),

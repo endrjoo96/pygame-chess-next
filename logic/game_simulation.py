@@ -21,10 +21,7 @@ class GameSimulation:
         EnchantmentCardType.QUEEN_JUMP_ALLIES,
         EnchantmentCardType.ROOK_TOWER_THROW,
     }
-    TREBUCHET_DIRECTIONS = (
-        (-1, 0), (1, 0), (0, -1), (0, 1),
-        (-1, -1), (-1, 1), (1, -1), (1, 1),
-    )
+    TREBUCHET_RANGE = 5
 
     @staticmethod
     def destinations_for(piece, source, pieces_locations, enchantment=None):
@@ -127,12 +124,14 @@ class GameSimulation:
                             ) != 1
                         ):
                             continue
-                        for direction_x, direction_y in cls.TREBUCHET_DIRECTIONS:
-                            for distance in range(1, 7):
-                                target_x = rook_x + direction_x * distance
-                                target_y = rook_y + direction_y * distance
-                                if not (0 <= target_x < 8 and 0 <= target_y < 8):
-                                    break
+                        for target_y in range(
+                            max(0, rook_y - cls.TREBUCHET_RANGE),
+                            min(7, rook_y + cls.TREBUCHET_RANGE) + 1,
+                        ):
+                            for target_x in range(
+                                max(0, rook_x - cls.TREBUCHET_RANGE),
+                                min(7, rook_x + cls.TREBUCHET_RANGE) + 1,
+                            ):
                                 destination = xy_to_id(target_x, target_y)
                                 if not state.pieces_locations[destination].exists():
                                     actions.append(GameAction(

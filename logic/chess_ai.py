@@ -393,7 +393,8 @@ def _expand_ponder_white_action(state, action):
                 worker_pid, action)
         )
     try:
-        first_child = GameSimulation._apply_generated_action(state, action)
+        first_child = GameSimulation._apply_generated_action(
+            state, action, advance_board_card_clock=True)
         frontier = [first_child]
         while frontier:
             if (
@@ -416,7 +417,10 @@ def _expand_ponder_white_action(state, action):
                 ):
                     break
                 children.append(GameSimulation._apply_generated_action(
-                    current_state, next_action))
+                    current_state,
+                    next_action,
+                    advance_board_card_clock=True,
+                ))
             frontier.extend(reversed(children))
         task_status = (
             "cancelled"
@@ -477,7 +481,9 @@ class ChessAI:
         self._ponder_root_actions_discovered = None
         self._ponder_depth_counts = ()
         self._ponder_max_branch_depth = None
+        self._ponder_dangerous_white_candidates = ()
         self._cache = SearchCache(config.cache_max_entries) if config.cache_enabled else None
+        self._ponder_completed_depths = {}
         self._cache_lock = Lock()
         self._cache_generation = 0
         self._cache_hits = 0
@@ -705,6 +711,7 @@ class ChessAI:
     def clear_search_cache(self):
         with self._cache_lock:
             self._cache_generation += 1
+            self._ponder_completed_depths.clear()
             if self._cache is not None:
                 self._cache = SearchCache(self.config.cache_max_entries)
 
@@ -749,6 +756,7 @@ class ChessAI:
                 self._ponder_root_actions_discovered,
                 self._ponder_depth_counts,
                 self._ponder_max_branch_depth,
+                self._ponder_dangerous_white_candidates,
             )
         return (
             phase,
@@ -772,6 +780,7 @@ class ChessAI:
             self._ponder_root_actions_discovered = None
             self._ponder_depth_counts = ()
             self._ponder_max_branch_depth = None
+            self._ponder_dangerous_white_candidates = ()
 
     def _set_current_search_depth(self, depth):
         with self._search_progress_lock:
@@ -782,15 +791,36 @@ class ChessAI:
                 self._ponder_depth_counts = ()
                 self._ponder_max_branch_depth = 0
 
+    def _set_dangerous_white_candidates(self, candidates):
+        formatted_candidates = []
+        for action, score, depth in candidates:
+            if not math.isfinite(score):
+                continue
+            source = GameAction._format_position(action.source).lower()
+            destination = (
+                GameAction._format_position(action.destination).lower()
+                if action.destination else "-"
+            )
+            move = "{}-{}".format(source, destination)
+            if action.action_type != GameActionType.MOVE:
+                move = "{} {}".format(action.action_type.value, move)
+            formatted_candidates.append((move, score, depth))
+            if len(formatted_candidates) == 5:
+                break
+        with self._search_progress_lock:
+            if self._search_phase == "pondering":
+                self._ponder_dangerous_white_candidates = tuple(
+                    formatted_candidates)
+
     def _set_ponder_depth_progress(self, branch_depths):
         depth_counts = {}
         for depth in branch_depths:
-                depth_counts[depth] = depth_counts.get(depth, 0) + 1
+            depth_counts[depth] = depth_counts.get(depth, 0) + 1
         with self._search_progress_lock:
-                if self._search_phase != "pondering":
-                    return
-                self._ponder_depth_counts = tuple(sorted(depth_counts.items()))
-                self._ponder_max_branch_depth = max(depth_counts, default=0)
+            if self._search_phase != "pondering":
+                return
+            self._ponder_depth_counts = tuple(sorted(depth_counts.items()))
+            self._ponder_max_branch_depth = max(depth_counts, default=0)
 
     def _begin_ponder_progress(self, white_actions_total):
         with self._search_progress_lock:
@@ -799,6 +829,7 @@ class ChessAI:
             self._ponder_branches_generated = 0
             self._ponder_root_actions_completed = 0
             self._ponder_root_actions_discovered = 0
+            self._ponder_dangerous_white_candidates = ()
 
     def _record_ponder_progress(
         self,
@@ -1010,21 +1041,39 @@ class ChessAI:
         root_key = state.cache_key() if self._cache is not None else None
 
         search_started = time.monotonic()
-        self._deadline = search_started + self.config.time_limit_seconds
+        pondered_depth = None
+        with self._cache_lock:
+            if cache_generation is None:
+                cache_generation = self._cache_generation
+            if (
+                root_key is not None
+                and cache_generation == self._cache_generation
+            ):
+                pondered_depth = self._ponder_completed_depths.pop(
+                    root_key, None)
+            hint = (
+                self._cache.best_move(state.cache_key())
+                if self._cache is not None
+                and cache_generation == self._cache_generation else None
+            )
+        time_limit_seconds = self._search_time_limit_for_depth(pondered_depth)
+        self._deadline = search_started + time_limit_seconds
+        log_info(
+            "AI search time budget: allocated={:.3f}s, configured={:.3f}s, "
+            "ponder_depth={}, max_depth={}, fallback={}".format(
+                time_limit_seconds,
+                self.config.time_limit_seconds,
+                pondered_depth if pondered_depth is not None else "none",
+                self.config.max_depth,
+                pondered_depth is None,
+            )
+        )
         self._begin_search_progress("searching")
         self._cache_hits = self._cache_score_hits = self._cache_hints = 0
         ordered_actions = self._order_actions(state, root_actions)
         action_order = {
             action: index for index, action in enumerate(ordered_actions)
         }
-        with self._cache_lock:
-            if cache_generation is None:
-                cache_generation = self._cache_generation
-            hint = (
-                self._cache.best_move(state.cache_key())
-                if self._cache is not None
-                and cache_generation == self._cache_generation else None
-            )
         if hint in ordered_actions:
             ordered_actions.remove(hint)
             ordered_actions.insert(0, hint)
@@ -1349,6 +1398,16 @@ class ChessAI:
             candidate_callback(best_action, best_action_depth, best_score)
         return SearchResult(best_action, best_score, completed_depth, self._nodes)
 
+    def _search_time_limit_for_depth(self, pondered_depth):
+        if pondered_depth is None or self.config.max_depth <= 1:
+            return self.config.time_limit_seconds
+        pondered_depth = min(max(pondered_depth, 1), self.config.max_depth)
+        depth_progress = (
+            (pondered_depth - 1) / (self.config.max_depth - 1)
+        )
+        time_fraction = 1.0 - 0.8 * depth_progress
+        return self.config.time_limit_seconds * time_fraction
+
     def cancel_ponder(self):
         """Sygnalizuje workerom przerwanie opcjonalnego wyszukiwania."""
         with self._ponder_state_lock:
@@ -1368,6 +1427,8 @@ class ChessAI:
         if cancellation_event.is_set():
             return PonderResult(0, 0, 0, "cancelled")
 
+        with self._cache_lock:
+            self._ponder_completed_depths.clear()
         self.prepare_workers(
             cancellation_event=cancellation_event,
             force_pool=True,
@@ -1428,6 +1489,38 @@ class ChessAI:
         def update_depth_progress():
             self._set_ponder_depth_progress(
                 branch["completed_depth"] for branch in root_branches)
+
+        def update_most_dangerous_white_moves():
+            best_score_by_action = {}
+            best_depth_by_action = {}
+            for index, branch in enumerate(root_branches):
+                score = branch["candidate_score"]
+                depth = branch["candidate_depth"]
+                if score is None or not math.isfinite(score):
+                    continue
+                action_index = root_order_keys[index][0]
+                if (
+                    action_index not in best_score_by_action
+                    or score < best_score_by_action[action_index]
+                    or (
+                        score == best_score_by_action[action_index]
+                        and depth > best_depth_by_action[action_index]
+                    )
+                ):
+                    best_score_by_action[action_index] = score
+                    best_depth_by_action[action_index] = depth
+            top_actions = sorted(
+                best_score_by_action.items(),
+                key=lambda item: (item[1], item[0]),
+            )[:5]
+            self._set_dangerous_white_candidates(
+                (
+                    white_actions[action_index],
+                    score,
+                    best_depth_by_action[action_index],
+                )
+                for action_index, score in top_actions
+            )
 
         def queue_branch(root_index):
             branch = root_branches[root_index]
@@ -1524,8 +1617,24 @@ class ChessAI:
                         root_state, root_key, actions = task_group_for(root_index)
                         if not actions:
                             branch["terminal"] = True
+                            branch["root_alpha"] = self.evaluate(root_state)
+                            branch["completed_score"] = branch["root_alpha"]
+                            branch["completed_depth"] = self.config.max_depth
+                            branch["candidate_score"] = branch["root_alpha"]
+                            branch["candidate_depth"] = 1
                             active_branches.remove(root_index)
+                            with self._cache_lock:
+                                if (
+                                    self._cache_generation == cache_generation
+                                    and self._cache is cache
+                                ):
+                                    self._ponder_completed_depths[root_key] = max(
+                                        self.config.max_depth,
+                                        self._ponder_completed_depths.get(
+                                            root_key, 0),
+                                    )
                             update_depth_progress()
+                            update_most_dangerous_white_moves()
                             continue
                         if branch["in_flight"]:
                             continue
@@ -1614,6 +1723,9 @@ class ChessAI:
                                 (expansion_index, branch_index))
                             root_branches.append({
                                 "completed_depth": 0,
+                                "completed_score": None,
+                                "candidate_score": None,
+                                "candidate_depth": 0,
                                 "current_depth": 1,
                                 "next_action": 0,
                                 "root_alpha": -math.inf,
@@ -1667,6 +1779,22 @@ class ChessAI:
                         queue_branch(root_index)
                     else:
                         branch["completed_depth"] = search_depth
+                        branch["completed_score"] = branch["root_alpha"]
+                        if search_depth == 1:
+                            branch["candidate_score"] = branch["root_alpha"]
+                            branch["candidate_depth"] = 2
+                            update_most_dangerous_white_moves()
+                        root_state_key = task_groups[root_index][0]
+                        with self._cache_lock:
+                            if (
+                                self._cache_generation == cache_generation
+                                and self._cache is cache
+                            ):
+                                self._ponder_completed_depths[root_state_key] = max(
+                                    search_depth,
+                                    self._ponder_completed_depths.get(
+                                        root_state_key, 0),
+                                )
                         if search_depth >= self.config.max_depth:
                             active_branches.remove(root_index)
                         else:

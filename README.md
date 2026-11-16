@@ -32,10 +32,15 @@ Bot gra czarnymi. Podczas namysłu plansza jest przyciemniona, wyświetla się
 animowany spinner. Przy partii przeciwko botowi otwiera się osobne okno
 statystyk, w którym widać najlepszy dotychczas znaleziony ruch, jego ocenę i
 głębokość; po zakończeniu wyszukiwania także wybrany ruch i liczbę odwiedzonych
-węzłów. Panel na bieżąco pokazuje także fazę pracy (`wyszukiwanie` lub
-`pondering`), liczbę odwiedzonych węzłów oraz aktualnie badaną i ostatnią
-ukończoną głębokość. Zajętość głównego cache i sumę wpisów w lokalnych cache
-workerów pokazuje osobno — cache workerów mogą zawierać kopie tych samych wpisów.
+węzłów. Podczas ponderingu panel pokazuje do pięciu najgroźniejszych ruchów
+białych, uszeregowanych wyłącznie według oceny z perspektywy czarnych; głębokość
+nie wpływa na ranking. Wynik ruchu pochodzi z oceny pozycji po ruchu białych i
+najlepszej znalezionej odpowiedzi czarnych (głębokość 2, czyli dwa półruchy).
+Panel na bieżąco pokazuje także fazę pracy (`wyszukiwanie` lub `pondering`),
+liczbę odwiedzonych węzłów oraz aktualnie badaną i ostatnią ukończoną głębokość.
+Zajętość głównego cache i sumę wpisów w
+lokalnych cache workerów pokazuje osobno — cache workerów mogą zawierać kopie
+tych samych wpisów.
 Licznik węzłów workerów jest odświeżany porcjami, aby ograniczyć narzut.
 Widoczne są też wyparcia i bieżący stan każdego workera (`not-started`, `starting`,
 `initializing`, `busy` lub `idle`);
@@ -79,7 +84,7 @@ Ustawienia znajdują się w `run.properties`:
 | `log.level` | Poziom logów: `ERROR`, `WARN`, `INFO`, `LOGIC`, `DEBUG` lub `OFF`; domyślnie `WARN`. |
 | `game.seed` | Opcjonalny seed losowości. Jeśli klucz jest pominięty lub pusty, nowy seed 64-bitowy jest losowany przy rozpoczęciu partii. |
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
-| `ai.search.time_limit_seconds` | Łączny budżet czasu AI na wybranie ruchu, w sekundach. |
+| `ai.search.time_limit_seconds` | Bazowy budżet czasu AI na wybranie ruchu, w sekundach. W zależności od najwyższej ukończonej głębokości ponderingu dla aktualnego stanu jest liniowo zmniejszany z 100% przy głębokości 1 do 20% przy `ai.search.max_depth`; jeśli nie ma ukończonego wyniku ponderingu, wykorzystywany jest pełny czas. Przy `max_depth=1` budżet pozostaje pełny. Przydzielony czas i parametry obliczenia są logowane na poziomie `INFO`. |
 | `ai.search.cpu_percent` | Limit workerów AI jako procent logicznych CPU, liczba całkowita od 1 do 100; domyślnie `100`. |
 | `ai.search.ponder.cpu_percent` | Procent puli workerów przeznaczony na pondering podczas tury białych, liczba całkowita od 0 do 100; brak klucza oznacza `0` i wyłącza pondering. Wymaga `ai.search.cache.enabled=true`. Dla wartości dodatniej liczba workerów wynosi `ceil(rozmiar_puli * procent / 100)`. |
 | `ai.search.cache.enabled` | `true` włącza pamięć wyników i wskazówek ruchu; `false` wyłącza ich tworzenie i odczyt. Domyślnie `true`. |

@@ -116,7 +116,8 @@ class EnchantmentCardType(Enum):
         PIECE_TYPE.PAWN, any_piece_behaviors.no_additional_moves)
     ROOK_TREBUCHET = (
         [EnchantmentType.REUSABLE, EnchantmentType.STUN_AFTER_USE], 0.12, "Trebusz",
-        "Wystrzel wybranego piona z sąsiedniej wieży na puste pole w zasięgu 6. "
+        "Wystrzel wybranego piona z sąsiedniej wieży na dowolne puste pole "
+        "w promieniu 5 pól. "
         "Wieża zostaje ogłuszona na 1 turę.",
         PIECE_TYPE.ROOK, any_piece_behaviors.no_additional_moves, (1, 2))
     RECRUIT_PAWN = (

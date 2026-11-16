@@ -42,3 +42,6 @@ class AISearchStats:
     ponder_root_actions_discovered: Optional[int] = None
     ponder_depth_counts: Tuple[Tuple[int, int], ...] = ()
     ponder_max_branch_depth: Optional[int] = None
+    ponder_dangerous_white_candidates: Tuple[
+        Tuple[str, float, int], ...
+    ] = ()

@@ -324,7 +324,9 @@ class GameLogicLoop(object):
         cache_deepest_entry_depth = None
         workers = ()
         progress_stats = (
-            None, None, None, None, None, None, None, None, None, (), None)
+            None, None, None, None, None, None, None, None, None, (), None,
+            (),
+        )
         if isinstance(self.black_ai, ChessAI):
             cache_stats = self.black_ai.cache_diagnostics()
             cache_deepest_entry_depth = cache_stats[4]
@@ -360,6 +362,7 @@ class GameLogicLoop(object):
             ponder_root_actions_discovered=progress_stats[8],
             ponder_depth_counts=progress_stats[9],
             ponder_max_branch_depth=progress_stats[10],
+            ponder_dangerous_white_candidates=progress_stats[11],
         )
 
     def draw_ai_thinking_overlay(self):

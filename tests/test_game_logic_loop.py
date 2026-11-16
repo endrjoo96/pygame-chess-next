@@ -409,6 +409,13 @@ def test_ai_search_stats_include_cache_and_individual_worker_states():
         root_actions_discovered=10,
     )
     game.black_ai._set_ponder_depth_progress([0, 2, 2])
+    game.black_ai._set_dangerous_white_candidates((
+        (
+            GameAction(GameActionType.MOVE, POS.E2.value, POS.E4.value),
+            -1.25,
+            2,
+        ),
+    ))
 
     stats = game.ai_search_stats
 
@@ -431,6 +438,9 @@ def test_ai_search_stats_include_cache_and_individual_worker_states():
     assert stats.ponder_root_actions_discovered == 10
     assert stats.ponder_depth_counts == ((0, 1), (2, 2))
     assert stats.ponder_max_branch_depth == 2
+    assert stats.ponder_dangerous_white_candidates == (
+        ("e2-e4", -1.25, 2),
+    )
 
 
 def test_ai_starts_pondering_after_its_move():
@@ -579,7 +589,7 @@ def test_player_can_fire_trebuchet_with_three_board_clicks():
     game = make_game(EnchantmentCardType.ROOK_TREBUCHET, uses=2)
     rook_position = POS.E4.value
     pawn_position = POS.D4.value
-    destination = POS.E7.value
+    destination = POS.H6.value
     game.pieces_locations[rook_position] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
     game.pieces_locations[pawn_position] = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
 

@@ -123,6 +123,13 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         ponder_root_actions_discovered=10,
         ponder_depth_counts=((1, 2), (2, 1)),
         ponder_max_branch_depth=2,
+        ponder_dangerous_white_candidates=(
+            ("e2-e4", -1.25, 2),
+            ("d2-d4", -1.0, 2),
+            ("c2-c4", -0.75, 2),
+            ("g1-f3", -0.5, 2),
+            ("b1-c3", -0.25, 2),
+        ),
     ))
     ponder_blits = window._window.surface.blits[:]
 
@@ -181,6 +188,12 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert "Główny: 42 / 256 | workery: 32 | wyparcia: 3" in rendered_text
     assert "Maks. głębokość wpisu cache: 3" in rendered_text
     assert "Największa ukończona głębokość gałęzi: 2" in rendered_text
+    assert "Najgroźniejsze ruchy białych dla czarnych:" in rendered_text
+    assert "1. e2-e4 | czarne: -1.25 | po odpowiedzi czarnych" in rendered_text
+    assert "2. d2-d4 | czarne: -1.00 | po odpowiedzi czarnych" in rendered_text
+    assert "3. c2-c4 | czarne: -0.75 | po odpowiedzi czarnych" in rendered_text
+    assert "4. g1-f3 | czarne: -0.50 | po odpowiedzi czarnych" in rendered_text
+    assert "5. b1-c3 | czarne: -0.25 | po odpowiedzi czarnych" in rendered_text
     assert (
         "Gałęzie wg ukończonej głębokości: d1:2 | d2:1"
         in rendered_text
@@ -197,7 +210,7 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     ] == [250, 268]
     assert (16, 286) in [
         position for position, _ in ponder_blits]
-    assert (16, 358) in [
+    assert (16, 376) in [
         position for position, _ in ponder_blits]
     assert "W01 PID 123" in rendered_text
     assert "idle" in rendered_text
