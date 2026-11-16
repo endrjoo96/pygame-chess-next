@@ -74,6 +74,37 @@ przez białe. Wyniki są zachowywane w pamięci i mogą przyspieszyć następny 
 ruchu. Po każdym wyborze zachowywana jest tylko gałąź wybranego przez bota
 ruchu. Funkcja jest domyślnie wyłączona.
 
+## Benchmark ruchów
+
+Powtarzalny benchmark generatora i wyszukiwania AI uruchom z katalogu projektu:
+
+```shell
+python -m benchmarks.benchmark_move_generation --seed 20261116 --iterations 3000 --repeats 5 --search-repeats 5
+python -m benchmarks.benchmark_move_generation --seed 20261116 --budget-seconds 5 --workers 1
+python -m benchmarks.benchmark_move_generation --seed 20261116 --budget-seconds 5 --workers 2
+```
+
+Seed wybiera tę samą 13-ruchową sekwencję początkową, a benchmark mierzy
+generowanie akcji w zwykłej pozycji i z kartami/efektami ruchowymi oraz
+szeregowe wyszukiwanie o stałej głębokości. Opcjonalny budżet czasowy uruchamia
+wyszukiwanie z cache'em i raportuje głębokość, liczbę węzłów oraz czasy faz
+wyszukiwania. `--workers` pozwala porównać koszt analizy równoległej; przy
+wartości większej niż `1` mierzone są też czas uruchomienia puli i sumaryczny
+czas zadań workerów. Metryki benchmarku są domyślnie włączone; `--metrics off`
+pozwala zmierzyć wyszukiwanie bez dodatkowych timerów i porównać koszt
+instrumentacji.
+
+Profil funkcji i pamięci wykonuj osobno, bez prób z budżetem czasowym:
+
+```shell
+python -m benchmarks.benchmark_move_generation --profile --metrics off --budget-seconds 0 --iterations 300 --repeats 1 --search-repeats 1
+python -m benchmarks.benchmark_move_generation --memory-profile --metrics off --budget-seconds 0 --iterations 300 --repeats 1 --search-repeats 1
+```
+
+Wyniki `cProfile` i `tracemalloc` zawierają narzut narzędzi diagnostycznych i
+nie nadają się do porównywania czasu ruchu. Do porównania wersji użyj tych
+samych argumentów; czasy są zależne od sprzętu i nie są testem progowym.
+
 ## Konfiguracja
 
 Ustawienia znajdują się w `run.properties`:
@@ -89,6 +120,7 @@ Ustawienia znajdują się w `run.properties`:
 | `ai.search.ponder.cpu_percent` | Procent puli workerów przeznaczony na pondering podczas tury białych, liczba całkowita od 0 do 100; brak klucza oznacza `0` i wyłącza pondering. Wymaga `ai.search.cache.enabled=true`. Dla wartości dodatniej liczba workerów wynosi `ceil(rozmiar_puli * procent / 100)`. |
 | `ai.search.cache.enabled` | `true` włącza pamięć wyników i wskazówek ruchu; `false` wyłącza ich tworzenie i odczyt. Domyślnie `true`. |
 | `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii; dodatnia liczba całkowita z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne: 1024, 1024², 1024³). W dostarczonym `run.properties` ustawiono `64k`. Tabele workerów mają dodatkowy limit. |
+| `ai.search.metrics.enabled` | `true` włącza zbiorcze pomiary faz wyszukiwania, węzłów, odcięć, cache i workerów; raport jest emitowany raz po wyszukiwaniu. `false` wyłącza dodatkowe timery; domyślnie `false`. Benchmark ma osobny przełącznik `--metrics`, domyślnie `on`, i nie zmienia konfiguracji gry. |
 
 Liczba workerów to `max(1, floor(logiczne_CPU * cpu_percent / 100))`, dodatkowo
 ograniczona liczbą zadań wyszukiwania. Na przykład `99` przy 8 logicznych CPU

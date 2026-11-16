@@ -7,6 +7,7 @@ from models.enchantment_cards import EnchantmentCardType
 from models.game_state import GameState
 from models.starting_positions import pieces_starting_positions_map
 from logic.game_rules import GameAction, GameActionType, GameRules
+from processors.bitboard_move_generator import BoardBitboards
 from processors.movement_processor import process_possible_basic_moves
 from utils.logging import log_error
 
@@ -24,10 +25,12 @@ class GameSimulation:
     TREBUCHET_RANGE = 5
 
     @staticmethod
-    def destinations_for(piece, source, pieces_locations, enchantment=None):
+    def destinations_for(
+        piece, source, pieces_locations, enchantment=None, occupancy=None
+    ):
         """Zwraca ruchy używane wspólnie przez interfejs i generator akcji."""
         return process_possible_basic_moves(
-            piece, id_to_xy(source), pieces_locations, enchantment)
+            piece, id_to_xy(source), pieces_locations, enchantment, occupancy)
 
     @classmethod
     def available_actions(cls, state: GameState) -> List[GameAction]:
@@ -51,14 +54,46 @@ class GameSimulation:
                 return []
             selected_double_card = state.selected_card[1]
 
+        unavailable = set()
+        if any(
+            card.get_card_type() in (
+                EnchantmentCardType.KNIGHT_RUNIC_TRAP,
+                EnchantmentCardType.RECRUIT_PAWN,
+            )
+            for card in cards
+        ):
+            unavailable = {
+                position for position, _ in GameRules._board_cards(state)
+            }
+            unavailable.update(trap.position for trap in state.rune_traps)
+
+        white_occupancy = 0
+        black_occupancy = 0
+        occupied = 0
+        moving_pieces = []
         for source, piece in state.pieces_locations.items():
-            if not piece.exists() or piece.get_color() != current_color:
+            if not piece.exists():
                 continue
-            if in_double_move and source != state.selected_piece_position:
-                continue
+            bit = 1 << (source - 1)
+            occupied |= bit
+            piece_color = piece.get_color()
+            if piece_color == COLOR.WHITE:
+                white_occupancy |= bit
+            elif piece_color == COLOR.BLACK:
+                black_occupancy |= bit
+            if (
+                piece_color == current_color
+                and (not in_double_move or source == state.selected_piece_position)
+            ):
+                moving_pieces.append((source, piece))
+        occupancy = BoardBitboards(
+            white_occupancy, black_occupancy, occupied)
+
+        for source, piece in moving_pieces:
             can_move = piece.can_receive_enchantment()
             basic_destinations = (
-                cls.destinations_for(piece, source, state.pieces_locations)
+                cls.destinations_for(
+                    piece, source, state.pieces_locations, occupancy=occupancy)
                 if can_move else ()
             )
             if basic_destinations:
@@ -90,11 +125,6 @@ class GameSimulation:
                     if not can_move:
                         continue
                     x, y = id_to_xy(source)
-                    unavailable = {
-                        position for position, _ in GameRules._board_cards(state)
-                    }
-                    unavailable.update(
-                        trap.position for trap in state.rune_traps)
                     for target_y in range(max(0, y - 1), min(7, y + 1) + 1):
                         for target_x in range(max(0, x - 1), min(7, x + 1) + 1):
                             if (target_x, target_y) == (x, y):
@@ -145,7 +175,11 @@ class GameSimulation:
                     if not can_move:
                         continue
                     for destination in cls.destinations_for(
-                        piece, source, state.pieces_locations, card
+                        piece,
+                        source,
+                        state.pieces_locations,
+                        card,
+                        occupancy,
                     ):
                         actions.append(GameAction(
                             GameActionType.MOVE,
@@ -206,10 +240,6 @@ class GameSimulation:
 
         if not in_double_move:
             home_row = 0 if current_color == COLOR.WHITE else 7
-            unavailable = {
-                position for position, _ in GameRules._board_cards(state)
-            }
-            unavailable.update(trap.position for trap in state.rune_traps)
             for card_index, card in enumerate(cards):
                 if card.get_card_type() != EnchantmentCardType.RECRUIT_PAWN:
                     continue

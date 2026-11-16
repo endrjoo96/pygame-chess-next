@@ -126,3 +126,20 @@ def test_queen_passes_allies_caps_range_and_stops_before_enemy():
     corner_moves = process_possible_basic_moves(queen, [0, 0], empty_board(), enchantment)
     assert [4, 4] in corner_moves
     assert [5, 5] not in corner_moves
+
+
+def test_piece_movement_buffs_compose_with_bitboard_basic_moves():
+    board = empty_board()
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    board[xy_to_id(3, 3)] = pawn
+    board[xy_to_id(2, 3)] = Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT)
+    board[xy_to_id(4, 2)] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    pawn.set_enchantment(EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create())
+    pawn.set_enchantment(EnchantmentCardType.PAWN_SWORDSMAN.create())
+
+    assert process_possible_basic_moves(pawn, [3, 3], board) == [
+        [3, 4],
+        [3, 2],
+        [4, 2],
+        [4, 3],
+    ]

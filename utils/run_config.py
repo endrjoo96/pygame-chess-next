@@ -143,6 +143,13 @@ def _load_run_config():
             "'ai.search.cache.max_entries' must be a positive integer or use "
             "a k, M, or G suffix in {}".format(properties_path))
 
+    ai_search_metrics_enabled_value = properties.get(
+        "ai.search.metrics.enabled", "false").lower()
+    if ai_search_metrics_enabled_value not in ("true", "false"):
+        raise ValueError(
+            "'ai.search.metrics.enabled' must be true or false in {}".format(
+                properties_path))
+
     return (
         run_mode,
         log_level,
@@ -153,6 +160,7 @@ def _load_run_config():
         ai_search_ponder_cpu_percent,
         cache_enabled_value == "true",
         cache_max_entries,
+        ai_search_metrics_enabled_value == "true",
     )
 
 
@@ -166,6 +174,7 @@ def _load_run_config():
     AI_SEARCH_PONDER_CPU_PERCENT,
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
+    AI_SEARCH_METRICS_ENABLED,
 ) = _load_run_config()
 
 

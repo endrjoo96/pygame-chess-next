@@ -168,7 +168,15 @@ def test_search_cache_defaults(monkeypatch, tmp_path):
         run_config, "_load_properties",
         lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
     )
-    assert run_config._load_run_config()[-2:] == (True, 2048)
+    assert run_config._load_run_config()[-3:-1] == (True, 2048)
+
+
+def test_search_metrics_default_to_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+    )
+    assert run_config._load_run_config()[-1] is False
 
 
 def test_ponder_cpu_percentage_defaults_to_disabled(monkeypatch, tmp_path):
@@ -218,7 +226,21 @@ def test_search_cache_enabled_configuration(monkeypatch, tmp_path, value, expect
             tmp_path / "run.properties",
         ),
     )
-    assert run_config._load_run_config()[-2:] == (expected, 16384)
+    assert run_config._load_run_config()[-3:-1] == (expected, 16384)
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("FALSE", False)])
+def test_search_metrics_enabled_configuration(
+    monkeypatch, tmp_path, value, expected
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.metrics.enabled": value},
+            tmp_path / "run.properties",
+        ),
+    )
+    assert run_config._load_run_config()[-1] is expected
 
 
 @pytest.mark.parametrize(
@@ -240,7 +262,7 @@ def test_search_cache_max_entries_accepts_binary_suffixes(
             tmp_path / "run.properties",
         ),
     )
-    assert run_config._load_run_config()[-1] == expected
+    assert run_config._load_run_config()[-2] == expected
 
 
 @pytest.mark.parametrize(
@@ -248,6 +270,8 @@ def test_search_cache_max_entries_accepts_binary_suffixes(
     [
         ("ai.search.cache.enabled", "yes"),
         ("ai.search.cache.enabled", ""),
+        ("ai.search.metrics.enabled", "yes"),
+        ("ai.search.metrics.enabled", ""),
         ("ai.search.cache.max_entries", "0"),
         ("ai.search.cache.max_entries", "-1"),
         ("ai.search.cache.max_entries", "1.5"),

@@ -2,6 +2,7 @@ import os
 import random
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from threading import Event, Lock
 
 import pytest
@@ -362,10 +363,12 @@ def test_evaluation_reuses_basic_destinations_for_threat_assessment(monkeypatch)
     calls = []
     original_destinations_for = GameSimulation.destinations_for
 
-    def counted_destinations_for(piece, source, locations, enchantment=None):
+    def counted_destinations_for(
+        piece, source, locations, enchantment=None, occupancy=None
+    ):
         calls.append((source, enchantment))
         return original_destinations_for(
-            piece, source, locations, enchantment)
+            piece, source, locations, enchantment, occupancy)
 
     monkeypatch.setattr(
         GameSimulation,
@@ -1937,6 +1940,7 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
     config = SearchConfig(
         time_limit_seconds=15,
         max_depth=2,
+        metrics_enabled=True,
     )
     serial_progress = []
     parallel_progress = []
@@ -1963,6 +1967,11 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
     assert parallel_result.action == serial_result.action
     assert parallel_result.score == pytest.approx(serial_result.score)
     assert parallel_result.completed_depth == serial_result.completed_depth == 2
+    assert serial_result.metrics is not None
+    assert parallel_result.metrics is not None
+    assert parallel_result.metrics.worker_count == 2
+    assert parallel_result.metrics.worker_tasks > 0
+    assert parallel_result.metrics.worker_task_ns > 0
     assert [depth for _, depth in parallel_progress] == [0, 1, 2]
     assert [depth for _, depth in serial_progress] == [0, 1, 2]
     assert parallel_result.visited_nodes > 0
@@ -2158,3 +2167,45 @@ def test_evaluation_values_rune_traps_and_the_new_card_types():
 
     assert with_trap > without_trap
     assert with_card > without_trap
+
+
+def test_search_metrics_are_opt_in_and_do_not_change_the_selected_action(
+    monkeypatch,
+):
+    state = make_black_to_move_state()
+    state.pieces_locations[POS.A1.value] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    state.pieces_locations[POS.H8.value] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    observation = GameObservation.from_state(state, COLOR.BLACK)
+    config = SearchConfig(
+        time_limit_seconds=1,
+        max_depth=2,
+        cache_enabled=False,
+        metrics_enabled=False,
+    )
+    plain_ai = ChessAI(config, max_workers=1)
+    monkeypatch.setattr(
+        plain_ai,
+        "_measure_search_call",
+        lambda *args: pytest.fail("disabled metrics must skip timing wrappers"),
+    )
+    plain = plain_ai.choose_action(observation)
+    measured = ChessAI(
+        replace(config, metrics_enabled=True), max_workers=1
+    ).choose_action(observation)
+
+    assert plain.metrics is None
+    assert measured.action == plain.action
+    assert measured.score == plain.score
+    assert measured.completed_depth == plain.completed_depth
+    assert measured.metrics is not None
+    assert measured.metrics.wall_time_ns > 0
+    assert measured.metrics.root_actions == len(
+        GameSimulation.available_actions(state)
+    )
+    assert measured.metrics.visited_nodes == measured.visited_nodes
+    assert measured.metrics.action_generation_calls > 0
+    assert measured.metrics.generated_actions >= measured.metrics.root_actions
+    assert measured.metrics.action_application_calls > 0
+    assert measured.metrics.evaluation_calls > 0
+    assert measured.metrics.worker_tasks > 0
+    assert measured.metrics.worker_task_ns > 0

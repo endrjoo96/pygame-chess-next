@@ -4,6 +4,7 @@ from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.pos import xy_to_id
 from models.chess_pieces import Piece
+from processors.bitboard_move_generator import BoardBitboards
 from processors.movement_processor import process_possible_basic_moves
 
 
@@ -83,3 +84,15 @@ def test_queen_combines_diagonal_and_linear_moves():
     assert [4, 4] in moves
     assert [3, 4] in moves
     assert [4, 3] in moves
+
+
+def test_board_bitboards_map_a1_to_bit_zero_and_h8_to_bit_63():
+    board = empty_board()
+    board[1] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    board[64] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+
+    occupancy = BoardBitboards.from_locations(board)
+
+    assert occupancy.white == 1
+    assert occupancy.black == 1 << 63
+    assert occupancy.occupied == (1 | (1 << 63))

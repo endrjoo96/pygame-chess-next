@@ -4,7 +4,7 @@ import multiprocessing
 import os
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from threading import Event, Lock
 from typing import Any, Callable, Optional
 
@@ -15,10 +15,12 @@ from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
 from logic.opening_book import opening_hints
 from logic.search_cache import Bound, CacheEntry, SearchCache
+from models.ai_search_metrics import AISearchMetrics
 from models.ai_search_stats import AIWorkerStats
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState
+from processors.bitboard_move_generator import BoardBitboards
 from utils.logging import (
     is_enabled,
     log_debug,
@@ -32,6 +34,7 @@ from utils.run_config import (
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
     AI_SEARCH_MAX_DEPTH,
+    AI_SEARCH_METRICS_ENABLED,
     AI_SEARCH_PONDER_CPU_PERCENT,
     AI_SEARCH_TIME_LIMIT_SECONDS,
 )
@@ -121,6 +124,7 @@ class SearchConfig:
     max_depth: int = AI_SEARCH_MAX_DEPTH
     cache_enabled: bool = AI_SEARCH_CACHE_ENABLED
     cache_max_entries: int = AI_SEARCH_CACHE_MAX_ENTRIES
+    metrics_enabled: bool = AI_SEARCH_METRICS_ENABLED
 
     def __post_init__(self):
         if self.time_limit_seconds <= 0:
@@ -129,6 +133,8 @@ class SearchConfig:
             raise ValueError("The search depth must be at least one")
         if not isinstance(self.cache_enabled, bool):
             raise ValueError("The search cache setting must be a boolean")
+        if not isinstance(self.metrics_enabled, bool):
+            raise ValueError("The search metrics setting must be a boolean")
         if (not isinstance(self.cache_max_entries, int)
                 or isinstance(self.cache_max_entries, bool)
                 or self.cache_max_entries < 1):
@@ -141,6 +147,7 @@ class SearchResult:
     score: float
     completed_depth: int
     visited_nodes: int
+    metrics: Optional[AISearchMetrics] = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +180,66 @@ class _RootEvaluation:
     hints: int = 0
     bound: Optional[Bound] = Bound.EXACT
     reliable: bool = True
+    metrics: Optional[AISearchMetrics] = None
+
+
+class _SearchMetricsCollector:
+    def __init__(self):
+        self._values = {field.name: 0 for field in fields(AISearchMetrics)}
+
+    def add(self, name, value):
+        self._values[name] += value
+
+    def merge(self, metrics):
+        if metrics is None:
+            return
+        for name in self._values:
+            self._values[name] += getattr(metrics, name)
+
+    def snapshot(self):
+        return AISearchMetrics(**self._values)
+
+
+def _log_search_metrics(metrics):
+    milliseconds = lambda value: value / 1_000_000
+    log_info(
+        "AI search profile: nodes={}, wall={:.2f}ms, observation={:.2f}ms, "
+        "generated_actions={} in {} calls ({:.2f}ms), "
+        "ordered_actions={} in {} calls ({:.2f}ms), "
+        "apply_calls={} ({:.2f}ms), evaluate_calls={} ({:.2f}ms), "
+        "cache probes/hits/score-hits={}/{}/{}, cache key/lookup/store="
+        "{:.2f}/{:.2f}/{:.2f}ms, cutoffs={}, LMR probes/researches={}/{}, "
+        "workers={}, tasks={}, task-sum={:.2f}ms, startup={:.2f}ms, "
+        "wait={:.2f}ms".format(
+            metrics.visited_nodes,
+            milliseconds(metrics.wall_time_ns),
+            milliseconds(metrics.observation_ns),
+            metrics.generated_actions,
+            metrics.action_generation_calls,
+            milliseconds(metrics.action_generation_ns),
+            metrics.actions_ordered,
+            metrics.action_ordering_calls,
+            milliseconds(metrics.action_ordering_ns),
+            metrics.action_application_calls,
+            milliseconds(metrics.action_application_ns),
+            metrics.evaluation_calls,
+            milliseconds(metrics.evaluation_ns),
+            metrics.cache_probes,
+            metrics.cache_hits,
+            metrics.cache_score_hits,
+            milliseconds(metrics.cache_key_ns),
+            milliseconds(metrics.cache_lookup_ns),
+            milliseconds(metrics.cache_store_ns),
+            metrics.alpha_beta_cutoffs,
+            metrics.lmr_probes,
+            metrics.lmr_researches,
+            metrics.worker_count,
+            metrics.worker_tasks,
+            milliseconds(metrics.worker_task_ns),
+            milliseconds(metrics.worker_pool_startup_ns),
+            milliseconds(metrics.worker_wait_ns),
+        )
+    )
 
 
 def _set_current_worker_status(
@@ -300,6 +367,9 @@ def _evaluate_root_action(
     root_alpha=-math.inf,
 ):
     """Ocenia jeden ruch startowy w izolowanym workerze."""
+    task_started = (
+        time.perf_counter_ns() if config.metrics_enabled else None
+    )
     cache_size_callback = (
         cache_size_callback or _set_current_worker_cache_entries)
     node_progress_callback = (
@@ -322,6 +392,9 @@ def _evaluate_root_action(
         worker = ChessAI(config, max_workers=1)
         worker._deadline = deadline
         worker._nodes = 0
+        worker._metrics = (
+            _SearchMetricsCollector() if config.metrics_enabled else None
+        )
         worker._node_progress_callback = node_progress_callback
         if worker._cache is not None:
             worker._cache = SearchCache(
@@ -332,7 +405,7 @@ def _evaluate_root_action(
                 worker._cache.put(entry, updated=False)
         try:
             worker._check_deadline()
-            child = GameSimulation._apply_generated_action(state, action)
+            child = worker._apply_generated_action_for_search(state, action)
             score, reliable = worker._search_with_proof(
                 child, depth - 1, root_alpha, math.inf)
             if not reliable:
@@ -359,10 +432,17 @@ def _evaluate_root_action(
         )
         if task_status != "timeout":
             task_status = "completed" if reliable else "incomplete"
+        metrics = None
+        if worker._metrics is not None:
+            worker._metrics.add("worker_tasks", 1)
+            if task_started is not None:
+                worker._metrics.add(
+                    "worker_task_ns", time.perf_counter_ns() - task_started)
+            metrics = worker._metrics.snapshot()
         return _RootEvaluation(
             score, worker._nodes, entries, worker._cache_hits,
             worker._cache_score_hits, worker._cache_hints,
-            root_bound, reliable)
+            root_bound, reliable, metrics)
     finally:
         if is_enabled("DEBUG"):
             log_debug(
@@ -489,6 +569,7 @@ class ChessAI:
         self._cache_hits = 0
         self._cache_score_hits = 0
         self._cache_hints = 0
+        self._metrics = None
         self._worker_pool_lock = Lock()
         self._worker_metrics_lock = Lock()
         self._worker_pool = None
@@ -1033,12 +1114,27 @@ class ChessAI:
         if observation.current_turn != COLOR.BLACK:
             raise ValueError("It is not the AI player's turn")
 
+        self._metrics = (
+            _SearchMetricsCollector() if self.config.metrics_enabled else None
+        )
+        metrics_started = self._metric_start()
+        state_started = self._metric_start()
         state = observation.to_state()
-        root_actions = GameSimulation.available_actions(state)
+        self._metric_finish("observation_ns", state_started)
+        root_actions = self._available_actions_for_search(state)
+        if self._metrics is not None:
+            self._metrics.add("root_actions", len(root_actions))
         if not root_actions:
             log_info("AI search found no legal actions")
-            return SearchResult(None, self.evaluate(state), 0, 0)
+            score = self._evaluate_for_search(state)
+            self._metric_finish("wall_time_ns", metrics_started)
+            metrics = self._metrics.snapshot() if self._metrics is not None else None
+            if metrics is not None:
+                _log_search_metrics(metrics)
+            return SearchResult(None, score, 0, 0, metrics)
+        key_started = self._metric_start()
         root_key = state.cache_key() if self._cache is not None else None
+        self._metric_finish("cache_key_ns", key_started)
 
         search_started = time.monotonic()
         pondered_depth = None
@@ -1070,7 +1166,7 @@ class ChessAI:
         )
         self._begin_search_progress("searching")
         self._cache_hits = self._cache_score_hits = self._cache_hints = 0
-        ordered_actions = self._order_actions(state, root_actions)
+        ordered_actions = self._order_actions_for_search(state, root_actions)
         action_order = {
             action: index for index, action in enumerate(ordered_actions)
         }
@@ -1078,9 +1174,11 @@ class ChessAI:
             ordered_actions.remove(hint)
             ordered_actions.insert(0, hint)
             self._cache_hints += 1
+            if self._metrics is not None:
+                self._metrics.add("cache_hints", 1)
         best_action = ordered_actions[0]
-        best_score = self.evaluate(
-            GameSimulation._apply_generated_action(state, best_action))
+        best_score = self._evaluate_for_search(
+            self._apply_generated_action_for_search(state, best_action))
         best_known_scores = {best_action: (best_score, 0)}
         completed_depth = 0
         if progress_callback is not None:
@@ -1089,6 +1187,8 @@ class ChessAI:
             candidate_callback(best_action, completed_depth, best_score)
 
         worker_count = self._worker_count_for_tasks(len(ordered_actions))
+        if self._metrics is not None:
+            self._metrics.add("worker_count", worker_count)
         log_info(
             "AI search started: {} root actions, max_depth={}, time_limit={:.2f}s, "
             "workers={}".format(
@@ -1105,8 +1205,12 @@ class ChessAI:
                 interrupted = True
             else:
                 try:
+                    startup_started = self._metric_start()
                     self.prepare_workers(timeout_seconds=startup_time_remaining)
+                    self._metric_finish("worker_pool_startup_ns", startup_started)
                 except TimeoutError:
+                    self._metric_finish(
+                        "worker_pool_startup_ns", startup_started)
                     if time.monotonic() >= self._deadline:
                         interrupted = True
                     else:
@@ -1145,6 +1249,8 @@ class ChessAI:
                 def record_result(index, result):
                     nonlocal next_merge, root_alpha, finished_root_actions
                     self._add_completed_nodes(result.nodes)
+                    if self._metrics is not None:
+                        self._metrics.merge(result.metrics)
                     self._cache_hits += result.hits
                     self._cache_score_hits += result.score_hits
                     self._cache_hints += result.hints
@@ -1240,11 +1346,13 @@ class ChessAI:
                         if not pending:
                             break
                         remaining = max(0.0, self._deadline - time.monotonic())
+                        wait_started = self._metric_start()
                         done, _ = wait(
                             set(pending),
                             timeout=min(0.05, remaining),
                             return_when=FIRST_COMPLETED,
                         )
+                        self._metric_finish("worker_wait_ns", wait_started)
                         for future in sorted(done, key=pending.get):
                             task_index = pending.pop(future)
                             try:
@@ -1369,6 +1477,10 @@ class ChessAI:
                 self._nodes,
             )
         )
+        self._metric_finish("wall_time_ns", metrics_started)
+        metrics = self._metrics.snapshot() if self._metrics is not None else None
+        if metrics is not None:
+            _log_search_metrics(metrics)
         if is_enabled("DEBUG"):
             nodes_per_second = self._nodes / elapsed if elapsed > 0 else 0.0
             with self._cache_lock:
@@ -1396,7 +1508,8 @@ class ChessAI:
             )
         if candidate_callback is not None:
             candidate_callback(best_action, best_action_depth, best_score)
-        return SearchResult(best_action, best_score, completed_depth, self._nodes)
+        return SearchResult(
+            best_action, best_score, completed_depth, self._nodes, metrics)
 
     def _search_time_limit_for_depth(self, pondered_depth):
         if pondered_depth is None or self.config.max_depth <= 1:
@@ -1932,6 +2045,55 @@ class ChessAI:
         if callback is not None:
             callback(actions[best_index], depth, completed_scores[best_index])
 
+    def _metric_start(self):
+        return time.perf_counter_ns() if self._metrics is not None else None
+
+    def _metric_finish(self, metric_name, started):
+        if started is not None:
+            self._metrics.add(metric_name, time.perf_counter_ns() - started)
+
+    def _measure_search_call(
+        self, elapsed_metric, calls_metric, function, *args
+    ):
+        started = self._metric_start()
+        try:
+            return function(*args)
+        finally:
+            if started is not None:
+                self._metric_finish(elapsed_metric, started)
+                self._metrics.add(calls_metric, 1)
+
+    def _available_actions_for_search(self, state):
+        if self._metrics is None:
+            return GameSimulation.available_actions(state)
+        actions = self._measure_search_call(
+            "action_generation_ns", "action_generation_calls",
+            GameSimulation.available_actions, state)
+        self._metrics.add("generated_actions", len(actions))
+        return actions
+
+    def _order_actions_for_search(self, state, actions):
+        if self._metrics is None:
+            return self._order_actions(state, actions)
+        ordered = self._measure_search_call(
+            "action_ordering_ns", "action_ordering_calls",
+            self._order_actions, state, actions)
+        self._metrics.add("actions_ordered", len(actions))
+        return ordered
+
+    def _apply_generated_action_for_search(self, state, action):
+        if self._metrics is None:
+            return GameSimulation._apply_generated_action(state, action)
+        return self._measure_search_call(
+            "action_application_ns", "action_application_calls",
+            GameSimulation._apply_generated_action, state, action)
+
+    def _evaluate_for_search(self, state):
+        if self._metrics is None:
+            return self.evaluate(state)
+        return self._measure_search_call(
+            "evaluation_ns", "evaluation_calls", self.evaluate, state)
+
     def _search(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
         return self._search_with_proof(state, depth, alpha, beta)[0]
 
@@ -1941,6 +2103,8 @@ class ChessAI:
     ):
         self._check_deadline()
         self._nodes += 1
+        if self._metrics is not None:
+            self._metrics.add("visited_nodes", 1)
         if (
             self._node_progress_callback is not None
             and self._nodes % _WORKER_NODE_UPDATE_INTERVAL == 0
@@ -1951,35 +2115,50 @@ class ChessAI:
         if winner is not None:
             return (100_000.0 if winner == COLOR.BLACK else -100_000.0), True
         if depth <= 0:
-            return self.evaluate(state), True
+            return self._evaluate_for_search(state), True
 
         original_alpha, original_beta = alpha, beta
-        key = state.cache_key() if self._cache is not None else None
+        key = None
         hint = None
         if self._cache is not None:
+            started = self._metric_start()
+            key = state.cache_key()
+            self._metric_finish("cache_key_ns", started)
+            if self._metrics is not None:
+                self._metrics.add("cache_probes", 1)
+            started = self._metric_start()
             entry = self._cache.get(key, depth)
             hint = self._cache.best_move(key)
+            self._metric_finish("cache_lookup_ns", started)
             if entry is not None:
                 self._cache_hits += 1
+                if self._metrics is not None:
+                    self._metrics.add("cache_hits", 1)
                 if (
                     entry.bound == Bound.EXACT
                     or (entry.bound == Bound.LOWER and entry.score >= beta)
                     or (entry.bound == Bound.UPPER and entry.score <= alpha)
                 ):
                     self._cache_score_hits += 1
+                    if self._metrics is not None:
+                        self._metrics.add("cache_score_hits", 1)
                     return entry.score, True
 
-        actions = GameSimulation.available_actions(state)
+        actions = self._available_actions_for_search(state)
         if not actions:
-            value = self.evaluate(state)
+            value = self._evaluate_for_search(state)
             if self._cache is not None:
+                started = self._metric_start()
                 self._cache.put(CacheEntry(key, depth, None, value, Bound.EXACT))
+                self._metric_finish("cache_store_ns", started)
             return value, True
-        actions = self._order_actions(state, actions)
+        actions = self._order_actions_for_search(state, actions)
         if hint in actions:
             actions.remove(hint)
             actions.insert(0, hint)
             self._cache_hints += 1
+            if self._metrics is not None:
+                self._metrics.add("cache_hints", 1)
         opposing_king_position = None
         king_threatened = False
         if _LMR_ENABLED and depth >= 3 and len(actions) > 3:
@@ -1999,8 +2178,8 @@ class ChessAI:
         best_action = None
         reliable = True
         for action_index, action in enumerate(actions):
-            child = GameSimulation._apply_generated_action(state, action)
-            if (
+            child = self._apply_generated_action_for_search(state, action)
+            should_reduce = (
                 _LMR_ENABLED
                 and allow_lmr
                 and not king_threatened
@@ -2008,10 +2187,15 @@ class ChessAI:
                     state, action, depth, action_index)
                 and not self._move_attacks_king(
                     child, action, opposing_king_position)
-            ):
+            )
+            if should_reduce:
+                if self._metrics is not None:
+                    self._metrics.add("lmr_probes", 1)
                 action_value, child_reliable = self._search_with_proof(
                     child, depth - 2, alpha, beta, allow_lmr=allow_lmr)
                 if (action_value > alpha if maximizing else action_value < beta):
+                    if self._metrics is not None:
+                        self._metrics.add("lmr_researches", 1)
                     action_value, child_reliable = self._search_with_proof(
                         child, depth - 1, alpha, beta, allow_lmr=allow_lmr)
                 else:
@@ -2031,6 +2215,8 @@ class ChessAI:
             else:
                 beta = min(beta, value)
             if alpha >= beta:
+                if self._metrics is not None:
+                    self._metrics.add("alpha_beta_cutoffs", 1)
                 break
 
         if self._cache is not None:
@@ -2042,7 +2228,9 @@ class ChessAI:
                     bound = Bound.LOWER
                 else:
                     bound = Bound.EXACT
+            started = self._metric_start()
             self._cache.put(CacheEntry(key, depth, best_action, value, bound))
+            self._metric_finish("cache_store_ns", started)
         return value, reliable
 
     @staticmethod
@@ -2104,10 +2292,21 @@ class ChessAI:
 
         score = 0.0
         basic_destinations = {}
+        white_occupancy = 0
+        black_occupancy = 0
+        occupied = 0
+        piece_values = []
         for position, piece in state.pieces_locations.items():
             if not piece.exists():
                 continue
-            sign = 1 if piece.get_color() == COLOR.BLACK else -1
+            bit = 1 << (position - 1)
+            occupied |= bit
+            color = piece.get_color()
+            if color == COLOR.WHITE:
+                white_occupancy |= bit
+            elif color == COLOR.BLACK:
+                black_occupancy |= bit
+            sign = 1 if color == COLOR.BLACK else -1
             value = PIECE_VALUES[piece.get_type()]
             if piece.is_stunned():
                 value *= 0.75
@@ -2115,19 +2314,26 @@ class ChessAI:
             value -= 0.05 * sum(
                 remaining or 0
                 for _, _, remaining in piece.get_effects(
-                    state.turns_started[piece.get_color()])
+                    state.turns_started[color])
             )
-            score += sign * value
-            score += sign * ChessAI._development_value(piece, position)
+            development = ChessAI._development_value(piece, position)
+            piece_values.append((position, piece, sign, value, development))
 
+        occupancy = BoardBitboards(
+            white_occupancy, black_occupancy, occupied)
+        for position, piece, sign, value, development in piece_values:
+            score += sign * value
+            score += sign * development
             if piece.can_receive_enchantment():
                 destinations = GameSimulation.destinations_for(
-                    piece, position, state.pieces_locations)
+                    piece, position, state.pieces_locations,
+                    occupancy=occupancy)
                 basic_destinations[position] = destinations
                 mobility = len(destinations)
                 score += sign * min(mobility, 12) * 0.025
 
-        score += ChessAI._threat_score(state, basic_destinations)
+        score += ChessAI._threat_score(
+            state, basic_destinations, occupancy)
 
         for position, piece in state.pieces_locations.items():
             if (
@@ -2198,10 +2404,11 @@ class ChessAI:
         return 0.0
 
     @staticmethod
-    def _threat_score(state, basic_destinations=None):
+    def _threat_score(state, basic_destinations=None, occupancy=None):
         """Penalizes valuable pieces that the opponent can capture next."""
         score = 0.0
-        attack_map = ChessAI._attack_map(state, basic_destinations)
+        attack_map = ChessAI._attack_map(
+            state, basic_destinations, occupancy)
         for target_position, target in state.pieces_locations.items():
             if not target.exists():
                 continue
@@ -2223,7 +2430,9 @@ class ChessAI:
         return score
 
     @staticmethod
-    def _attack_map(state, basic_destinations=None):
+    def _attack_map(state, basic_destinations=None, occupancy=None):
+        if occupancy is None:
+            occupancy = BoardBitboards.from_locations(state.pieces_locations)
         attack_map = {COLOR.BLACK: {}, COLOR.WHITE: {}}
         for source, piece in state.pieces_locations.items():
             if not piece.exists() or not piece.can_receive_enchantment():
@@ -2233,7 +2442,8 @@ class ChessAI:
                 basic_destinations[source]
                 if basic_destinations is not None
                 else GameSimulation.destinations_for(
-                    piece, source, state.pieces_locations)
+                    piece, source, state.pieces_locations,
+                    occupancy=occupancy)
             )
             ChessAI._record_attacks(attack_map[color], source, destinations)
 
@@ -2245,7 +2455,7 @@ class ChessAI:
                 ):
                     continue
                 card_destinations = GameSimulation.destinations_for(
-                    piece, source, state.pieces_locations, card)
+                    piece, source, state.pieces_locations, card, occupancy)
                 ChessAI._record_attacks(
                     attack_map[color],
                     source,

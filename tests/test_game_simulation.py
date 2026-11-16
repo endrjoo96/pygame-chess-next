@@ -87,9 +87,12 @@ def test_double_move_actions_reuse_basic_destinations(empty_state, monkeypatch):
     calls = []
     original_destinations_for = GameSimulation.destinations_for
 
-    def counted_destinations_for(piece, source, locations, enchantment=None):
+    def counted_destinations_for(
+        piece, source, locations, enchantment=None, occupancy=None
+    ):
         calls.append((source, enchantment))
-        return original_destinations_for(piece, source, locations, enchantment)
+        return original_destinations_for(
+            piece, source, locations, enchantment, occupancy)
 
     monkeypatch.setattr(
         GameSimulation,

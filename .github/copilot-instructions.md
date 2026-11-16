@@ -37,10 +37,12 @@ Plik `run.properties` musi zawierać wartość `DEBUG` albo `PROD` dla `mode`. W
 - Poziomy są hierarchiczne: wybrany próg pokazuje ten poziom oraz wszystkie bardziej ogólne. `LOGIC` obejmuje `INFO`, `WARN` i `ERROR`, ale nie `DEBUG`. `OFF` wyłącza logi.
 - `ERROR` służy błędom wymagającym uwagi; `WARN` — sytuacjom nietypowym z bezpiecznym fallbackiem; `INFO` — istotnym zdarzeniom i wynikom; `LOGIC` — przebiegowi decyzji/zasad gry; `DEBUG` — szczegółom diagnostycznym.
 - Loguj proces wyszukiwania AI i symulacji przez `utils.logging` (`log_error`, `log_warn`, `log_info`, `log_logic`, `log_debug`). Nie używaj bezpośrednio `print` ani nie odtwarzaj filtracji w miejscu wywołania. W gorących pętlach unikaj kosztownego formatowania, sprawdzając `is_enabled`; nie loguj każdego węzła wyszukiwania.
+- `ai.search.metrics.enabled` w `run.properties` domyślnie wyłącza dodatkowe pomiary czasu. Gdy włączony, zbieraj agregaty i raportuj je po wyszukiwaniu; nie loguj metryk per węzeł. Profilowanie funkcji/pamięci wykonuj osobno od benchmarków czasu.
 - Zmiany kategorii i konfiguracji obejmują testy filtrowania poziomów oraz aktualizację `README.md` i niniejszych instrukcji.
 
 ## Wskazówki dotyczące zmian i weryfikacji
 
+- W trakcie realizacji planu na bieżąco aktualizuj plan działania oraz informuj użytkownika, jak przebiegły poszczególne etapy i jaki jest kolejny krok.
 - **Niezmienna zasada zakończenia gry:** nie implementuj szacha, mata, pata ani podobnych mechanizmów. Nie śledź stanu szacha ani nie odrzucaj ruchów z powodu atakowanego pola lub narażenia króla — również przy roszadzie. Gra kończy się wyłącznie po eliminacji (zbiciu/usunięciu) króla przeciwnika. Zasada dotyczy reguł, symulacji, AI, interfejsu i testów; nie zmieniaj jej bez wyraźnej prośby użytkownika.
 - Przy zmianach ruchu, zbić, efektów kart lub tur graczy zachowuj dotychczasowe zasady gry i kolejność tur. Te zachowania są koordynowane w `GameLogicLoop`, procesorach, figurach i funkcjach zachowań zaklęć.
 - `GameSimulation.available_actions(state)` udostępnia akcje bieżącego gracza, a `GameSimulation.apply(state, action)` zwraca nowy stan bez modyfikowania wejściowego. Rozszerzaj oba elementy i ich testy, gdy dodajesz akcję gry. Symulacja korzysta ze wspólnych reguł przejścia `GameRules.apply_action`; nie może zależeć od ekranu ani rysować elementów UI.
