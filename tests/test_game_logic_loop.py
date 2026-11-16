@@ -448,7 +448,7 @@ def test_ai_starts_pondering_after_its_move():
 
     class StubAI(ChessAI):
         def __init__(self):
-            super().__init__(max_workers=1, ponder_cpu_percent=50)
+            super().__init__(max_workers=1, ponder_cpu_worker_usage=50)
 
         def ponder(self, state, cancellation_event):
             self.pondered_state = state
@@ -463,6 +463,18 @@ def test_ai_starts_pondering_after_its_move():
 
     assert result.stopped_reason == "max-depth"
     assert game.black_ai.pondered_state.current_turn == COLOR.WHITE
+    assert game._ponder_future is None
+    game._ai_executor.shutdown(wait=True)
+
+
+def test_ai_can_disable_pondering():
+    from logic.chess_ai import ChessAI
+
+    game = make_game()
+    game.black_ai = ChessAI(max_workers=1, ponder_enabled=False)
+
+    game._start_pondering()
+
     assert game._ponder_future is None
     game._ai_executor.shutdown(wait=True)
 

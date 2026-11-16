@@ -89,7 +89,7 @@ def test_cache_logs_search_move_and_ponder_transition(monkeypatch):
     ai = ChessAI(
         SearchConfig(time_limit_seconds=1, max_depth=4, cache_max_entries=2048),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
 
     decision = ai.choose_action(GameObservation.from_state(state, COLOR.BLACK))

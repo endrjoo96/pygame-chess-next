@@ -49,6 +49,19 @@ def _parse_cache_max_entries(value):
 def _load_run_config():
     """Waliduje ustawienia uruchomienia i zwraca je w postaci typowanej."""
     properties, properties_path = _load_properties()
+    legacy_cpu_properties = {
+        "ai.search.cpu_percent": "ai.search.cpu.workers and ai.search.cpu.worker_usage",
+        "ai.search.ponder.cpu_percent": (
+            "ai.search.ponder.cpu.workers and "
+            "ai.search.ponder.cpu.worker_usage"
+        ),
+    }
+    for key, replacement in legacy_cpu_properties.items():
+        if key in properties:
+            raise ValueError(
+                "'{}' is no longer supported in {}; use {}".format(
+                    key, properties_path, replacement)
+            )
     if "mode" not in properties:
         raise ValueError("Missing 'mode' property in {}".format(properties_path))
 
@@ -95,20 +108,41 @@ def _load_run_config():
         ) from None
 
     try:
-        ai_search_cpu_percent = int(properties.get("ai.search.cpu_percent", "100"))
+        ai_search_cpu_workers = int(properties.get("ai.search.cpu.workers", "1"))
     except ValueError:
         raise ValueError(
-            "Invalid 'ai.search.cpu_percent' in {}; expected an integer from 1 to 100".format(
+            "Invalid 'ai.search.cpu.workers' in {}; expected a positive integer".format(
                 properties_path)
         ) from None
-
     try:
-        ai_search_ponder_cpu_percent = int(
-            properties.get("ai.search.ponder.cpu_percent", "0"))
+        ai_search_cpu_worker_usage = int(
+            properties.get("ai.search.cpu.worker_usage", "100"))
     except ValueError:
         raise ValueError(
-            "Invalid 'ai.search.ponder.cpu_percent' in {}; expected an integer "
-            "from 0 to 100".format(properties_path)
+            "Invalid 'ai.search.cpu.worker_usage' in {}; expected an integer "
+            "from 1 to 100".format(properties_path)
+        ) from None
+    ai_search_ponder_enabled_value = properties.get(
+        "ai.search.ponder.enabled", "true").lower()
+    if ai_search_ponder_enabled_value not in ("true", "false"):
+        raise ValueError(
+            "'ai.search.ponder.enabled' must be true or false in {}".format(
+                properties_path))
+    try:
+        ai_search_ponder_cpu_workers = int(
+            properties.get("ai.search.ponder.cpu.workers", "1"))
+    except ValueError:
+        raise ValueError(
+            "Invalid 'ai.search.ponder.cpu.workers' in {}; expected a positive "
+            "integer".format(properties_path)
+        ) from None
+    try:
+        ai_search_ponder_cpu_worker_usage = int(
+            properties.get("ai.search.ponder.cpu.worker_usage", "100"))
+    except ValueError:
+        raise ValueError(
+            "Invalid 'ai.search.ponder.cpu.worker_usage' in {}; expected an "
+            "integer from 1 to 100".format(properties_path)
         ) from None
 
     if ai_search_max_depth < 1:
@@ -117,13 +151,21 @@ def _load_run_config():
         raise ValueError(
             "'ai.search.time_limit_seconds' must be a positive finite number in {}".format(
                 properties_path))
-    if not 1 <= ai_search_cpu_percent <= 100:
+    if ai_search_cpu_workers < 1:
         raise ValueError(
-            "'ai.search.cpu_percent' must be between 1 and 100 in {}".format(
+            "'ai.search.cpu.workers' must be at least one in {}".format(
                 properties_path))
-    if not 0 <= ai_search_ponder_cpu_percent <= 100:
+    if not 1 <= ai_search_cpu_worker_usage <= 100:
         raise ValueError(
-            "'ai.search.ponder.cpu_percent' must be between 0 and 100 in {}".format(
+            "'ai.search.cpu.worker_usage' must be between 1 and 100 in {}".format(
+                properties_path))
+    if ai_search_ponder_cpu_workers < 1:
+        raise ValueError(
+            "'ai.search.ponder.cpu.workers' must be at least one in {}".format(
+                properties_path))
+    if not 1 <= ai_search_ponder_cpu_worker_usage <= 100:
+        raise ValueError(
+            "'ai.search.ponder.cpu.worker_usage' must be between 1 and 100 in {}".format(
                 properties_path))
 
     cache_enabled_value = properties.get("ai.search.cache.enabled", "true").lower()
@@ -156,8 +198,11 @@ def _load_run_config():
         game_seed,
         ai_search_max_depth,
         ai_search_time_limit_seconds,
-        ai_search_cpu_percent,
-        ai_search_ponder_cpu_percent,
+        ai_search_cpu_workers,
+        ai_search_cpu_worker_usage,
+        ai_search_ponder_enabled_value == "true",
+        ai_search_ponder_cpu_workers,
+        ai_search_ponder_cpu_worker_usage,
         cache_enabled_value == "true",
         cache_max_entries,
         ai_search_metrics_enabled_value == "true",
@@ -170,8 +215,11 @@ def _load_run_config():
     GAME_SEED,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
-    AI_SEARCH_CPU_PERCENT,
-    AI_SEARCH_PONDER_CPU_PERCENT,
+    AI_SEARCH_CPU_WORKERS,
+    AI_SEARCH_CPU_WORKER_USAGE,
+    AI_SEARCH_PONDER_ENABLED,
+    AI_SEARCH_PONDER_CPU_WORKERS,
+    AI_SEARCH_PONDER_CPU_WORKER_USAGE,
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
     AI_SEARCH_METRICS_ENABLED,

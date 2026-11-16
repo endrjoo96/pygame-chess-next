@@ -30,12 +30,15 @@ from utils.logging import (
     log_warn,
 )
 from utils.run_config import (
-    AI_SEARCH_CPU_PERCENT,
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
+    AI_SEARCH_CPU_WORKERS,
+    AI_SEARCH_CPU_WORKER_USAGE,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_METRICS_ENABLED,
-    AI_SEARCH_PONDER_CPU_PERCENT,
+    AI_SEARCH_PONDER_ENABLED,
+    AI_SEARCH_PONDER_CPU_WORKERS,
+    AI_SEARCH_PONDER_CPU_WORKER_USAGE,
     AI_SEARCH_TIME_LIMIT_SECONDS,
 )
 
@@ -80,6 +83,7 @@ _WORKER_STARTUP_TIMEOUT_SECONDS = 60.0
 _WORKER_PROBE_RELEASE_EVENT: Any = None
 _WORKER_PROBE_STARTED_COUNT: Any = None
 _WORKER_SEARCH_CANCEL_EVENT: Any = None
+_WORKER_USAGE_LIMITER: Any = None
 _WORKER_STATUS_VALUES: Any = None
 _WORKER_STATUS_PIDS: Any = None
 _WORKER_MODE_VALUES: Any = None
@@ -125,6 +129,7 @@ class SearchConfig:
     cache_enabled: bool = AI_SEARCH_CACHE_ENABLED
     cache_max_entries: int = AI_SEARCH_CACHE_MAX_ENTRIES
     metrics_enabled: bool = AI_SEARCH_METRICS_ENABLED
+    cpu_worker_usage: int = AI_SEARCH_CPU_WORKER_USAGE
 
     def __post_init__(self):
         if self.time_limit_seconds <= 0:
@@ -135,6 +140,12 @@ class SearchConfig:
             raise ValueError("The search cache setting must be a boolean")
         if not isinstance(self.metrics_enabled, bool):
             raise ValueError("The search metrics setting must be a boolean")
+        if (
+            not isinstance(self.cpu_worker_usage, int)
+            or isinstance(self.cpu_worker_usage, bool)
+            or not 1 <= self.cpu_worker_usage <= 100
+        ):
+            raise ValueError("The CPU worker usage must be between 1 and 100")
         if (not isinstance(self.cache_max_entries, int)
                 or isinstance(self.cache_max_entries, bool)
                 or self.cache_max_entries < 1):
@@ -164,6 +175,44 @@ class PonderResult:
 
 class _SearchTimeout(Exception):
     pass
+
+
+class _WorkerUsageLimiter:
+    _CYCLE_SECONDS = 0.1
+
+    def __init__(self, usage):
+        self._usage = usage
+        self._cycle_started = time.monotonic()
+
+    def set_usage(self, usage):
+        if self._usage != usage:
+            self._usage = usage
+            self._cycle_started = time.monotonic()
+
+    def wait(self, deadline, cancellation_event):
+        if self._usage >= 100:
+            return
+        active_seconds = self._CYCLE_SECONDS * self._usage / 100
+        while True:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise _SearchTimeout
+            now = time.monotonic()
+            if now >= deadline:
+                raise _SearchTimeout
+            cycle_position = (now - self._cycle_started) % self._CYCLE_SECONDS
+            if cycle_position < active_seconds:
+                return
+            delay = min(
+                self._CYCLE_SECONDS - cycle_position,
+                deadline - now,
+            )
+            if cancellation_event is None:
+                time.sleep(delay)
+            else:
+                cancellation_event.wait(delay)
+
+
+_LOCAL_WORKER_USAGE_LIMITER = _WorkerUsageLimiter(100)
 
 
 class WorkerPoolInitializationCancelled(Exception):
@@ -304,6 +353,7 @@ def _initialize_search_worker(
     worker_node_values,
     worker_status_lock,
 ):
+    global _WORKER_USAGE_LIMITER
     global _WORKER_PROBE_RELEASE_EVENT, _WORKER_PROBE_STARTED_COUNT
     global _WORKER_SEARCH_CANCEL_EVENT
     global _WORKER_STATUS_VALUES, _WORKER_STATUS_PIDS
@@ -314,6 +364,7 @@ def _initialize_search_worker(
     _WORKER_PROBE_RELEASE_EVENT = probe_release_event
     _WORKER_PROBE_STARTED_COUNT = probe_started_count
     _WORKER_SEARCH_CANCEL_EVENT = search_cancel_event
+    _WORKER_USAGE_LIMITER = _WorkerUsageLimiter(100)
     _WORKER_STATUS_VALUES = worker_status_values
     _WORKER_STATUS_PIDS = worker_status_pids
     _WORKER_MODE_VALUES = worker_mode_values
@@ -389,7 +440,17 @@ def _evaluate_root_action(
     root_bound = None
     reliable = False
     try:
-        worker = ChessAI(config, max_workers=1)
+        usage_limiter = (
+            _WORKER_USAGE_LIMITER or _LOCAL_WORKER_USAGE_LIMITER
+        )
+        usage_limiter.set_usage(config.cpu_worker_usage)
+        worker = ChessAI(
+            config,
+            max_workers=1,
+            cpu_worker_usage=config.cpu_worker_usage,
+            ponder_enabled=False,
+        )
+        worker._worker_usage_limiter = usage_limiter
         worker._deadline = deadline
         worker._nodes = 0
         worker._metrics = (
@@ -465,6 +526,9 @@ def _expand_ponder_white_action(state, action):
     worker_pid = os.getpid()
     roots = []
     task_status = "failed"
+    usage_limiter = (
+        _WORKER_USAGE_LIMITER or _LOCAL_WORKER_USAGE_LIMITER
+    )
     _set_current_worker_status(
         _WORKER_BUSY, _WORKER_MODE_PREPARE, action.source)
     if is_enabled("DEBUG"):
@@ -482,6 +546,10 @@ def _expand_ponder_white_action(state, action):
                 and _WORKER_SEARCH_CANCEL_EVENT.is_set()
             ):
                 break
+            try:
+                usage_limiter.wait(math.inf, _WORKER_SEARCH_CANCEL_EVENT)
+            except _SearchTimeout:
+                break
             current_state = frontier.pop()
             if current_state.get_winner() is not None:
                 continue
@@ -495,6 +563,10 @@ def _expand_ponder_white_action(state, action):
                     _WORKER_SEARCH_CANCEL_EVENT is not None
                     and _WORKER_SEARCH_CANCEL_EVENT.is_set()
                 ):
+                    break
+                try:
+                    usage_limiter.wait(math.inf, _WORKER_SEARCH_CANCEL_EVENT)
+                except _SearchTimeout:
                     break
                 children.append(GameSimulation._apply_generated_action(
                     current_state,
@@ -521,6 +593,14 @@ def _expand_ponder_white_action(state, action):
         _set_current_worker_status(_WORKER_IDLE)
 
 
+def _expand_ponder_white_action_with_usage(state, action, worker_usage):
+    usage_limiter = (
+        _WORKER_USAGE_LIMITER or _LOCAL_WORKER_USAGE_LIMITER
+    )
+    usage_limiter.set_usage(worker_usage)
+    return _expand_ponder_white_action(state, action)
+
+
 class ChessAI:
     """Wybiera akcje z perspektywy czarnych, znając ręce obu graczy."""
 
@@ -528,24 +608,64 @@ class ChessAI:
         self,
         config: SearchConfig = SearchConfig(),
         max_workers: Optional[int] = None,
-        cpu_percent: int = AI_SEARCH_CPU_PERCENT,
-        ponder_cpu_percent: int = AI_SEARCH_PONDER_CPU_PERCENT,
+        cpu_worker_usage: Optional[int] = None,
+        ponder_enabled: bool = AI_SEARCH_PONDER_ENABLED,
+        ponder_workers: Optional[int] = None,
+        ponder_cpu_worker_usage: int = AI_SEARCH_PONDER_CPU_WORKER_USAGE,
     ):
-        if max_workers is not None and max_workers < 1:
+        if cpu_worker_usage is None:
+            cpu_worker_usage = config.cpu_worker_usage
+        if (
+            max_workers is not None
+            and (
+                not isinstance(max_workers, int)
+                or isinstance(max_workers, bool)
+                or max_workers < 1
+            )
+        ):
             raise ValueError("The worker count must be at least one")
-        if not 1 <= cpu_percent <= 100:
-            raise ValueError("The CPU usage percentage must be between 1 and 100")
-        if not 0 <= ponder_cpu_percent <= 100:
+        if (
+            not isinstance(cpu_worker_usage, int)
+            or isinstance(cpu_worker_usage, bool)
+            or not 1 <= cpu_worker_usage <= 100
+        ):
+            raise ValueError("The CPU worker usage must be between 1 and 100")
+        if not isinstance(ponder_enabled, bool):
             raise ValueError(
-                "The ponder CPU usage percentage must be between 0 and 100")
-        self.config = config
-        logical_cpu_count = os.cpu_count() or 1
-        self.max_workers = (
-            max_workers
-            if max_workers is not None
-            else max(1, logical_cpu_count * cpu_percent // 100)
+                "The ponder enabled setting must be a boolean")
+        if (
+            ponder_workers is not None
+            and (
+                not isinstance(ponder_workers, int)
+                or isinstance(ponder_workers, bool)
+                or ponder_workers < 1
+            )
+        ):
+            raise ValueError("The ponder worker count must be at least one")
+        if (
+            not isinstance(ponder_cpu_worker_usage, int)
+            or isinstance(ponder_cpu_worker_usage, bool)
+            or not 1 <= ponder_cpu_worker_usage <= 100
+        ):
+            raise ValueError(
+                "The ponder CPU worker usage must be between 1 and 100")
+        self.search_worker_count = (
+            max_workers if max_workers is not None else AI_SEARCH_CPU_WORKERS
         )
-        self.ponder_cpu_percent = ponder_cpu_percent
+        self.ponder_enabled = ponder_enabled
+        self.ponder_worker_count = (
+            ponder_workers
+            if ponder_workers is not None else AI_SEARCH_PONDER_CPU_WORKERS
+        )
+        self.cpu_worker_usage = cpu_worker_usage
+        self.ponder_cpu_worker_usage = ponder_cpu_worker_usage
+        self.max_workers = max(
+            self.search_worker_count,
+            self.ponder_worker_count if self.ponder_enabled else 1,
+        )
+        self.config = replace(config, cpu_worker_usage=cpu_worker_usage)
+        self._worker_usage_limiter = _LOCAL_WORKER_USAGE_LIMITER
+        self._worker_usage_limiter.set_usage(cpu_worker_usage)
         self._deadline = 0.0
         self._nodes = 0
         self._node_progress_callback = None
@@ -612,7 +732,7 @@ class ChessAI:
         if (
             self.max_workers <= 1
             and not force_pool
-            and self.ponder_cpu_percent == 0
+            and not (self.ponder_enabled and self.config.cache_enabled)
         ):
             if progress_callback is not None:
                 progress_callback(1, 1)
@@ -1531,7 +1651,7 @@ class ChessAI:
         self, state: GameState, cancellation_event: Optional[Event] = None
     ) -> PonderResult:
         """Analizuje możliwe odpowiedzi białych bez limitu czasu."""
-        if self.ponder_cpu_percent == 0 or self._cache is None:
+        if not self.ponder_enabled or self._cache is None:
             return PonderResult(0, 0, 0, "disabled")
         if state.current_turn != COLOR.WHITE:
             return PonderResult(0, 0, 0, "not-white-to-move")
@@ -1581,7 +1701,9 @@ class ChessAI:
         capacity_reached = False
         cache_reset = False
         task_worker_count = self._ponder_worker_count_for_tasks(
-            self.max_workers)
+            self.ponder_worker_count)
+        ponder_config = replace(
+            self.config, cpu_worker_usage=self.ponder_cpu_worker_usage)
 
         def task_group_for(root_index):
             nonlocal task_count
@@ -1772,7 +1894,7 @@ class ChessAI:
                             root_state,
                             action,
                             branch["current_depth"],
-                            self.config,
+                            ponder_config,
                             math.inf,
                             snapshot,
                             root_alpha=branch["root_alpha"],
@@ -1793,9 +1915,10 @@ class ChessAI:
                         expansion_index = next_expansion_dispatch
                         next_expansion_dispatch += 1
                         future = executor.submit(
-                            _expand_ponder_white_action,
+                            _expand_ponder_white_action_with_usage,
                             state,
                             white_actions[expansion_index],
+                            self.ponder_cpu_worker_usage,
                         )
                         pending[future] = ("expand", expansion_index)
                         continue
@@ -1977,11 +2100,9 @@ class ChessAI:
             max_branch_depth, len(root_states), total_nodes, stopped_reason)
 
     def _ponder_worker_count_for_tasks(self, task_count):
-        if self.ponder_cpu_percent == 0 or task_count <= 0:
+        if not self.ponder_enabled or task_count <= 0:
             return 0
-        allocated = math.ceil(
-            self.max_workers * self.ponder_cpu_percent / 100)
-        return min(allocated, task_count)
+        return min(self.ponder_worker_count, task_count)
 
     @staticmethod
     def _states_after_player_turn(state: GameState, cancellation_event: Event):
@@ -2019,7 +2140,7 @@ class ChessAI:
         )
 
     def _worker_count_for_tasks(self, task_count):
-        return min(self.max_workers, task_count)
+        return min(self.search_worker_count, task_count)
 
     @staticmethod
     def _candidate_leader_index(completed_scores):
@@ -2597,3 +2718,5 @@ class ChessAI:
             raise _SearchTimeout
         if time.monotonic() >= self._deadline:
             raise _SearchTimeout
+        self._worker_usage_limiter.wait(
+            self._deadline, _WORKER_SEARCH_CANCEL_EVENT)

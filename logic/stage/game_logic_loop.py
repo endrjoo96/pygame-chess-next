@@ -270,7 +270,7 @@ class GameLogicLoop(object):
     def _start_pondering(self):
         if (
             not isinstance(self.black_ai, ChessAI)
-            or self.black_ai.ponder_cpu_percent == 0
+            or not self.black_ai.ponder_enabled
             or self.current_turn != COLOR.WHITE
             or self.capture_processor.get_winner() is not None
         ):

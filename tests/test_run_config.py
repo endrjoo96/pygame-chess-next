@@ -100,46 +100,79 @@ def test_run_config_rejects_non_integer_game_seed(monkeypatch, tmp_path):
         run_config._load_run_config()
 
 
-def test_run_config_defaults_cpu_usage_percentage_to_full_capacity(
-    monkeypatch, tmp_path
-):
+def test_run_config_defaults_cpu_worker_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config,
         "_load_properties",
         lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
     )
 
-    assert run_config._load_run_config()[5] == 100
+    assert run_config._load_run_config()[5:10] == (1, 100, True, 1, 100)
 
 
-@pytest.mark.parametrize("cpu_percent", ["1", "99", "100"])
-def test_run_config_accepts_cpu_usage_percentage(monkeypatch, tmp_path, cpu_percent):
+@pytest.mark.parametrize("usage", ["1", "50", "100"])
+def test_run_config_accepts_cpu_worker_usage(monkeypatch, tmp_path, usage):
     monkeypatch.setattr(
         run_config,
         "_load_properties",
         lambda: (
-            {"mode": "PROD", "ai.search.cpu_percent": cpu_percent},
+            {"mode": "PROD", "ai.search.cpu.worker_usage": usage},
             tmp_path / "run.properties",
         ),
     )
+    assert run_config._load_run_config()[6] == int(usage)
 
-    assert run_config._load_run_config()[5] == int(cpu_percent)
 
-
-@pytest.mark.parametrize("cpu_percent", ["0", "101", "-1", "50.5", "invalid"])
-def test_run_config_rejects_invalid_cpu_usage_percentage(
-    monkeypatch, tmp_path, cpu_percent
+@pytest.mark.parametrize("usage", ["0", "-1", "101", "50.5", "invalid"])
+def test_run_config_rejects_invalid_cpu_worker_usage(
+    monkeypatch, tmp_path, usage
 ):
     monkeypatch.setattr(
         run_config,
         "_load_properties",
         lambda: (
-            {"mode": "PROD", "ai.search.cpu_percent": cpu_percent},
+            {"mode": "PROD", "ai.search.cpu.worker_usage": usage},
+            tmp_path / "run.properties",
+        ),
+    )
+    with pytest.raises(ValueError, match="ai.search.cpu.worker_usage"):
+        run_config._load_run_config()
+
+
+@pytest.mark.parametrize("workers", ["1", "4", "100"])
+def test_run_config_accepts_explicit_worker_counts(monkeypatch, tmp_path, workers):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (
+            {
+                "mode": "PROD",
+                "ai.search.cpu.workers": workers,
+                "ai.search.ponder.cpu.workers": workers,
+            },
             tmp_path / "run.properties",
         ),
     )
 
-    with pytest.raises(ValueError, match="ai.search.cpu_percent"):
+    config = run_config._load_run_config()
+    assert config[5] == int(workers)
+    assert config[8] == int(workers)
+
+
+@pytest.mark.parametrize("workers", ["0", "-1", "1.5", "invalid"])
+def test_run_config_rejects_invalid_worker_counts(
+    monkeypatch, tmp_path, workers
+):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.cpu.workers": workers},
+            tmp_path / "run.properties",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="ai.search.cpu.workers"):
         run_config._load_run_config()
 
 
@@ -179,41 +212,97 @@ def test_search_metrics_default_to_disabled(monkeypatch, tmp_path):
     assert run_config._load_run_config()[-1] is False
 
 
-def test_ponder_cpu_percentage_defaults_to_disabled(monkeypatch, tmp_path):
+def test_ponder_cpu_worker_usage_defaults_to_full_usage(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config, "_load_properties",
         lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
     )
-    assert run_config._load_run_config()[6] == 0
+    assert run_config._load_run_config()[9] == 100
 
 
-@pytest.mark.parametrize("value", ["0", "1", "50", "100"])
-def test_ponder_cpu_percentage_accepts_zero_through_one_hundred(
-    monkeypatch, tmp_path, value
+@pytest.mark.parametrize("workers", ["0", "-1", "1.5", "invalid"])
+def test_run_config_rejects_invalid_ponder_worker_counts(
+    monkeypatch, tmp_path, workers
 ):
     monkeypatch.setattr(
-        run_config, "_load_properties",
+        run_config,
+        "_load_properties",
         lambda: (
-            {"mode": "PROD", "ai.search.ponder.cpu_percent": value},
+            {"mode": "PROD", "ai.search.ponder.cpu.workers": workers},
             tmp_path / "run.properties",
         ),
     )
-    assert run_config._load_run_config()[6] == int(value)
-
-
-@pytest.mark.parametrize("value", ["-1", "101", "50.5", "invalid"])
-def test_ponder_cpu_percentage_rejects_invalid_values(
-    monkeypatch, tmp_path, value
-):
-    monkeypatch.setattr(
-        run_config, "_load_properties",
-        lambda: (
-            {"mode": "PROD", "ai.search.ponder.cpu_percent": value},
-            tmp_path / "run.properties",
-        ),
-    )
-    with pytest.raises(ValueError, match="ai.search.ponder.cpu_percent"):
+    with pytest.raises(ValueError, match="ai.search.ponder.cpu.workers"):
         run_config._load_run_config()
+
+
+@pytest.mark.parametrize("value", ["1", "50", "100"])
+def test_ponder_cpu_worker_usage_accepts_one_through_one_hundred(
+    monkeypatch, tmp_path, value
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.ponder.cpu.worker_usage": value},
+            tmp_path / "run.properties",
+        ),
+    )
+    assert run_config._load_run_config()[9] == int(value)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "101", "50.5", "invalid"])
+def test_ponder_cpu_worker_usage_rejects_invalid_values(
+    monkeypatch, tmp_path, value
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.ponder.cpu.worker_usage": value},
+            tmp_path / "run.properties",
+        ),
+    )
+    with pytest.raises(ValueError, match="ai.search.ponder.cpu.worker_usage"):
+        run_config._load_run_config()
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("FALSE", False)])
+def test_run_config_accepts_ponder_enabled(monkeypatch, tmp_path, value, expected):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.ponder.enabled": value},
+            tmp_path / "run.properties",
+        ),
+    )
+    assert run_config._load_run_config()[7] is expected
+
+
+def test_run_config_rejects_invalid_ponder_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.ponder.enabled": "yes"},
+            tmp_path / "run.properties",
+        ),
+    )
+    with pytest.raises(ValueError, match="ai.search.ponder.enabled"):
+        run_config._load_run_config()
+
+
+def test_run_config_rejects_legacy_cpu_properties(monkeypatch, tmp_path):
+    for key in ("ai.search.cpu_percent", "ai.search.ponder.cpu_percent"):
+        monkeypatch.setattr(
+            run_config,
+            "_load_properties",
+            lambda key=key: (
+                {"mode": "PROD", key: "50"},
+                tmp_path / "run.properties",
+            ),
+        )
+        with pytest.raises(ValueError, match=key):
+            run_config._load_run_config()
 
 
 @pytest.mark.parametrize(("value", "expected"), [("true", True), ("FALSE", False)])

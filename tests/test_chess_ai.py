@@ -1,4 +1,3 @@
-import os
 import random
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -16,6 +15,7 @@ from logic.chess_ai import (
     SearchConfig,
     WorkerPoolInitializationCancelled,
     _RootEvaluation,
+    _WorkerUsageLimiter,
     _evaluate_root_action,
     _expand_ponder_white_action,
 )
@@ -29,7 +29,8 @@ from models.game_observation import GameObservation
 from models.game_state import GameState, RuneTrap
 from utils.logging import log_info
 from utils.run_config import (
-    AI_SEARCH_CPU_PERCENT,
+    AI_SEARCH_CPU_WORKERS,
+    AI_SEARCH_CPU_WORKER_USAGE,
     AI_SEARCH_MAX_DEPTH,
     AI_SEARCH_TIME_LIMIT_SECONDS,
 )
@@ -441,26 +442,48 @@ def test_evaluation_reuses_basic_destinations_for_threat_assessment(monkeypatch)
     assert all(enchantment is None for _, enchantment in calls)
 
 
-@pytest.mark.parametrize(
-    ("cpu_percent", "expected_workers"),
-    [(1, 1), (12, 1), (50, 4), (99, 7), (100, 8)],
-)
-def test_cpu_percentage_limits_workers_with_floor_rounding(
-    monkeypatch, cpu_percent, expected_workers
-):
-    monkeypatch.setattr("logic.chess_ai.os.cpu_count", lambda: 8)
+@pytest.mark.parametrize("workers", [1, 4, 8])
+def test_search_worker_count_is_explicit(workers):
+    ai = ChessAI(max_workers=workers, ponder_enabled=False)
 
-    ai = ChessAI(cpu_percent=cpu_percent)
-
-    assert ai.max_workers == expected_workers
-
-
-def test_explicit_worker_count_overrides_cpu_percentage():
-    assert ChessAI(max_workers=3, cpu_percent=1).max_workers == 3
+    assert ai.search_worker_count == workers
+    assert ai.max_workers == workers
 
 
 def test_worker_count_is_capped_by_available_search_tasks():
     assert ChessAI(max_workers=8)._worker_count_for_tasks(3) == 3
+
+
+def test_search_and_ponder_use_independent_worker_counts():
+    ai = ChessAI(
+        max_workers=1,
+        ponder_workers=4,
+        ponder_enabled=True,
+    )
+
+    assert ai.search_worker_count == 1
+    assert ai.ponder_worker_count == 4
+    assert ai.max_workers == 4
+
+
+def test_worker_usage_limiter_applies_per_worker_duty_cycle(monkeypatch):
+    import logic.chess_ai as chess_ai
+
+    current_time = [5.0]
+    sleeps = []
+
+    def fake_sleep(delay):
+        sleeps.append(delay)
+        current_time[0] += delay + 0.001
+
+    monkeypatch.setattr(chess_ai.time, "monotonic", lambda: current_time[0])
+    monkeypatch.setattr(chess_ai.time, "sleep", fake_sleep)
+    limiter = _WorkerUsageLimiter(50)
+    current_time[0] += 0.06
+
+    limiter.wait(6.0, None)
+
+    assert sleeps == pytest.approx([0.04])
 
 
 @pytest.mark.parametrize(
@@ -521,13 +544,14 @@ def test_search_uses_ponder_depth_for_current_state_and_logs_budget(monkeypatch)
     assert state.cache_key() not in ai._ponder_completed_depths
 
 
-def test_ponder_worker_count_uses_ceiling_and_respects_task_count():
-    ai = ChessAI(max_workers=9, ponder_cpu_percent=50)
+def test_ponder_worker_count_respects_configured_limit_and_task_count():
+    ai = ChessAI(
+        max_workers=9, ponder_workers=5, ponder_cpu_worker_usage=50)
 
     assert ai._ponder_worker_count_for_tasks(100) == 5
     assert ai._ponder_worker_count_for_tasks(3) == 3
     assert ChessAI(
-        max_workers=9, ponder_cpu_percent=0
+        max_workers=9, ponder_enabled=False
     )._ponder_worker_count_for_tasks(100) == 0
 
 
@@ -589,7 +613,7 @@ def test_ponder_stops_when_cache_reaches_its_limit(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=3, cache_max_entries=2),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -646,7 +670,7 @@ def test_ponder_reports_top_five_dangerous_white_moves(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=1, cache_max_entries=16),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -720,7 +744,7 @@ def test_ponder_dangerous_moves_use_score_after_black_reply(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=2, cache_max_entries=3),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -795,7 +819,7 @@ def test_ponder_scores_white_move_that_leaves_black_without_actions(monkeypatch)
     ai = ChessAI(
         SearchConfig(max_depth=2, cache_max_entries=16),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -864,7 +888,7 @@ def test_ponder_extends_retained_cache_as_each_root_action_finishes(monkeypatch)
     ai = ChessAI(
         SearchConfig(max_depth=1, cache_max_entries=8),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -925,7 +949,8 @@ def test_ponder_shares_alpha_sequentially_within_each_branch(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=1, cache_max_entries=16),
         max_workers=2,
-        ponder_cpu_percent=100,
+        ponder_workers=2,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -1029,7 +1054,8 @@ def test_ponder_prioritizes_best_white_positions_without_pruning(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=1, cache_max_entries=16),
         max_workers=2,
-        ponder_cpu_percent=100,
+        ponder_workers=2,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -1114,7 +1140,7 @@ def test_ponder_deepens_priority_branch_to_limit_before_next_branch(monkeypatch)
     ai = ChessAI(
         SearchConfig(max_depth=2, cache_max_entries=32),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -1216,7 +1242,7 @@ def test_ponder_dispatches_search_before_all_expansions_finish(monkeypatch):
 
         def submit(self, function, *args, **kwargs):
             future = Future()
-            if function is expand_action:
+            if function is chess_ai._expand_ponder_white_action_with_usage:
                 self.task_kinds.append("expand")
                 if args[1] == white_actions[0]:
                     future.set_result((first_root,))
@@ -1241,7 +1267,8 @@ def test_ponder_dispatches_search_before_all_expansions_finish(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=1, cache_max_entries=16),
         max_workers=2,
-        ponder_cpu_percent=100,
+        ponder_workers=2,
+        ponder_cpu_worker_usage=100,
     )
     executor = DynamicExecutor()
     ai._worker_pool = executor
@@ -1278,7 +1305,7 @@ def test_ponder_reuses_each_root_key_and_action_group_across_depths(monkeypatch)
     ai = ChessAI(
         SearchConfig(max_depth=3, cache_max_entries=16),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -1339,7 +1366,7 @@ def test_ponder_generates_later_task_groups_only_when_needed(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=3, cache_max_entries=16),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -1396,7 +1423,7 @@ def test_ponder_reports_live_nodes_and_branch_depth_progress(monkeypatch):
     ai = ChessAI(
         SearchConfig(max_depth=1, cache_max_entries=16),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
     ai._worker_pool = ImmediateExecutor()
     ai._worker_search_cancel_event = Event()
@@ -1467,10 +1494,10 @@ def test_ponder_reports_live_nodes_and_branch_depth_progress(monkeypatch):
     )
 
 
-def test_pondering_is_disabled_when_ponder_percent_is_zero():
+def test_pondering_is_disabled_by_configuration():
     state = make_black_to_move_state()
     state.current_turn = COLOR.WHITE
-    ai = ChessAI(max_workers=1, ponder_cpu_percent=0)
+    ai = ChessAI(max_workers=1, ponder_enabled=False)
 
     result = ai.ponder(state)
 
@@ -1486,7 +1513,7 @@ def test_pondering_reuses_the_persistent_process_pool():
     ai = ChessAI(
         SearchConfig(max_depth=2, cache_max_entries=64),
         max_workers=1,
-        ponder_cpu_percent=100,
+        ponder_cpu_worker_usage=100,
     )
 
     try:
@@ -1782,7 +1809,7 @@ def test_local_worker_cache_size_is_visible_during_search(monkeypatch):
     ai = ChessAI(
         SearchConfig(time_limit_seconds=5, max_depth=1),
         max_workers=1,
-        ponder_cpu_percent=0,
+        ponder_enabled=False,
     )
     observed_cache_sizes = []
 
@@ -1975,15 +2002,15 @@ def test_expired_search_budget_does_not_wait_for_worker_startup():
     assert ai._worker_pool is None
 
 
-@pytest.mark.parametrize("cpu_percent", [0, 101])
-def test_ai_rejects_cpu_percentage_outside_supported_range(cpu_percent):
-    with pytest.raises(ValueError, match="CPU usage percentage"):
-        ChessAI(cpu_percent=cpu_percent)
+@pytest.mark.parametrize("usage", [0, 101])
+def test_ai_rejects_cpu_worker_usage_outside_supported_range(usage):
+    with pytest.raises(ValueError, match="CPU worker usage"):
+        ChessAI(cpu_worker_usage=usage)
 
 
-def test_configured_cpu_percent_is_used_by_default():
-    assert ChessAI().max_workers == max(
-        1, (os.cpu_count() or 1) * AI_SEARCH_CPU_PERCENT // 100)
+def test_configured_worker_count_is_used_by_default():
+    assert ChessAI().search_worker_count == AI_SEARCH_CPU_WORKERS == 1
+    assert ChessAI().cpu_worker_usage == AI_SEARCH_CPU_WORKER_USAGE == 100
 
 
 def test_parallel_search_matches_serial_search_and_reports_completed_depths():

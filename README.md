@@ -49,7 +49,8 @@ Wyszukiwanie szeregowe pokazuje worker lokalny. Okno jest pozbawione górnej bel
 i można je przesuwać, przeciągając dowolne miejsce. Zamknięcie okna statystyk nie
 przerywa partii.
 Wyszukiwanie działa w osobnym wątku, a analizę możliwych ruchów rozdziela między
-procesy — do liczby dostępnych logicznych rdzeni. Bot analizuje dokładne kopie rąk obu graczy.
+procesy — zgodnie z liczbą workerów ustawioną w `run.properties`. Bot analizuje
+dokładne kopie rąk obu graczy.
 Przy głębszym wyszukiwaniu stosuje redukcję późnych spokojnych ruchów (LMR);
 obiecujące warianty są ponownie sprawdzane z pełną głębokością, a bicia
 i akcje kart pozostają bez redukcji.
@@ -76,7 +77,8 @@ odpowiedzi i dalsze warianty. Pondering nie ma limitu czasu; kończy się po
 osiągnięciu maksymalnej głębokości, zapełnieniu pamięci albo wykonaniu ruchu
 przez białe. Wyniki są zachowywane w pamięci i mogą przyspieszyć następny wybór
 ruchu. Po każdym wyborze zachowywana jest tylko gałąź wybranego przez bota
-ruchu. Funkcja jest domyślnie wyłączona.
+ruchu. Funkcję można wyłączyć przez `ai.search.ponder.enabled=false`; domyślnie
+jest włączona.
 
 ## Benchmark ruchów
 
@@ -118,6 +120,42 @@ Wyniki `cProfile` i `tracemalloc` zawierają narzut narzędzi diagnostycznych i
 nie nadają się do porównywania czasu ruchu. Do porównania wersji użyj tych
 samych argumentów; czasy są zależne od sprzętu i nie są testem progowym.
 
+### Pojemność i powtarzalność cache
+
+Osobny benchmark bada limity cache głównego i snapshotów przekazywanych workerom,
+powtarzalność pełnych stanów oraz koszt zapisu/odczytu wybranych wpisów:
+
+```shell
+python -m benchmarks.benchmark_search_cache --only capacity --budget 5 --repeats 3 --workers 1
+python -m benchmarks.benchmark_search_cache --only recurrence --history-plies 24 --game-count 8
+python -m benchmarks.benchmark_search_cache --only disk --workers 2
+```
+
+Warianty pamięci porównują cache wyłączony, bieżący limit główny `6k`, większe
+limity oraz limity snapshotu workerów `64`, `128` i `256` wpisów. Tryb z jednym
+workerem (domyślny) mierzy też rzeczywistą pojemność lokalnej tabeli workerów.
+Przy wielu procesach konfiguracja zmienia rozmiar przekazywanego snapshotu,
+natomiast lokalna tabela każdego procesu pozostaje ograniczona do 256 wpisów.
+Na Windowsie benchmark próbuje próbkować sumaryczny prywatny commit oraz
+working set (strony rezydentne w RAM-ie) procesu AI i workerów; na innych
+systemach raportuje brak tego pomiaru. Przyrost obejmuje cały proces wyszukiwania,
+w tym tymczasowe kopie stanów, a nie tylko wpisy cache. Próbki
+używają tych samych seedów i naprzemiennej kolejności, a wyniki czasowe,
+głębokość, trafienia i wyparcia są raportowane oddzielnie. Każda próba działa
+w osobnym procesie, aby poprzednie wyszukiwanie i stan alokatora Pythona nie
+zanieczyszczały pomiaru pamięci.
+
+Pomiar powtarzalności odtwarza te same i różne sekwencje ruchów. Pełny klucz
+zawiera także ręce, efekty, stan tury i RNG; uproszczone dopasowanie uwzględnia
+jedynie stronę na ruchu i rozmieszczenie/typ/przesunięcie figur. Takie dopasowanie
+nie jest trafieniem do cache ocen — może służyć najwyżej legalnej wskazówce
+kolejności ruchów. Pomiar dyskowy serializuje lokalnie wygenerowane snapshoty
+tymczasowymi plikami, pięć razy mierzy zapis z `fsync` i odczyt, raportuje
+medianę oraz zakres, a pliki usuwa po każdej próbie. Nie wczytuj pickle
+pochodzących z niezaufanych źródeł. Surowe
+wyniki są zależne od sprzętu; benchmark nie zmienia `run.properties` ani nie
+włącza trwałego cache do gry.
+
 ## Konfiguracja
 
 Ustawienia znajdują się w `run.properties`:
@@ -129,17 +167,24 @@ Ustawienia znajdują się w `run.properties`:
 | `game.seed` | Opcjonalny seed losowości. Jeśli klucz jest pominięty lub pusty, nowy seed 64-bitowy jest losowany przy rozpoczęciu partii. |
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
 | `ai.search.time_limit_seconds` | Bazowy budżet czasu AI na wybranie ruchu, w sekundach. W zależności od najwyższej ukończonej głębokości ponderingu dla aktualnego stanu jest liniowo zmniejszany z 100% przy głębokości 1 do 20% przy `ai.search.max_depth`; jeśli nie ma ukończonego wyniku ponderingu, wykorzystywany jest pełny czas. Przy `max_depth=1` budżet pozostaje pełny. Przydzielony czas i parametry obliczenia są logowane na poziomie `INFO`. |
-| `ai.search.cpu_percent` | Limit workerów AI jako procent logicznych CPU, liczba całkowita od 1 do 100; domyślnie `100`. |
-| `ai.search.ponder.cpu_percent` | Procent puli workerów przeznaczony na pondering podczas tury białych, liczba całkowita od 0 do 100; brak klucza oznacza `0` i wyłącza pondering. Wymaga `ai.search.cache.enabled=true`. Dla wartości dodatniej liczba workerów wynosi `ceil(rozmiar_puli * procent / 100)`. |
+| `ai.search.cpu.workers` | Maksymalna liczba workerów wyszukiwania ruchu; dodatnia liczba całkowita, domyślnie `1`. Liczba aktywnych workerów jest ograniczona liczbą zadań. |
+| `ai.search.cpu.worker_usage` | Docelowy udział aktywnego czasu każdego workera, w procentach od `1` do `100`; domyślnie `100`. Ograniczenie jest realizowane przez naprzemienne okresy pracy i bezczynności. |
+| `ai.search.ponder.enabled` | Włącza pondering (`true`/`false`); domyślnie `true`. Pondering wymaga `ai.search.cache.enabled=true`. |
+| `ai.search.ponder.cpu.workers` | Maksymalna liczba workerów ponderingu; dodatnia liczba całkowita, domyślnie `1`, ograniczona liczbą zadań. |
+| `ai.search.ponder.cpu.worker_usage` | Docelowy udział aktywnego czasu każdego workera ponderingu, w procentach od `1` do `100`; domyślnie `100`. |
 | `ai.search.cache.enabled` | `true` włącza pamięć wyników i wskazówek ruchu; `false` wyłącza ich tworzenie i odczyt. Domyślnie `true`. |
 | `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii; dodatnia liczba całkowita z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne: 1024, 1024², 1024³). W dostarczonym `run.properties` ustawiono `64k`. Tabele workerów mają dodatkowy limit. |
 | `ai.search.metrics.enabled` | `true` włącza zbiorcze pomiary faz wyszukiwania, węzłów, odcięć, cache i workerów; raport jest emitowany raz po wyszukiwaniu. `false` wyłącza dodatkowe timery; domyślnie `false`. Benchmark ma osobny przełącznik `--metrics`, domyślnie `on`, i nie zmienia konfiguracji gry. |
 
-Liczba workerów to `max(1, floor(logiczne_CPU * cpu_percent / 100))`, dodatkowo
-ograniczona liczbą zadań wyszukiwania. Na przykład `99` przy 8 logicznych CPU
-uruchomi maksymalnie 7 workerów, a `100` — maksymalnie 8. To ogranicza liczbę
-procesów obliczeniowych, ale nie gwarantuje dokładnego procentu użycia mierzonego
-przez system operacyjny.
+`cpu.workers` podaje liczbę workerów wprost — nie jest przeliczane względem
+liczby logicznych procesorów. `cpu.worker_usage` steruje udziałem czasu pracy
+osobno dla każdego workera: przy `50` worker jest aktywny w przybliżeniu przez
+połowę czasu. Nie oznacza to 50% łącznej mocy komputera; np. cztery workery po
+50% mogą średnio wykorzystać równowartość dwóch logicznych CPU. To uśrednione
+ograniczenie przez okresowe bezczynności, a nie twardy limit systemowy, więc
+rzeczywisty odczyt systemu może się różnić. Wyszukiwanie i pondering współdzielą
+trwałą pulę procesów, a każde z nich ogranicza liczbę zadań do własnego
+ustawienia `cpu.workers`.
 
 ### Poziomy logów
 
