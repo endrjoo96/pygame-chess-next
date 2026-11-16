@@ -1,6 +1,9 @@
 import math
+import os
 import pickle
 import random
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 
@@ -18,7 +21,7 @@ from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.enchantments import Enchantment
 from models.game_observation import GameObservation
-from models.game_state import GameState
+from models.game_state import GameState, _StateCacheKey
 from tests.test_chess_ai import make_black_to_move_state
 
 
@@ -54,6 +57,60 @@ def test_state_key_survives_clone_observation_and_process_serialization():
     assert restored.board_enchantment is restored.board_cards[0][1]
     assert restored.pieces_locations[9].get_effects(0)[0][0] is restored.white_cards[0]
     assert restored.white_cards[0] is not card
+
+
+def test_state_key_matches_plain_tuple_and_survives_cross_process_hash_seed():
+    state = populated_state()
+    state.pieces_locations[9].set_enchantment(state.white_cards[0])
+    key = state.cache_key()
+    plain_key = tuple(key)
+    cache = SearchCache(4)
+    entry = CacheEntry(key, 1, None, 2.5, Bound.EXACT)
+    cache.put(entry)
+
+    assert key == plain_key
+    assert hash(key) == hash(plain_key)
+    assert cache.get(plain_key, 1) == entry
+
+    code = (
+        "import pickle, sys\n"
+        "state, key = pickle.loads(sys.stdin.buffer.read())\n"
+        "fresh = state.cache_key()\n"
+        "assert key == fresh == tuple(key)\n"
+        "assert hash(key) == hash(fresh) == hash(tuple(key))\n"
+        "assert {key: 1}[fresh] == 1\n"
+        "print(hash(key))\n"
+    )
+    hashes = []
+    for seed in ("1729", "2718"):
+        process = subprocess.run(
+            [sys.executable, "-c", code],
+            input=pickle.dumps((state, key)),
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            check=True,
+            capture_output=True,
+        )
+        hashes.append(int(process.stdout))
+    assert hashes[0] != hashes[1]
+
+
+def test_state_cache_key_hashes_components_once():
+    class CountedHash:
+        calls = 0
+
+        def __hash__(self):
+            self.calls += 1
+            return 42
+
+    component = CountedHash()
+    key = _StateCacheKey((component,))
+    assert component.calls == 1
+    assert hash(key) == hash(key)
+    assert component.calls == 1
+    with pytest.raises(AttributeError):
+        key._cached_hash = 0
+    with pytest.raises(AttributeError):
+        del key._cached_hash
 
 
 @pytest.mark.parametrize(

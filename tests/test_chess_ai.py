@@ -7,6 +7,7 @@ from threading import Event, Lock
 
 import pytest
 
+from benchmarks import benchmark_move_generation as benchmark
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.pos import POS
@@ -26,6 +27,7 @@ from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
 from models.game_observation import GameObservation
 from models.game_state import GameState, RuneTrap
+from utils.logging import log_info
 from utils.run_config import (
     AI_SEARCH_CPU_PERCENT,
     AI_SEARCH_MAX_DEPTH,
@@ -48,6 +50,58 @@ def make_black_to_move_state():
         pending_board_card_delay=None,
         random_state=random.Random(23).getstate(),
     )
+
+
+@pytest.mark.parametrize(
+    "seed,plies,position,expected_score,expected_threat",
+    [
+        (20261116, 13, "ordinary", 0.1425, 0.1925),
+        (20261116, 13, "cards", 2.7425, 0.1925),
+        (20261116, 13, "complex", 5.14, 2.5025),
+        (20261117, 5, "ordinary", 1.475, 1.43),
+        (20261117, 5, "cards", 4.1, 1.43),
+        (20261117, 5, "complex", 6.17875, 3.665),
+    ],
+)
+def test_evaluation_characterization_for_seeded_card_positions(
+    seed, plies, position, expected_score, expected_threat,
+):
+    state = benchmark.make_seeded_position(seed, plies)
+    if position == "cards":
+        state = benchmark.make_card_position(state)
+    elif position == "complex":
+        state = benchmark.make_complex_card_position(state)
+    original_key = state.cache_key()
+
+    assert ChessAI.evaluate(state) == pytest.approx(
+        expected_score, abs=1e-12, rel=0)
+    assert ChessAI._threat_score(state) == pytest.approx(
+        expected_threat, abs=1e-12, rel=0)
+    assert state.cache_key() == original_key
+
+
+def test_attack_map_deduplicates_rook_throw_and_respects_stun():
+    state = make_black_to_move_state()
+    state.pieces_locations[1] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[28] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[2] = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    state.pieces_locations[3] = Piece(COLOR.WHITE, PIECE_TYPE.QUEEN)
+    state.pieces_locations[4] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    state.pieces_locations[64] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.black_cards = [
+        EnchantmentCardType.ROOK_TOWER_THROW.create(),
+        EnchantmentCardType.ROOK_TOWER_THROW.create(),
+    ]
+
+    attacks = ChessAI._attack_map(state)
+
+    assert attacks[COLOR.BLACK][4] == {1, 28}
+    assert attacks[COLOR.BLACK][3] == {1}
+    assert attacks[COLOR.BLACK][5] == {1}
+    assert ChessAI._threat_score(state) == pytest.approx(46.125)
+    state.pieces_locations[28].set_stunned_for_turns(2)
+    assert ChessAI._attack_map(state)[COLOR.BLACK][4] == {1}
+    assert ChessAI._threat_score(state) == pytest.approx(37.125)
 
 
 def test_ai_finds_immediate_king_capture():
@@ -2099,6 +2153,63 @@ def test_evaluation_prioritizes_king_safety_over_a_safe_square():
     safe.pieces_locations[10] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
 
     assert ChessAI.evaluate(safe) > ChessAI.evaluate(exposed)
+
+
+@pytest.mark.parametrize("depth", [1, 4])
+def test_ai_avoids_exposing_king_to_opponents_movement_card(depth):
+    state = make_black_to_move_state()
+    state.pieces_locations[POS.B1.value] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    state.pieces_locations[POS.E1.value] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[POS.C3.value] = Piece(COLOR.WHITE, PIECE_TYPE.KNIGHT)
+    state.pieces_locations[POS.A8.value] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    state.white_cards = [
+        EnchantmentCardType.KNIGHT_ONE_FIELD_ANY_DIRECTION.create(uses=2),
+    ]
+    dangerous_move = next(
+        action for action in GameSimulation.available_actions(state)
+        if action.source == POS.B1.value
+        and action.destination == POS.C2.value
+        and action.card_index == -1
+    )
+    exposed = GameSimulation.apply(state, dangerous_move)
+    capture = next(
+        action for action in GameSimulation.available_actions(exposed)
+        if action.source == POS.C3.value
+        and action.destination == POS.C2.value
+        and action.card_index == 0
+    )
+    assert GameSimulation.apply(exposed, capture).get_winner() == COLOR.WHITE
+
+    ai = ChessAI(
+        SearchConfig(time_limit_seconds=5, max_depth=depth),
+        max_workers=1,
+    )
+    try:
+        decision = ai.choose_action(GameObservation.from_state(state, COLOR.BLACK))
+    finally:
+        ai.shutdown_worker_pool()
+
+    assert decision.completed_depth == depth
+    assert decision.action.source == POS.B1.value
+    assert decision.action.destination == POS.C1.value
+
+
+def test_ai_can_capture_king_using_existing_movement_effect():
+    state = make_black_to_move_state()
+    pawn = Piece(COLOR.BLACK, PIECE_TYPE.PAWN)
+    pawn.set_enchantment(EnchantmentCardType.PAWN_ONE_FIELD_BACKWARD.create())
+    state.pieces_locations[POS.D4.value] = pawn
+    state.pieces_locations[POS.E5.value] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    state.pieces_locations[POS.H8.value] = Piece(COLOR.BLACK, PIECE_TYPE.KING)
+    ai = ChessAI(SearchConfig(time_limit_seconds=2, max_depth=1), max_workers=1)
+    try:
+        decision = ai.choose_action(GameObservation.from_state(state, COLOR.BLACK))
+    finally:
+        ai.shutdown_worker_pool()
+
+    assert decision.action.source == POS.D4.value
+    assert decision.action.destination == POS.E5.value
+    assert GameSimulation.apply(state, decision.action).get_winner() == COLOR.BLACK
 
 
 def test_evaluation_rewards_developing_a_minor_piece_toward_the_center():

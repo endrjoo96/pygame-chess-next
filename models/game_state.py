@@ -10,6 +10,29 @@ from models.enchantments import Enchantment
 from utils.run_config import GAME_SEED
 
 
+_PIECE_DEEPCOPY = Piece.__deepcopy__
+
+
+class _StateCacheKey(tuple):
+    def __new__(cls, values):
+        key = super().__new__(cls, values)
+        object.__setattr__(key, "_cached_hash", tuple.__hash__(key))
+        return key
+
+    def __setattr__(self, name, value):
+        raise AttributeError("State cache keys are immutable")
+
+    def __delattr__(self, name):
+        raise AttributeError("State cache keys are immutable")
+
+    def __hash__(self):
+        return self._cached_hash
+
+    def __reduce_ex__(self, protocol):
+        # Hash randomization differs between processes; never serialize the hash.
+        return type(self), (tuple(self),)
+
+
 def _initial_random_state():
     return random.Random(GAME_SEED if GAME_SEED is not None else 0).getstate()
 
@@ -94,9 +117,19 @@ class GameState:
     def clone(self) -> "GameState":
         """Kopiuje rekurencyjnie mutowalny stan figur, efektów i kart."""
         memo = {}
+        # The built-in Piece copier handles memo itself; overrides need deepcopy.
+        use_piece_fast_copy = Piece.__deepcopy__ is _PIECE_DEEPCOPY
         return GameState(
             pieces_locations={
-                position: copy.deepcopy(piece, memo)
+                position: (
+                    piece.__deepcopy__(memo)
+                    if (
+                        use_piece_fast_copy
+                        and type(piece) is Piece
+                        and "__deepcopy__" not in piece.__dict__
+                    )
+                    else copy.deepcopy(piece, memo)
+                )
                 for position, piece in self.pieces_locations.items()
             },
             current_turn=self.current_turn,
@@ -145,7 +178,7 @@ class GameState:
         def piece_key(piece):
             return reference(piece, lambda item: item.cache_key(enchantment_key))
 
-        return (
+        return _StateCacheKey((
             tuple((position, piece_key(piece))
                   for position, piece in self.pieces_locations.items()),
             self.current_turn,
@@ -173,7 +206,7 @@ class GameState:
                 )
                 for trap in self.rune_traps
             ),
-        )
+        ))
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         """Zwraca talię wskazanego gracza."""

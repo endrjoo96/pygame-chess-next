@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from constants.piece_color import COLOR
 from constants.pos import POS
 from logic.chess_ai import ChessAI, SearchConfig
@@ -7,6 +9,7 @@ from logic.game_rules import GameActionType
 from logic.game_simulation import GameSimulation
 from logic.opening_book import opening_hints
 from logic.search_cache import Bound
+from models.ai_search_metrics import AISearchMetrics
 from models.chess_pieces import Piece
 from models.game_observation import GameObservation
 from models.game_state import GameState
@@ -81,7 +84,10 @@ def test_ai_prioritizes_only_legal_book_moves():
     assert set(ordered) == set(legal_actions)
 
 
-def test_search_evaluates_all_moves_and_can_choose_outside_the_book(monkeypatch):
+@pytest.mark.parametrize("metrics_enabled", [False, True])
+def test_search_evaluates_all_moves_and_can_choose_outside_the_book(
+    monkeypatch, metrics_enabled,
+):
     state = _play(_new_classical_state(), POS.E2, POS.E4)
     legal_actions = GameSimulation.available_actions(state)
     expected_action = next(
@@ -106,15 +112,20 @@ def test_search_evaluates_all_moves_and_can_choose_outside_the_book(monkeypatch)
             hits=0,
             score_hits=0,
             hints=0,
+            metrics=AISearchMetrics(visited_nodes=1) if metrics_enabled else None,
         )
 
     monkeypatch.setattr(
         "logic.chess_ai._evaluate_root_action", evaluate_root_action)
     ai = ChessAI(
-        SearchConfig(time_limit_seconds=2, max_depth=1), max_workers=1
+        SearchConfig(
+            time_limit_seconds=2, max_depth=1, metrics_enabled=metrics_enabled,
+        ),
+        max_workers=1,
     )
 
     result = ai.choose_action(GameObservation.from_state(state, COLOR.BLACK))
 
     assert set(evaluated) == set(legal_actions)
     assert result.action == expected_action
+    assert (result.metrics is not None) == metrics_enabled

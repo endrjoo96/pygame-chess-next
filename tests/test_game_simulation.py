@@ -1,12 +1,14 @@
 import builtins
+import copy
 import random
 
 import pytest
 
+from benchmarks import benchmark_move_generation as benchmark
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.pos import POS, id_to_xy, xy_to_id
-from logic.game_rules import GameAction, GameActionType
+from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
@@ -136,6 +138,147 @@ def test_game_state_clone_isolates_piece_effects_and_preserves_card_aliases(
     assert cloned_piece.get_delayed_enchantments_ready_at(2) == [cloned_card]
     assert len(cloned_piece.get_effects(0)) == 2
     assert len(piece.get_effects(0)) == 3
+
+
+def test_game_state_clone_preserves_aliases_and_isolates_sibling_branches(empty_state):
+    card = EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.create(uses=2)
+    piece = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    piece.set_enchantment(card)
+    piece.add_delayed_enchantment(card, 2)
+    piece.add_stun_effect(card, 2)
+    empty_state.pieces_locations[9] = piece
+    empty_state.pieces_locations[17] = piece
+    empty_state.pieces_locations[21] = empty_state.pieces_locations[20]
+    empty_state.white_cards = [card, card]
+    empty_state.black_cards = [card]
+    empty_state.captured_white = [piece]
+    empty_state.captured_black = [piece]
+    empty_state.board_card_available = True
+    empty_state.board_card_position = 22
+    empty_state.board_enchantment = card
+    empty_state.board_cards = [(22, card)]
+    empty_state.rune_traps = [RuneTrap(23, COLOR.BLACK, card, 1)]
+    empty_state.selected_card = (COLOR.WHITE, 0)
+    empty_state.selected_piece_position = 9
+    empty_state.double_move_step = 1
+    empty_state.resurrection_moves = [10, 11]
+    empty_state.en_passant_target = 25
+    empty_state.en_passant_targets = [25, 26]
+    original_key = empty_state.cache_key()
+
+    child = empty_state.clone()
+    sibling = empty_state.clone()
+    cloned_piece = child.pieces_locations[9]
+    cloned_card = child.white_cards[0]
+
+    assert child.cache_key() == sibling.cache_key() == original_key
+    assert cloned_piece is child.pieces_locations[17]
+    assert child.pieces_locations[20] is child.pieces_locations[21]
+    assert cloned_piece is child.captured_white[0] is child.captured_black[0]
+    assert cloned_card is child.white_cards[1] is child.black_cards[0]
+    assert cloned_card is child.board_enchantment is child.board_cards[0][1]
+    assert cloned_card is child.rune_traps[0].enchantment
+    assert all(effect[0] is cloned_card for effect in cloned_piece.get_effects(0))
+    assert cloned_piece is not piece
+    assert cloned_card is not card
+    assert child.pieces_locations[20] is not empty_state.pieces_locations[20]
+    assert child.random_state is empty_state.random_state
+
+    cloned_card.consume_use()
+    cloned_piece.set_has_moved()
+    child.pieces_locations[20].set_stunned_for_turns(1)
+    child.resurrection_moves.append(12)
+    child.en_passant_targets.append(27)
+    child.rune_traps[0].remaining_owner_turns -= 1
+    assert empty_state.cache_key() == sibling.cache_key() == original_key
+
+
+def test_game_state_clone_respects_piece_subclass_deepcopy(empty_state):
+    class CustomPiece(Piece):
+        def __deepcopy__(self, memo):
+            cloned = super().__deepcopy__(memo)
+            cloned.metadata = copy.deepcopy(self.metadata, memo)
+            return cloned
+
+    card = EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.create(uses=2)
+    piece = CustomPiece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    piece.set_enchantment(card)
+    piece.metadata = {"card": card, "data": [1]}
+    empty_state.pieces_locations[9] = piece
+    empty_state.pieces_locations[17] = piece
+    empty_state.white_cards = [card]
+
+    child = empty_state.clone()
+    cloned = child.pieces_locations[9]
+
+    assert type(cloned) is CustomPiece
+    assert cloned is child.pieces_locations[17]
+    assert cloned.metadata["card"] is child.white_cards[0]
+    cloned.metadata["data"].append(2)
+    assert piece.metadata["data"] == [1]
+
+
+def test_game_state_clone_respects_instance_deepcopy_override(empty_state):
+    piece = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    original_deepcopy = piece.__deepcopy__
+    calls = []
+
+    def custom_deepcopy(memo):
+        calls.append(True)
+        cloned = original_deepcopy(memo)
+        cloned.metadata = ["custom"]
+        return cloned
+
+    piece.__deepcopy__ = custom_deepcopy
+    empty_state.pieces_locations[9] = piece
+    empty_state.pieces_locations[17] = piece
+
+    child = empty_state.clone()
+
+    assert child.pieces_locations[9] is child.pieces_locations[17]
+    assert child.pieces_locations[9].metadata == ["custom"]
+    assert calls == [True]
+
+
+def test_game_state_clone_respects_class_deepcopy_override(empty_state, monkeypatch):
+    piece = Piece(COLOR.WHITE, PIECE_TYPE.PAWN)
+    calls = []
+
+    def custom_deepcopy(source, _memo):
+        calls.append(source)
+        return Piece(source.get_color(), source.get_type())
+
+    monkeypatch.setattr(Piece, "__deepcopy__", custom_deepcopy)
+    empty_state.pieces_locations[9] = piece
+    empty_state.pieces_locations[17] = piece
+
+    child = empty_state.clone()
+
+    assert child.pieces_locations[9] is child.pieces_locations[17]
+    assert sum(source is piece for source in calls) == 1
+
+
+@pytest.mark.parametrize("position", ["ordinary", "cards", "complex"])
+def test_generated_children_match_deepcopy_reference(position):
+    state = benchmark.make_seeded_position(20261116, 13)
+    if position == "cards":
+        state = benchmark.make_card_position(state)
+    elif position == "complex":
+        state = benchmark.make_complex_card_position(state)
+    original_key = state.cache_key()
+    actions = GameSimulation.available_actions(state)
+    assert actions
+
+    for action in actions:
+        expected = copy.deepcopy(state)
+        GameRules.apply_action(expected, action, advance_board_card_clock=False)
+        actual = GameSimulation._apply_generated_action(state, action)
+
+        assert actual.cache_key() == expected.cache_key()
+        assert GameSimulation.available_actions(actual) == (
+            GameSimulation.available_actions(expected)
+        )
+        assert state.cache_key() == original_key
 
 
 def test_generated_action_fast_path_matches_validated_apply(empty_state):

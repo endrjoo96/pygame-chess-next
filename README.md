@@ -61,6 +61,10 @@ tej samej partii. Zapamiętane ruchy mogą zmieniać kolejność przeszukiwania;
 oceny i granice alpha-beta są używane tylko dla tej samej głębokości i gdy ich
 wiarygodność nie została naruszona przez redukcje LMR. Pamięć jest czyszczona
 przy rozpoczęciu nowej partii i nie gwarantuje szybszego ani lepszego ruchu.
+Klucz obejmuje pełny stan symulacji i zapamiętuje swój hash, co ogranicza koszt
+ponownego wczytywania wpisów do cache workerów. Po przesłaniu klucza do innego
+procesu hash jest wyliczany ponownie; jego przechowywanie zwiększa zużycie
+pamięci proporcjonalnie do liczby kluczy.
 Przy `DEBUG` podawane są także liczby trafień, użytych ocen, wskazówek ruchu,
 wpisów i usunięć z pamięci.
 Na początku partii bot korzysta również z niewielkiego zestawu klasycznych
@@ -80,19 +84,28 @@ Powtarzalny benchmark generatora i wyszukiwania AI uruchom z katalogu projektu:
 
 ```shell
 python -m benchmarks.benchmark_move_generation --seed 20261116 --iterations 3000 --repeats 5 --search-repeats 5
-python -m benchmarks.benchmark_move_generation --seed 20261116 --budget-seconds 5 --workers 1
+python -m benchmarks.benchmark_move_generation --seed 20261116 --budget-seconds 5 --budget-repeats 3 --workers 1
 python -m benchmarks.benchmark_move_generation --seed 20261116 --budget-seconds 5 --workers 2
+python -m benchmarks.benchmark_move_generation --seed 20261116 --plies 13 --extended --cache off --budget-seconds 15 --budget-repeats 3
 ```
 
-Seed wybiera tę samą 13-ruchową sekwencję początkową, a benchmark mierzy
-generowanie akcji w zwykłej pozycji i z kartami/efektami ruchowymi oraz
-szeregowe wyszukiwanie o stałej głębokości. Opcjonalny budżet czasowy uruchamia
-wyszukiwanie z cache'em i raportuje głębokość, liczbę węzłów oraz czasy faz
-wyszukiwania. `--workers` pozwala porównać koszt analizy równoległej; przy
-wartości większej niż `1` mierzone są też czas uruchomienia puli i sumaryczny
-czas zadań workerów. Metryki benchmarku są domyślnie włączone; `--metrics off`
-pozwala zmierzyć wyszukiwanie bez dodatkowych timerów i porównać koszt
-instrumentacji.
+Seed wybiera powtarzalną sekwencję początkową; `--plies` określa jej długość
+w półruchach i musi być dodatnią liczbą nieparzystą (domyślnie `13`, aby na
+ruchu były czarne). Benchmark mierzy generowanie akcji i wyszukiwanie w zwykłej
+pozycji oraz z kartami/efektami ruchowymi. `--extended` dodaje pozycję z
+kartą planszową, pułapką, ogłuszeniem i dodatkowymi kartami w obu rękach.
+
+Próby o stałej głębokości i z opcjonalnym budżetem czasowym raportują osobno
+każdy wynik, ukończoną i rozpoczętą głębokość, liczbę węzłów oraz czasy faz;
+podsumowanie zawiera medianę i zakres czasu. W próbach czasowych różne ruchy,
+głębokości i liczby węzłów są możliwe między powtórzeniami. `--cache on` lub
+`--cache off` pozwala porównać wyszukiwanie z pamięcią i bez niej; domyślne
+`auto` wyłącza cache dla stałej głębokości, a włącza go dla prób czasowych.
+Każda próba tworzy nową instancję AI i zimną pulę workerów. `--workers` pozwala
+porównać koszt analizy równoległej; czas zadań i faz workerów jest sumowany
+między procesami, więc może przekraczać czas całego wyszukiwania. Metryki
+benchmarku są domyślnie włączone; `--metrics off` pozwala zmierzyć wyszukiwanie
+bez dodatkowych timerów i porównać koszt instrumentacji.
 
 Profil funkcji i pamięci wykonuj osobno, bez prób z budżetem czasowym:
 
