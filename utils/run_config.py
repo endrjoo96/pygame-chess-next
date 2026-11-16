@@ -1,7 +1,54 @@
 import math
+import os
 import secrets
 from enum import Enum, IntEnum
 from pathlib import Path
+
+import yaml
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+RUN_CONFIG_PATH = Path(
+    os.environ.get(
+        "CHESS_RUN_CONFIG_PATH",
+        str(_PROJECT_ROOT / "run.yaml"),
+    )
+)
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from None
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "duplicate key {!r}".format(key),
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 
 
 class RunMode(Enum):
@@ -19,21 +66,53 @@ class LogLevel(IntEnum):
 
 
 def _load_properties():
-    """Odczytuje plik run.properties i zwraca słownik ustawień oraz jego ścieżkę."""
-    properties_path = Path(__file__).resolve().parent.parent / "run.properties"
-    properties = {}
-    for line_number, line in enumerate(properties_path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = line.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
+    """Odczytuje run.yaml i spłaszcza zagnieżdżone ustawienia do kluczy z kropkami."""
+    properties_path = RUN_CONFIG_PATH
+    try:
+        with properties_path.open(encoding="utf-8") as config_file:
+            config = yaml.load(config_file, Loader=_UniqueKeySafeLoader)
+    except yaml.YAMLError as error:
+        raise ValueError(
+            "Invalid YAML in {}: {}".format(properties_path, error)
+        ) from None
 
-        key, separator, value = line.partition("=")
-        if not separator:
-            raise ValueError("Invalid property at {}:{}".format(properties_path, line_number))
-        key = key.strip()
-        if key in properties:
-            raise ValueError("Duplicate property '{}' in {}".format(key, properties_path))
-        properties[key] = value.strip()
+    if not isinstance(config, dict):
+        raise ValueError(
+            "Configuration in {} must be a YAML mapping".format(properties_path)
+        )
+
+    properties = {}
+
+    def flatten(mapping, prefix=""):
+        for key, value in mapping.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(
+                    "Configuration keys in {} must be non-empty strings".format(
+                        properties_path)
+                )
+            full_key = "{}.{}".format(prefix, key) if prefix else key
+            if isinstance(value, dict):
+                flatten(value, full_key)
+            elif full_key in properties:
+                raise ValueError(
+                    "Duplicate setting '{}' in {}".format(
+                        full_key, properties_path)
+                )
+            elif value is None:
+                properties[full_key] = ""
+            elif isinstance(value, bool):
+                properties[full_key] = str(value).lower()
+            elif isinstance(value, str):
+                properties[full_key] = value.strip()
+            elif isinstance(value, (int, float)):
+                properties[full_key] = str(value)
+            else:
+                raise ValueError(
+                    "Invalid value for '{}' in {}; expected a scalar".format(
+                        full_key, properties_path)
+                )
+
+    flatten(config)
     return properties, properties_path
 
 
@@ -130,7 +209,11 @@ def _load_run_config():
                 properties_path))
     try:
         ai_search_ponder_cpu_workers = int(
-            properties.get("ai.search.ponder.cpu.workers", "1"))
+            properties.get(
+                "ai.search.ponder.cpu.workers",
+                properties.get("ai.search.cpu.workers", "1"),
+            )
+        )
     except ValueError:
         raise ValueError(
             "Invalid 'ai.search.ponder.cpu.workers' in {}; expected a positive "
@@ -138,7 +221,11 @@ def _load_run_config():
         ) from None
     try:
         ai_search_ponder_cpu_worker_usage = int(
-            properties.get("ai.search.ponder.cpu.worker_usage", "100"))
+            properties.get(
+                "ai.search.ponder.cpu.worker_usage",
+                properties.get("ai.search.cpu.worker_usage", "100"),
+            )
+        )
     except ValueError:
         raise ValueError(
             "Invalid 'ai.search.ponder.cpu.worker_usage' in {}; expected an "

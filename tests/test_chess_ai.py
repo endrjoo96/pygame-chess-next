@@ -2008,9 +2008,11 @@ def test_ai_rejects_cpu_worker_usage_outside_supported_range(usage):
         ChessAI(cpu_worker_usage=usage)
 
 
-def test_configured_worker_count_is_used_by_default():
-    assert ChessAI().search_worker_count == AI_SEARCH_CPU_WORKERS == 1
-    assert ChessAI().cpu_worker_usage == AI_SEARCH_CPU_WORKER_USAGE == 100
+def test_configured_worker_settings_are_used_by_default():
+    ai = ChessAI()
+
+    assert ai.search_worker_count == AI_SEARCH_CPU_WORKERS
+    assert ai.cpu_worker_usage == AI_SEARCH_CPU_WORKER_USAGE
 
 
 def test_parallel_search_matches_serial_search_and_reports_completed_depths():

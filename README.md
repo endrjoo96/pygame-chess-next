@@ -49,7 +49,7 @@ Wyszukiwanie szeregowe pokazuje worker lokalny. Okno jest pozbawione górnej bel
 i można je przesuwać, przeciągając dowolne miejsce. Zamknięcie okna statystyk nie
 przerywa partii.
 Wyszukiwanie działa w osobnym wątku, a analizę możliwych ruchów rozdziela między
-procesy — zgodnie z liczbą workerów ustawioną w `run.properties`. Bot analizuje
+procesy — zgodnie z liczbą workerów ustawioną w `run.yaml`. Bot analizuje
 dokładne kopie rąk obu graczy.
 Przy głębszym wyszukiwaniu stosuje redukcję późnych spokojnych ruchów (LMR);
 obiecujące warianty są ponownie sprawdzane z pełną głębokością, a bicia
@@ -153,12 +153,16 @@ kolejności ruchów. Pomiar dyskowy serializuje lokalnie wygenerowane snapshoty
 tymczasowymi plikami, pięć razy mierzy zapis z `fsync` i odczyt, raportuje
 medianę oraz zakres, a pliki usuwa po każdej próbie. Nie wczytuj pickle
 pochodzących z niezaufanych źródeł. Surowe
-wyniki są zależne od sprzętu; benchmark nie zmienia `run.properties` ani nie
+wyniki są zależne od sprzętu; benchmark nie zmienia `run.yaml` ani nie
 włącza trwałego cache do gry.
 
 ## Konfiguracja
 
-Ustawienia znajdują się w `run.properties`:
+Ustawienia znajdują się w zagnieżdżonym pliku YAML `run.yaml`. Ścieżki z
+kropkami w tabeli opisują odpowiadające im poziomy zagnieżdżenia, np.
+`ai.search.cpu.workers` oznacza `ai: search: cpu: workers:`.
+Testy pytest używają jego kopii `run.test.yaml`; zmiany w niej nie wpływają na
+normalne uruchomienie aplikacji.
 
 | Klucz | Znaczenie |
 |---|---|
@@ -170,10 +174,10 @@ Ustawienia znajdują się w `run.properties`:
 | `ai.search.cpu.workers` | Maksymalna liczba workerów wyszukiwania ruchu; dodatnia liczba całkowita, domyślnie `1`. Liczba aktywnych workerów jest ograniczona liczbą zadań. |
 | `ai.search.cpu.worker_usage` | Docelowy udział aktywnego czasu każdego workera, w procentach od `1` do `100`; domyślnie `100`. Ograniczenie jest realizowane przez naprzemienne okresy pracy i bezczynności. |
 | `ai.search.ponder.enabled` | Włącza pondering (`true`/`false`); domyślnie `true`. Pondering wymaga `ai.search.cache.enabled=true`. |
-| `ai.search.ponder.cpu.workers` | Maksymalna liczba workerów ponderingu; dodatnia liczba całkowita, domyślnie `1`, ograniczona liczbą zadań. |
-| `ai.search.ponder.cpu.worker_usage` | Docelowy udział aktywnego czasu każdego workera ponderingu, w procentach od `1` do `100`; domyślnie `100`. |
+| `ai.search.ponder.cpu.workers` | Maksymalna liczba workerów ponderingu; dodatnia liczba całkowita, ograniczona liczbą zadań. Jeśli pominięta, dziedziczy `ai.search.cpu.workers`; gdy pominięte są oba parametry, obowiązuje domyślne `1`. |
+| `ai.search.ponder.cpu.worker_usage` | Docelowy udział aktywnego czasu każdego workera ponderingu, w procentach od `1` do `100`. Jeśli pominięty, dziedziczy `ai.search.cpu.worker_usage`; gdy pominięte są oba parametry, obowiązuje domyślne `100`. |
 | `ai.search.cache.enabled` | `true` włącza pamięć wyników i wskazówek ruchu; `false` wyłącza ich tworzenie i odczyt. Domyślnie `true`. |
-| `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii; dodatnia liczba całkowita z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne: 1024, 1024², 1024³). W dostarczonym `run.properties` ustawiono `64k`. Tabele workerów mają dodatkowy limit. |
+| `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii; dodatnia liczba całkowita z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne: 1024, 1024², 1024³). W dostarczonym `run.yaml` ustawiono `6k`. Tabele workerów mają dodatkowy limit. |
 | `ai.search.metrics.enabled` | `true` włącza zbiorcze pomiary faz wyszukiwania, węzłów, odcięć, cache i workerów; raport jest emitowany raz po wyszukiwaniu. `false` wyłącza dodatkowe timery; domyślnie `false`. Benchmark ma osobny przełącznik `--metrics`, domyślnie `on`, i nie zmienia konfiguracji gry. |
 
 `cpu.workers` podaje liczbę workerów wprost — nie jest przeliczane względem

@@ -3,11 +3,81 @@ import pytest
 import utils.run_config as run_config
 
 
+def test_pytest_uses_run_test_yaml():
+    assert run_config.RUN_CONFIG_PATH.name == "run.test.yaml"
+
+
+def test_run_config_loads_nested_yaml_values(monkeypatch, tmp_path):
+    config_path = tmp_path / "run.yaml"
+    config_path.write_text(
+        """\
+mode: PROD
+log:
+  level: " info "
+game:
+  seed: 42
+ai:
+  search:
+    max_depth: 7
+    time_limit_seconds: 1.5
+    cpu:
+      workers: 4
+      worker_usage: 50
+    ponder:
+      enabled: false
+      cpu:
+        workers: 2
+        worker_usage: 75
+    cache:
+      enabled: false
+      max_entries: 8k
+    metrics:
+      enabled: true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_config, "RUN_CONFIG_PATH", config_path)
+
+    assert run_config._load_run_config() == (
+        run_config.RunMode.PROD,
+        run_config.LogLevel.INFO,
+        42,
+        7,
+        1.5,
+        4,
+        50,
+        False,
+        2,
+        75,
+        False,
+        8 * 1024,
+        True,
+    )
+
+
+def test_run_config_rejects_duplicate_yaml_keys(monkeypatch, tmp_path):
+    config_path = tmp_path / "run.yaml"
+    config_path.write_text("mode: PROD\nmode: DEBUG\n", encoding="utf-8")
+    monkeypatch.setattr(run_config, "RUN_CONFIG_PATH", config_path)
+
+    with pytest.raises(ValueError, match="duplicate key 'mode'"):
+        run_config._load_properties()
+
+
+def test_run_config_rejects_non_mapping_yaml(monkeypatch, tmp_path):
+    config_path = tmp_path / "run.yaml"
+    config_path.write_text("- PROD\n- DEBUG\n", encoding="utf-8")
+    monkeypatch.setattr(run_config, "RUN_CONFIG_PATH", config_path)
+
+    with pytest.raises(ValueError, match="must be a YAML mapping"):
+        run_config._load_properties()
+
+
 def test_run_config_allows_missing_game_seed(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config,
         "_load_properties",
-        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
 
     assert run_config._load_run_config()[2] is None
@@ -20,7 +90,7 @@ def test_run_config_allows_empty_game_seed(monkeypatch, tmp_path, seed_value):
         "_load_properties",
         lambda: (
             {"mode": "PROD", "game.seed": seed_value},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
 
@@ -31,7 +101,7 @@ def test_run_config_defaults_log_level_to_warn(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config,
         "_load_properties",
-        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
 
     assert run_config._load_run_config()[1] == run_config.LogLevel.WARN
@@ -54,7 +124,7 @@ def test_run_config_accepts_log_levels(monkeypatch, tmp_path, value, expected):
         "_load_properties",
         lambda: (
             {"mode": "PROD", "log.level": value},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
 
@@ -67,7 +137,7 @@ def test_run_config_rejects_unknown_log_level(monkeypatch, tmp_path):
         "_load_properties",
         lambda: (
             {"mode": "PROD", "log.level": "TRACE"},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
 
@@ -80,7 +150,7 @@ def test_run_config_accepts_any_integer_game_seed(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config,
         "_load_properties",
-        lambda: ({"mode": "PROD", "game.seed": seed}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD", "game.seed": seed}, tmp_path / "run.yaml"),
     )
 
     assert run_config._load_run_config()[2] == int(seed)
@@ -92,7 +162,7 @@ def test_run_config_rejects_non_integer_game_seed(monkeypatch, tmp_path):
         "_load_properties",
         lambda: (
             {"mode": "PROD", "game.seed": "not-a-number"},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
 
@@ -104,10 +174,50 @@ def test_run_config_defaults_cpu_worker_settings(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config,
         "_load_properties",
-        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
 
     assert run_config._load_run_config()[5:10] == (1, 100, True, 1, 100)
+
+
+@pytest.mark.parametrize(
+    ("ponder_settings", "expected_workers", "expected_usage"),
+    [
+        ({}, 4, 25),
+        ({"ai.search.ponder.cpu.workers": "2"}, 2, 25),
+        ({"ai.search.ponder.cpu.worker_usage": "75"}, 4, 75),
+        (
+            {
+                "ai.search.ponder.cpu.workers": "2",
+                "ai.search.ponder.cpu.worker_usage": "75",
+            },
+            2,
+            75,
+        ),
+    ],
+)
+def test_ponder_cpu_settings_inherit_search_values_when_omitted(
+    monkeypatch, tmp_path, ponder_settings, expected_workers, expected_usage
+):
+    settings = {
+        "mode": "PROD",
+        "ai.search.cpu.workers": "4",
+        "ai.search.cpu.worker_usage": "25",
+        **ponder_settings,
+    }
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: (settings, tmp_path / "run.yaml"),
+    )
+
+    assert run_config._load_run_config()[5:10] == (
+        4,
+        25,
+        True,
+        expected_workers,
+        expected_usage,
+    )
 
 
 @pytest.mark.parametrize("usage", ["1", "50", "100"])
@@ -117,7 +227,7 @@ def test_run_config_accepts_cpu_worker_usage(monkeypatch, tmp_path, usage):
         "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.cpu.worker_usage": usage},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     assert run_config._load_run_config()[6] == int(usage)
@@ -132,7 +242,7 @@ def test_run_config_rejects_invalid_cpu_worker_usage(
         "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.cpu.worker_usage": usage},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     with pytest.raises(ValueError, match="ai.search.cpu.worker_usage"):
@@ -150,7 +260,7 @@ def test_run_config_accepts_explicit_worker_counts(monkeypatch, tmp_path, worker
                 "ai.search.cpu.workers": workers,
                 "ai.search.ponder.cpu.workers": workers,
             },
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
 
@@ -168,7 +278,7 @@ def test_run_config_rejects_invalid_worker_counts(
         "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.cpu.workers": workers},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
 
@@ -199,7 +309,7 @@ def test_configured_game_seed_is_used_as_is(monkeypatch):
 def test_search_cache_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config, "_load_properties",
-        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
     assert run_config._load_run_config()[-3:-1] == (True, 2048)
 
@@ -207,7 +317,7 @@ def test_search_cache_defaults(monkeypatch, tmp_path):
 def test_search_metrics_default_to_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config, "_load_properties",
-        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
     assert run_config._load_run_config()[-1] is False
 
@@ -215,7 +325,7 @@ def test_search_metrics_default_to_disabled(monkeypatch, tmp_path):
 def test_ponder_cpu_worker_usage_defaults_to_full_usage(monkeypatch, tmp_path):
     monkeypatch.setattr(
         run_config, "_load_properties",
-        lambda: ({"mode": "PROD"}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
     assert run_config._load_run_config()[9] == 100
 
@@ -229,7 +339,7 @@ def test_run_config_rejects_invalid_ponder_worker_counts(
         "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.ponder.cpu.workers": workers},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     with pytest.raises(ValueError, match="ai.search.ponder.cpu.workers"):
@@ -244,7 +354,7 @@ def test_ponder_cpu_worker_usage_accepts_one_through_one_hundred(
         run_config, "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.ponder.cpu.worker_usage": value},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     assert run_config._load_run_config()[9] == int(value)
@@ -258,7 +368,7 @@ def test_ponder_cpu_worker_usage_rejects_invalid_values(
         run_config, "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.ponder.cpu.worker_usage": value},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     with pytest.raises(ValueError, match="ai.search.ponder.cpu.worker_usage"):
@@ -272,7 +382,7 @@ def test_run_config_accepts_ponder_enabled(monkeypatch, tmp_path, value, expecte
         "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.ponder.enabled": value},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     assert run_config._load_run_config()[7] is expected
@@ -284,7 +394,7 @@ def test_run_config_rejects_invalid_ponder_enabled(monkeypatch, tmp_path):
         "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.ponder.enabled": "yes"},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     with pytest.raises(ValueError, match="ai.search.ponder.enabled"):
@@ -298,7 +408,7 @@ def test_run_config_rejects_legacy_cpu_properties(monkeypatch, tmp_path):
             "_load_properties",
             lambda key=key: (
                 {"mode": "PROD", key: "50"},
-                tmp_path / "run.properties",
+                tmp_path / "run.yaml",
             ),
         )
         with pytest.raises(ValueError, match=key):
@@ -312,7 +422,7 @@ def test_search_cache_enabled_configuration(monkeypatch, tmp_path, value, expect
         lambda: (
             {"mode": "PROD", "ai.search.cache.enabled": value,
              "ai.search.cache.max_entries": "16384"},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     assert run_config._load_run_config()[-3:-1] == (expected, 16384)
@@ -326,7 +436,7 @@ def test_search_metrics_enabled_configuration(
         run_config, "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.metrics.enabled": value},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     assert run_config._load_run_config()[-1] is expected
@@ -348,7 +458,7 @@ def test_search_cache_max_entries_accepts_binary_suffixes(
         run_config, "_load_properties",
         lambda: (
             {"mode": "PROD", "ai.search.cache.max_entries": value},
-            tmp_path / "run.properties",
+            tmp_path / "run.yaml",
         ),
     )
     assert run_config._load_run_config()[-2] == expected
@@ -375,7 +485,7 @@ def test_search_cache_max_entries_accepts_binary_suffixes(
 def test_search_cache_rejects_invalid_configuration(monkeypatch, tmp_path, key, value):
     monkeypatch.setattr(
         run_config, "_load_properties",
-        lambda: ({"mode": "PROD", key: value}, tmp_path / "run.properties"),
+        lambda: ({"mode": "PROD", key: value}, tmp_path / "run.yaml"),
     )
     with pytest.raises(ValueError, match=key.replace(".", r"\.")):
         run_config._load_run_config()

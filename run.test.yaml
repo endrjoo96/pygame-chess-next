@@ -1,0 +1,22 @@
+mode: PROD
+log:
+  level: WARN
+game:
+  seed: ""
+ai:
+  search:
+    max_depth: 5
+    time_limit_seconds: 10.0
+    cpu:
+      workers: 4
+      worker_usage: 20
+    ponder:
+      enabled: true
+      cpu:
+        workers: 1
+        worker_usage: 100
+    cache:
+      enabled: true
+      max_entries: 6k
+    metrics:
+      enabled: true
