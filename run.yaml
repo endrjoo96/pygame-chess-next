@@ -8,7 +8,7 @@ ai:
     max_depth: 6
     time_limit_seconds: 20.0
     cpu:
-      workers: 8
+      workers: 4
       worker_usage: 75
     ponder:
       enabled: true
@@ -17,5 +17,9 @@ ai:
     cache:
       enabled: true
       max_entries: 6k
+    learning:
+      enabled: true
+      save_enabled: true
+      max_file_size: 16G
     metrics:
       enabled: false

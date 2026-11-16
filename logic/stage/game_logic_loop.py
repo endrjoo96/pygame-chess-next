@@ -42,8 +42,10 @@ class GameLogicLoop(object):
         self._ai_executor = ThreadPoolExecutor(max_workers=1)
         self._ai_future: Optional[Future] = None
         self._ai_best_move = None
+        self._ai_best_move_from_learning = None
         self._ai_searching = False
         self._ai_final_result = None
+        self._ai_final_move_from_learning = None
         self._ai_progress_lock = Lock()
         self._ai_generation = 0
         self._ai_active_generation = None
@@ -131,8 +133,10 @@ class GameLogicLoop(object):
             self._ai_generation += 1
             self._ai_active_generation = None
             self._ai_best_move = None
+            self._ai_best_move_from_learning = None
             self._ai_searching = False
             self._ai_final_result = None
+            self._ai_final_move_from_learning = None
         self.capture_processor.reset()
         self.cards_processor.reset_decks()
 
@@ -164,7 +168,7 @@ class GameLogicLoop(object):
             except Exception as error:
                 log_error("AI search failed during shutdown: {}".format(error))
         if isinstance(self.black_ai, ChessAI):
-            self.black_ai.shutdown_worker_pool()
+            self.black_ai.close()
 
     def play_turn(self):
         """Rysuje informacje o turze, obsługuje jej wejście i zwraca zwycięzcę, jeśli jest."""
@@ -204,14 +208,21 @@ class GameLogicLoop(object):
                 generation = self._ai_generation
                 self._ai_active_generation = generation
                 self._ai_best_move = None
+                self._ai_best_move_from_learning = None
                 self._ai_searching = True
                 self._ai_final_result = None
+                self._ai_final_move_from_learning = None
 
             def report_candidate(action, depth, score):
                 notation = self._format_ai_action_notation(state, action)
+                learning_hint_used = (
+                    self.black_ai.action_has_learning_hint(action)
+                    if isinstance(self.black_ai, ChessAI) else None
+                )
                 with self._ai_progress_lock:
                     if generation == self._ai_generation:
                         self._ai_best_move = (notation, depth, score)
+                        self._ai_best_move_from_learning = learning_hint_used
 
             log_info("Starting AI search for black")
             search_options = {}
@@ -256,6 +267,8 @@ class GameLogicLoop(object):
                     decision.completed_depth,
                     decision.visited_nodes,
                 )
+                self._ai_final_move_from_learning = getattr(
+                    decision, "learning_hint_used", None)
         log_info(
             "AI selected {} (score={:+.2f}, depth={}, nodes={})".format(
                 final_notation,
@@ -318,11 +331,15 @@ class GameLogicLoop(object):
     def ai_search_stats(self) -> AISearchStats:
         with self._ai_progress_lock:
             best_move = self._ai_best_move
+            best_move_from_learning = self._ai_best_move_from_learning
             final_result = self._ai_final_result
+            final_move_from_learning = self._ai_final_move_from_learning
             is_searching = self._ai_searching
         cache_stats = None
         cache_deepest_entry_depth = None
         workers = ()
+        learning_database_size_bytes = None
+        learning_database_limit_bytes = None
         progress_stats = (
             None, None, None, None, None, None, None, None, None, (), None,
             (),
@@ -332,6 +349,10 @@ class GameLogicLoop(object):
             cache_deepest_entry_depth = cache_stats[4]
             workers = self.black_ai.worker_stats()
             progress_stats = self.black_ai.search_progress_stats(workers)
+            learning_database_size_bytes = (
+                self.black_ai.learning_database_file_size())
+            learning_database_limit_bytes = (
+                self.black_ai.config.learning_max_file_size_bytes)
         return AISearchStats(
             is_searching=is_searching,
             candidate_move=best_move[0] if best_move is not None else None,
@@ -350,6 +371,10 @@ class GameLogicLoop(object):
             cache_limit=cache_stats[2] if cache_stats is not None else None,
             cache_evictions=cache_stats[3] if cache_stats is not None else None,
             cache_deepest_entry_depth=cache_deepest_entry_depth,
+            learning_database_size_bytes=learning_database_size_bytes,
+            learning_database_limit_bytes=learning_database_limit_bytes,
+            candidate_move_from_learning_database=best_move_from_learning,
+            final_move_from_learning_database=final_move_from_learning,
             workers=workers,
             search_phase=progress_stats[0],
             current_depth=progress_stats[1],

@@ -8,7 +8,6 @@ from constants.enchantment_type import EnchantmentType
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
-from models.enchantment_cards import EnchantmentCardType
 from models.enchantments import Enchantment
 from piecesprite import PieceSprite
 from utils.gamecontext import GameContext
@@ -18,8 +17,6 @@ from utils.run_config import GAME_SEED
 class CardsProcessor:
     MAX_CARDS_PER_PLAYER = 8
     CARD_COLUMNS = 2
-
-    STARTING_CARD_COUNT = 2
 
     def __init__(self, screen: Surface, rng=None):
         """Inicjalizuje talie, ikony kart i siatki ich położenia dla podanego ekranu."""
@@ -70,19 +67,9 @@ class CardsProcessor:
                     ])
 
     def reset_decks(self):
-        """Losuje wspólne karty startowe i tworzy niezależne talie dla graczy."""
-        starting_cards = [
-            EnchantmentCardType.sample_with_uses(self.rng)
-            for _ in range(self.STARTING_CARD_COUNT)
-        ]
-        self.white_cards[:] = [
-            card_type.create(uses=uses)
-            for card_type, uses in starting_cards
-        ]
-        self.black_cards[:] = [
-            card_type.create(uses=uses)
-            for card_type, uses in starting_cards
-        ]
+        """Rozpoczyna każdą partię z pustymi rękami graczy."""
+        self.white_cards.clear()
+        self.black_cards.clear()
 
     def get_cards_for(self, color: COLOR) -> List[Enchantment]:
         """Zwraca listę kart przypisaną do wskazanego koloru."""

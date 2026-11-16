@@ -13,6 +13,7 @@ class AIWorkerStats:
     mode: str = "-"
     root: str = "-"
     search_depth: Optional[int] = None
+    learning_database_reading: bool = False
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,10 @@ class AISearchStats:
     cache_limit: Optional[int] = None
     cache_evictions: Optional[int] = None
     cache_deepest_entry_depth: Optional[int] = None
+    learning_database_size_bytes: Optional[int] = None
+    learning_database_limit_bytes: Optional[int] = None
+    candidate_move_from_learning_database: Optional[bool] = None
+    final_move_from_learning_database: Optional[bool] = None
     workers: Tuple[AIWorkerStats, ...] = ()
     search_phase: Optional[str] = None
     current_depth: Optional[int] = None

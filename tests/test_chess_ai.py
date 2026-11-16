@@ -128,6 +128,47 @@ def test_ai_finds_immediate_king_capture():
     assert [depth for _, depth in progress] == [0, 1]
 
 
+def test_search_reports_when_selected_move_has_a_persistent_hint(monkeypatch):
+    state = make_black_to_move_state()
+    state.pieces_locations[1] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state.pieces_locations[2] = Piece(COLOR.WHITE, PIECE_TYPE.KING)
+    action = next(
+        action for action in GameSimulation.available_actions(state)
+        if action.source == 1 and action.destination == 2
+    )
+    ai = ChessAI(
+        SearchConfig(
+            time_limit_seconds=2,
+            max_depth=1,
+            cache_enabled=False,
+            learning_enabled=True,
+            learning_save_enabled=False,
+        ),
+        max_workers=1,
+        initialize_move_learning=False,
+    )
+    monkeypatch.setattr(
+        ai, "_available_actions_for_search", lambda _state: [action])
+    monkeypatch.setattr(
+        ai,
+        "_move_learning_action_scores",
+        lambda _state, _actions: {action: 0.5},
+    )
+
+    decision = ai.choose_action(GameObservation.from_state(state, COLOR.BLACK))
+
+    assert decision.action == action
+    assert decision.learning_hint_used
+    assert ai.action_has_learning_hint(action)
+
+    monkeypatch.setattr(
+        ai, "_move_learning_action_scores", lambda _state, _actions: {})
+    decision_without_hint = ai.choose_action(
+        GameObservation.from_state(state, COLOR.BLACK))
+
+    assert not decision_without_hint.learning_hint_used
+
+
 def test_white_prioritizes_valuable_captures_when_ordering_moves():
     state = make_black_to_move_state()
     state.current_turn = COLOR.WHITE
@@ -1629,6 +1670,7 @@ def test_worker_stats_reports_active_mode_and_root(monkeypatch):
     depth_values = [0, 0]
     cache_entry_values = [0, 0]
     node_values = [0, 0]
+    learning_read_values = [0, 0]
 
     ai._worker_status_values = status_values
     ai._worker_status_pids = status_pids
@@ -1637,11 +1679,15 @@ def test_worker_stats_reports_active_mode_and_root(monkeypatch):
     ai._worker_depth_values = depth_values
     ai._worker_cache_entry_values = cache_entry_values
     ai._worker_node_values = node_values
+    ai._worker_learning_read_values = learning_read_values
     ai._worker_status_process_lock = shared_lock
     monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_VALUES", status_values)
     monkeypatch.setattr(chess_ai_module, "_WORKER_MODE_VALUES", mode_values)
     monkeypatch.setattr(chess_ai_module, "_WORKER_ROOT_VALUES", root_values)
     monkeypatch.setattr(chess_ai_module, "_WORKER_DEPTH_VALUES", depth_values)
+    monkeypatch.setattr(
+        chess_ai_module, "_WORKER_LEARNING_READ_VALUES",
+        learning_read_values)
     monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_LOCK", shared_lock)
     monkeypatch.setattr(chess_ai_module, "_WORKER_STATUS_INDEX", 0)
 
@@ -1655,6 +1701,10 @@ def test_worker_stats_reports_active_mode_and_root(monkeypatch):
     assert (
         worker.state, worker.mode, worker.root, worker.search_depth
     ) == ("busy", "search", "C2", 3)
+
+    chess_ai_module._set_current_worker_learning_reading(True)
+    assert ai.worker_stats()[0].learning_database_reading
+    chess_ai_module._set_current_worker_learning_reading(False)
 
     chess_ai_module._set_current_worker_status(
         chess_ai_module._WORKER_BUSY,

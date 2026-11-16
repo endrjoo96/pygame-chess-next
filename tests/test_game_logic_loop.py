@@ -100,8 +100,10 @@ def make_game(card_type=None, uses=None):
     game._ai_executor = ThreadPoolExecutor(max_workers=1)
     game._ai_future = None
     game._ai_best_move = None
+    game._ai_best_move_from_learning = None
     game._ai_searching = False
     game._ai_final_result = None
+    game._ai_final_move_from_learning = None
     game._ai_progress_lock = Lock()
     game._ai_generation = 0
     game._ai_active_generation = None
@@ -368,6 +370,7 @@ def test_ai_turn_receives_both_hands_and_applies_legal_action():
     assert game.ai_search_stats.candidate_move == "Wb8"
     assert game.ai_search_stats.candidate_score == 2.5
     assert game.ai_search_stats.candidate_depth == 1
+    assert game.ai_search_stats.candidate_move_from_learning_database is None
     game.play_ai_turn()
 
     assert game.black_ai.observation.own_color == COLOR.BLACK
@@ -384,17 +387,26 @@ def test_ai_turn_receives_both_hands_and_applies_legal_action():
     assert game.ai_search_stats.final_score == 2.5
     assert game.ai_search_stats.completed_depth == 1
     assert game.ai_search_stats.visited_nodes == 1
+    assert game.ai_search_stats.final_move_from_learning_database is None
 
 
-def test_ai_search_stats_include_cache_and_individual_worker_states():
+def test_ai_search_stats_include_cache_and_individual_worker_states(tmp_path):
     from logic.chess_ai import ChessAI, SearchConfig
     from logic.search_cache import Bound, CacheEntry
 
     game = make_game()
+    database_path = tmp_path / "move-learning.sqlite3"
+    database_path.write_bytes(b"abc")
     game.black_ai = ChessAI(
-        SearchConfig(cache_enabled=True, cache_max_entries=4),
+        SearchConfig(
+            cache_enabled=True,
+            cache_max_entries=4,
+            learning_max_file_size_bytes=32 * 1024,
+        ),
         max_workers=1,
+        initialize_move_learning=False,
     )
+    game.black_ai._learning_database_path = database_path
     game.black_ai._cache.put(
         CacheEntry(("diagnostic",), 3, None, 1.0, Bound.EXACT))
     game.black_ai._begin_search_progress("pondering")
@@ -424,6 +436,8 @@ def test_ai_search_stats_include_cache_and_individual_worker_states():
     assert stats.cache_deepest_entry_depth == 3
     assert stats.cache_limit == 4
     assert stats.cache_evictions == 0
+    assert stats.learning_database_size_bytes == 3
+    assert stats.learning_database_limit_bytes == 32 * 1024
     assert len(stats.workers) == 1
     assert stats.workers[0].is_local
     assert stats.workers[0].state == "idle"

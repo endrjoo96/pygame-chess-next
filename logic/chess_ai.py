@@ -2,6 +2,7 @@ import heapq
 import math
 import multiprocessing
 import os
+import sqlite3
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, fields, replace
@@ -13,6 +14,14 @@ from constants.piece_type import PIECE_TYPE
 from constants.pos import POS, id_to_xy, xy_to_id
 from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
+from logic.move_learning import (
+    MoveLearningAccumulator,
+    MoveLearningStore,
+    learning_position_key,
+    default_move_learning_path,
+    is_learning_position_eligible,
+    is_plain_move,
+)
 from logic.opening_book import opening_hints
 from logic.search_cache import Bound, CacheEntry, SearchCache
 from models.ai_search_metrics import AISearchMetrics
@@ -32,6 +41,9 @@ from utils.logging import (
 from utils.run_config import (
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
+    AI_SEARCH_LEARNING_ENABLED,
+    AI_SEARCH_LEARNING_MAX_FILE_SIZE,
+    AI_SEARCH_LEARNING_SAVE_ENABLED,
     AI_SEARCH_CPU_WORKERS,
     AI_SEARCH_CPU_WORKER_USAGE,
     AI_SEARCH_MAX_DEPTH,
@@ -91,6 +103,8 @@ _WORKER_ROOT_VALUES: Any = None
 _WORKER_DEPTH_VALUES: Any = None
 _WORKER_CACHE_ENTRY_VALUES: Any = None
 _WORKER_NODE_VALUES: Any = None
+_WORKER_LEARNING_READ_VALUES: Any = None
+_WORKER_MOVE_LEARNING_STORE: Any = None
 _WORKER_STATUS_LOCK: Any = None
 _WORKER_STATUS_INDEX: Optional[int] = None
 _WORKER_NODE_UPDATE_INTERVAL = 128
@@ -128,8 +142,12 @@ class SearchConfig:
     max_depth: int = AI_SEARCH_MAX_DEPTH
     cache_enabled: bool = AI_SEARCH_CACHE_ENABLED
     cache_max_entries: int = AI_SEARCH_CACHE_MAX_ENTRIES
+    learning_enabled: bool = AI_SEARCH_LEARNING_ENABLED
+    learning_save_enabled: bool = AI_SEARCH_LEARNING_SAVE_ENABLED
+    learning_max_file_size_bytes: int = AI_SEARCH_LEARNING_MAX_FILE_SIZE
     metrics_enabled: bool = AI_SEARCH_METRICS_ENABLED
     cpu_worker_usage: int = AI_SEARCH_CPU_WORKER_USAGE
+    learning_path_eligible: bool = True
 
     def __post_init__(self):
         if self.time_limit_seconds <= 0:
@@ -140,6 +158,19 @@ class SearchConfig:
             raise ValueError("The search cache setting must be a boolean")
         if not isinstance(self.metrics_enabled, bool):
             raise ValueError("The search metrics setting must be a boolean")
+        if not isinstance(self.learning_enabled, bool):
+            raise ValueError("The move-learning setting must be a boolean")
+        if not isinstance(self.learning_save_enabled, bool):
+            raise ValueError("The move-learning save setting must be a boolean")
+        if not isinstance(self.learning_path_eligible, bool):
+            raise ValueError("The move-learning path setting must be a boolean")
+        if (
+            not isinstance(self.learning_max_file_size_bytes, int)
+            or isinstance(self.learning_max_file_size_bytes, bool)
+            or self.learning_max_file_size_bytes < 16 * 1024
+        ):
+            raise ValueError(
+                "The move-learning database limit must be at least 16 KiB")
         if (
             not isinstance(self.cpu_worker_usage, int)
             or isinstance(self.cpu_worker_usage, bool)
@@ -159,6 +190,7 @@ class SearchResult:
     completed_depth: int
     visited_nodes: int
     metrics: Optional[AISearchMetrics] = None
+    learning_hint_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -230,6 +262,7 @@ class _RootEvaluation:
     bound: Optional[Bound] = Bound.EXACT
     reliable: bool = True
     metrics: Optional[AISearchMetrics] = None
+    learning_updates: tuple = ()
 
 
 class _SearchMetricsCollector:
@@ -346,12 +379,25 @@ def _set_current_worker_visited_nodes(visited_nodes):
         _WORKER_NODE_VALUES[_WORKER_STATUS_INDEX] = visited_nodes
 
 
+def _set_current_worker_learning_reading(is_reading):
+    if (
+        _WORKER_LEARNING_READ_VALUES is None
+        or _WORKER_STATUS_LOCK is None
+        or _WORKER_STATUS_INDEX is None
+    ):
+        return
+    with _WORKER_STATUS_LOCK:
+        _WORKER_LEARNING_READ_VALUES[_WORKER_STATUS_INDEX] = int(is_reading)
+
+
 def _initialize_search_worker(
     ready_count, probe_started_count, probe_release_event, search_cancel_event,
     worker_status_values, worker_status_pids, worker_mode_values,
     worker_root_values, worker_depth_values, worker_cache_entry_values,
-    worker_node_values,
-    worker_status_lock,
+    worker_node_values, worker_learning_read_values,
+    worker_status_lock, learning_enabled=False,
+    learning_max_file_size_bytes=AI_SEARCH_LEARNING_MAX_FILE_SIZE,
+    learning_database_path=None,
 ):
     global _WORKER_USAGE_LIMITER
     global _WORKER_PROBE_RELEASE_EVENT, _WORKER_PROBE_STARTED_COUNT
@@ -359,6 +405,8 @@ def _initialize_search_worker(
     global _WORKER_STATUS_VALUES, _WORKER_STATUS_PIDS
     global _WORKER_MODE_VALUES, _WORKER_ROOT_VALUES, _WORKER_DEPTH_VALUES
     global _WORKER_CACHE_ENTRY_VALUES, _WORKER_NODE_VALUES
+    global _WORKER_LEARNING_READ_VALUES
+    global _WORKER_MOVE_LEARNING_STORE
     global _WORKER_STATUS_LOCK
     global _WORKER_STATUS_INDEX
     _WORKER_PROBE_RELEASE_EVENT = probe_release_event
@@ -372,7 +420,21 @@ def _initialize_search_worker(
     _WORKER_DEPTH_VALUES = worker_depth_values
     _WORKER_CACHE_ENTRY_VALUES = worker_cache_entry_values
     _WORKER_NODE_VALUES = worker_node_values
+    _WORKER_LEARNING_READ_VALUES = worker_learning_read_values
     _WORKER_STATUS_LOCK = worker_status_lock
+    _WORKER_MOVE_LEARNING_STORE = None
+    if learning_enabled:
+        try:
+            _WORKER_MOVE_LEARNING_STORE = MoveLearningStore(
+                learning_database_path or default_move_learning_path(),
+                learning_max_file_size_bytes,
+                read_only=True,
+            )
+        except (OSError, sqlite3.Error, ValueError) as error:
+            log_error(
+                "Persistent move learning is unavailable in worker: {}".format(
+                    error)
+            )
     with _WORKER_STATUS_LOCK:
         _WORKER_STATUS_INDEX = next(
             (
@@ -390,6 +452,7 @@ def _initialize_search_worker(
         _WORKER_DEPTH_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_CACHE_ENTRY_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_NODE_VALUES[_WORKER_STATUS_INDEX] = 0
+        _WORKER_LEARNING_READ_VALUES[_WORKER_STATUS_INDEX] = 0
         _WORKER_STATUS_VALUES[_WORKER_STATUS_INDEX] = _WORKER_STARTING
     with ready_count.get_lock():
         ready_count.value += 1
@@ -415,7 +478,7 @@ def _prewarm_search_worker():
 def _evaluate_root_action(
     state, action, depth, config, deadline, cache_snapshot=(),
     cache_size_callback=None, node_progress_callback=None,
-    root_alpha=-math.inf,
+    root_alpha=-math.inf, learning_store=None,
 ):
     """Ocenia jeden ruch startowy w izolowanym workerze."""
     task_started = (
@@ -449,7 +512,18 @@ def _evaluate_root_action(
             max_workers=1,
             cpu_worker_usage=config.cpu_worker_usage,
             ponder_enabled=False,
+            initialize_move_learning=False,
         )
+        worker._learning_active = (
+                config.learning_enabled
+                and config.learning_path_eligible
+                and is_learning_position_eligible(state)
+                and is_plain_move(action)
+        )
+        worker._move_learning_store = (
+            learning_store or _WORKER_MOVE_LEARNING_STORE)
+        if worker._move_learning_store is not None:
+            worker._move_learning_store.clear_hint_cache()
         worker._worker_usage_limiter = usage_limiter
         worker._deadline = deadline
         worker._nodes = 0
@@ -467,6 +541,10 @@ def _evaluate_root_action(
         try:
             worker._check_deadline()
             child = worker._apply_generated_action_for_search(state, action)
+            learning_path_eligible = (
+                    worker._learning_active and is_learning_position_eligible(child)
+            )
+            worker._initial_learning_path_eligible = learning_path_eligible
             score, reliable = worker._search_with_proof(
                 child, depth - 1, root_alpha, math.inf)
             if not reliable:
@@ -503,7 +581,12 @@ def _evaluate_root_action(
         return _RootEvaluation(
             score, worker._nodes, entries, worker._cache_hits,
             worker._cache_score_hits, worker._cache_hints,
-            root_bound, reliable, metrics)
+            root_bound, reliable, metrics,
+            (
+                worker._move_learning_updates.snapshot()
+                if config.learning_enabled and config.learning_save_enabled
+                else ()
+            ))
     finally:
         if is_enabled("DEBUG"):
             log_debug(
@@ -521,7 +604,7 @@ def _evaluate_root_action(
         _set_current_worker_status(_WORKER_IDLE)
 
 
-def _expand_ponder_white_action(state, action):
+def _expand_ponder_white_action_with_eligibility(state, action):
     """Expand one white action into every completed white-turn root below it."""
     worker_pid = os.getpid()
     roots = []
@@ -537,9 +620,15 @@ def _expand_ponder_white_action(state, action):
                 worker_pid, action)
         )
     try:
+        learning_path_eligible = (
+                is_learning_position_eligible(state) and is_plain_move(action)
+        )
         first_child = GameSimulation._apply_generated_action(
             state, action, advance_board_card_clock=True)
-        frontier = [first_child]
+        frontier = [(
+            first_child,
+            learning_path_eligible and is_learning_position_eligible(first_child),
+        )]
         while frontier:
             if (
                 _WORKER_SEARCH_CANCEL_EVENT is not None
@@ -550,12 +639,16 @@ def _expand_ponder_white_action(state, action):
                 usage_limiter.wait(math.inf, _WORKER_SEARCH_CANCEL_EVENT)
             except _SearchTimeout:
                 break
-            current_state = frontier.pop()
+            current_state, learning_path_eligible = frontier.pop()
             if current_state.get_winner() is not None:
                 continue
             if current_state.current_turn != COLOR.WHITE:
                 if current_state.current_turn == COLOR.BLACK:
-                    roots.append(current_state)
+                    roots.append((
+                        current_state,
+                        learning_path_eligible
+                        and is_learning_position_eligible(current_state),
+                    ))
                 continue
             children = []
             for next_action in GameSimulation.available_actions(current_state):
@@ -568,10 +661,16 @@ def _expand_ponder_white_action(state, action):
                     usage_limiter.wait(math.inf, _WORKER_SEARCH_CANCEL_EVENT)
                 except _SearchTimeout:
                     break
-                children.append(GameSimulation._apply_generated_action(
+                child = GameSimulation._apply_generated_action(
                     current_state,
                     next_action,
                     advance_board_card_clock=True,
+                )
+                children.append((
+                    child,
+                    learning_path_eligible
+                    and is_plain_move(next_action)
+                    and is_learning_position_eligible(child),
                 ))
             frontier.extend(reversed(children))
         task_status = (
@@ -593,12 +692,31 @@ def _expand_ponder_white_action(state, action):
         _set_current_worker_status(_WORKER_IDLE)
 
 
+class _PonderRootStates(list):
+    def __init__(self, roots):
+        super().__init__(root_state for root_state, _ in roots)
+        self.learning_eligibility = tuple(
+            eligible for _, eligible in roots)
+
+
+def _expand_ponder_white_action(state, action):
+    return _PonderRootStates(
+        _expand_ponder_white_action_with_eligibility(state, action))
+
+
 def _expand_ponder_white_action_with_usage(state, action, worker_usage):
     usage_limiter = (
         _WORKER_USAGE_LIMITER or _LOCAL_WORKER_USAGE_LIMITER
     )
     usage_limiter.set_usage(worker_usage)
-    return _expand_ponder_white_action(state, action)
+    roots = _expand_ponder_white_action(state, action)
+    eligibility = getattr(roots, "learning_eligibility", None)
+    if eligibility is None:
+        eligibility = tuple(
+            is_learning_position_eligible(root_state) and is_plain_move(action)
+            for root_state in roots
+        )
+    return tuple(zip(roots, eligibility))
 
 
 class ChessAI:
@@ -612,6 +730,7 @@ class ChessAI:
         ponder_enabled: bool = AI_SEARCH_PONDER_ENABLED,
         ponder_workers: Optional[int] = None,
         ponder_cpu_worker_usage: int = AI_SEARCH_PONDER_CPU_WORKER_USAGE,
+        initialize_move_learning: bool = True,
     ):
         if cpu_worker_usage is None:
             cpu_worker_usage = config.cpu_worker_usage
@@ -663,7 +782,33 @@ class ChessAI:
             self.search_worker_count,
             self.ponder_worker_count if self.ponder_enabled else 1,
         )
+        global _WORKER_MOVE_LEARNING_STORE
         self.config = replace(config, cpu_worker_usage=cpu_worker_usage)
+        self._learning_database_path = default_move_learning_path()
+        self._learning_database_size_error_reported = False
+        self._move_learning_store = None
+        self._learning_active = False
+        self._move_learning_updates = MoveLearningAccumulator()
+        self._last_learning_hint_actions = frozenset()
+        self._root_learning_hint_actions = frozenset()
+        if initialize_move_learning and self.config.learning_enabled:
+            try:
+                self._move_learning_store = MoveLearningStore.open_from_config(
+                    self.config.learning_enabled,
+                    self.config.learning_save_enabled,
+                    self.config.learning_max_file_size_bytes,
+                    self._learning_database_path,
+                )
+                self._learning_active = True
+            except (OSError, sqlite3.Error, ValueError) as error:
+                log_error(
+                    "Persistent move learning is unavailable: {}".format(error)
+                )
+            _WORKER_MOVE_LEARNING_STORE = self._move_learning_store
+        elif initialize_move_learning:
+            _WORKER_MOVE_LEARNING_STORE = None
+        elif self.config.learning_enabled:
+            self._learning_active = True
         self._worker_usage_limiter = _LOCAL_WORKER_USAGE_LIMITER
         self._worker_usage_limiter.set_usage(cpu_worker_usage)
         self._deadline = 0.0
@@ -704,6 +849,7 @@ class ChessAI:
         self._worker_depth_values = None
         self._worker_cache_entry_values = None
         self._worker_node_values = None
+        self._worker_learning_read_values = None
         self._worker_status_process_lock = None
         self._worker_pool_state = "not-started"
         self._local_worker_busy = False
@@ -712,6 +858,7 @@ class ChessAI:
         self._local_worker_search_depth = None
         self._local_worker_cache_entries = 0
         self._local_worker_visited_nodes = 0
+        self._local_worker_learning_reading = False
         self._ponder_state_lock = Lock()
         self._ponder_active = False
 
@@ -758,6 +905,8 @@ class ChessAI:
             worker_depth_values = context.RawArray("i", self.max_workers)
             worker_cache_entry_values = context.RawArray("i", self.max_workers)
             worker_node_values = context.RawArray("q", self.max_workers)
+            worker_learning_read_values = context.RawArray(
+                "i", self.max_workers)
             worker_status_lock = context.Lock()
             executor = ProcessPoolExecutor(
                 max_workers=self.max_workers,
@@ -775,7 +924,11 @@ class ChessAI:
                     worker_depth_values,
                     worker_cache_entry_values,
                     worker_node_values,
+                    worker_learning_read_values,
                     worker_status_lock,
+                    self._learning_active,
+                    self.config.learning_max_file_size_bytes,
+                    str(self._learning_database_path),
                 ),
             )
             self._worker_pool = executor
@@ -791,6 +944,8 @@ class ChessAI:
                 self._worker_depth_values = worker_depth_values
                 self._worker_cache_entry_values = worker_cache_entry_values
                 self._worker_node_values = worker_node_values
+                self._worker_learning_read_values = (
+                    worker_learning_read_values)
                 self._worker_status_process_lock = worker_status_lock
                 self._worker_pool_state = "starting"
             warmup_futures = []
@@ -872,10 +1027,117 @@ class ChessAI:
             worker_status_pids = self._worker_status_pids
             worker_cache_entry_values = self._worker_cache_entry_values
             worker_node_values = self._worker_node_values
+            worker_learning_read_values = self._worker_learning_read_values
             worker_status_process_lock = self._worker_status_process_lock
             self._clear_worker_pool(executor)
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
+
+    def close(self):
+        """Zamyka workery i trwały magazyn wskazówek ruchów."""
+        global _WORKER_MOVE_LEARNING_STORE
+        self.shutdown_worker_pool()
+        self._flush_move_learning_updates()
+        if self._move_learning_store is not None:
+            if _WORKER_MOVE_LEARNING_STORE is self._move_learning_store:
+                _WORKER_MOVE_LEARNING_STORE = None
+            self._move_learning_store.close()
+            self._move_learning_store = None
+        self._learning_active = False
+
+    def _disable_move_learning(self, error):
+        global _WORKER_MOVE_LEARNING_STORE
+        log_error("Persistent move learning disabled: {}".format(error))
+        if self._move_learning_store is not None:
+            if _WORKER_MOVE_LEARNING_STORE is self._move_learning_store:
+                _WORKER_MOVE_LEARNING_STORE = None
+            self._move_learning_store.close()
+            self._move_learning_store = None
+        self._learning_active = False
+        self._move_learning_updates = MoveLearningAccumulator()
+
+    def learning_database_file_size(self):
+        try:
+            size = self._learning_database_path.stat().st_size
+            self._learning_database_size_error_reported = False
+            return size
+        except FileNotFoundError:
+            return 0
+        except OSError as error:
+            if not getattr(self, "_learning_database_size_error_reported", False):
+                log_error(
+                    "Unable to read move-learning database size: {}".format(
+                        error)
+                )
+                self._learning_database_size_error_reported = True
+            return None
+
+    def action_has_learning_hint(self, action):
+        return action in self._root_learning_hint_actions
+
+    def _move_learning_action_scores(self, state, actions):
+        store = self._move_learning_store or _WORKER_MOVE_LEARNING_STORE
+        if (
+            not self._learning_active
+            or store is None
+            or not isinstance(state, GameState)
+        ):
+            return {}
+        is_process_worker = _WORKER_STATUS_INDEX is not None
+        if is_process_worker:
+            _set_current_worker_learning_reading(True)
+        else:
+            self._set_local_worker_learning_reading(True)
+        try:
+            return store.get_action_scores(state, actions)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self._disable_move_learning(error)
+            return {}
+        finally:
+            if is_process_worker:
+                _set_current_worker_learning_reading(False)
+            else:
+                self._set_local_worker_learning_reading(False)
+
+    def _record_move_learning(
+        self, state, action, signal, learning_path_eligible=True
+    ):
+        if (
+            not self._learning_active
+            or not self.config.learning_save_enabled
+            or not learning_path_eligible
+            or action is None
+            or not is_plain_move(action)
+            or not isinstance(state, GameState)
+        ):
+            return
+        key = learning_position_key(state)
+        if key is not None:
+            self._move_learning_updates.record(key, action, signal)
+
+    def _merge_move_learning_updates(self, updates):
+        if (
+            self._learning_active
+            and self.config.learning_save_enabled
+            and updates
+        ):
+            self._move_learning_updates.merge(updates)
+
+    def _flush_move_learning_updates(self):
+        updates = self._move_learning_updates.snapshot()
+        if not updates:
+            return
+        self._move_learning_updates = MoveLearningAccumulator()
+        if (
+            not self._learning_active
+            or not self.config.learning_save_enabled
+            or self._move_learning_store is None
+        ):
+            return
+        try:
+            self._move_learning_store.apply_updates(updates)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self._disable_move_learning(error)
 
     def _clear_worker_pool(self, executor):
         if self._worker_pool is executor:
@@ -889,6 +1151,7 @@ class ChessAI:
                 self._worker_status_pids = None
                 self._worker_cache_entry_values = None
                 self._worker_node_values = None
+                self._worker_learning_read_values = None
                 self._worker_status_process_lock = None
                 self._worker_pool_state = "not-started"
 
@@ -905,6 +1168,7 @@ class ChessAI:
             worker_status_pids = self._worker_status_pids
             worker_cache_entry_values = self._worker_cache_entry_values
             worker_node_values = self._worker_node_values
+            worker_learning_read_values = self._worker_learning_read_values
             worker_status_process_lock = self._worker_status_process_lock
             self._clear_worker_pool(executor)
         executor.shutdown(wait=True, cancel_futures=True)
@@ -1069,6 +1333,7 @@ class ChessAI:
             depth_values = self._worker_depth_values
             cache_entry_values = self._worker_cache_entry_values
             node_values = self._worker_node_values
+            learning_read_values = self._worker_learning_read_values
             process_lock = self._worker_status_process_lock
             pool_state = self._worker_pool_state
             local_worker_busy = self._local_worker_busy
@@ -1077,6 +1342,8 @@ class ChessAI:
             local_worker_search_depth = self._local_worker_search_depth
             local_worker_cache_entries = self._local_worker_cache_entries
             local_worker_visited_nodes = self._local_worker_visited_nodes
+            local_worker_learning_reading = (
+                self._local_worker_learning_reading)
 
         if status_values is None or status_pids is None or process_lock is None:
             if self.max_workers == 1:
@@ -1098,6 +1365,8 @@ class ChessAI:
                             and local_worker_mode == _WORKER_MODE_SEARCH
                             else None
                         ),
+                        learning_database_reading=(
+                            local_worker_learning_reading),
                     ),
                 )
             status = "starting" if pool_state == "starting" else "not-started"
@@ -1105,7 +1374,7 @@ class ChessAI:
                 AIWorkerStats(worker_id, status)
                 for worker_id in range(1, self.max_workers + 1)
             )
-            if local_worker_busy:
+            if local_worker_busy or local_worker_learning_reading:
                 workers += (
                     AIWorkerStats(
                         self.max_workers + 1,
@@ -1122,6 +1391,8 @@ class ChessAI:
                             if local_worker_mode == _WORKER_MODE_SEARCH
                             else None
                         ),
+                        learning_database_reading=(
+                            local_worker_learning_reading),
                     ),
                 )
             return workers
@@ -1142,6 +1413,10 @@ class ChessAI:
                     ),
                     root_values[index] if root_values is not None else 0,
                     depth_values[index] if depth_values is not None else 0,
+                    (
+                        bool(learning_read_values[index])
+                        if learning_read_values is not None else False
+                    ),
                 )
                 for index in range(self.max_workers)
             )
@@ -1149,7 +1424,7 @@ class ChessAI:
         workers = []
         for index, (
             status_code, worker_pid, cache_entries, visited_nodes,
-            mode_code, root_position, search_depth,
+            mode_code, root_position, search_depth, learning_database_reading,
         ) in enumerate(
             process_states
         ):
@@ -1171,8 +1446,10 @@ class ChessAI:
                     search_depth
                     if mode_code == _WORKER_MODE_SEARCH and search_depth > 0
                     else None
-                )))
-        if local_worker_busy:
+                ),
+                learning_database_reading=learning_database_reading,
+            ))
+        if local_worker_busy or local_worker_learning_reading:
             workers.append(
                 AIWorkerStats(
                     len(workers) + 1,
@@ -1187,6 +1464,8 @@ class ChessAI:
                         if local_worker_mode == _WORKER_MODE_SEARCH
                         else None
                     ),
+                    learning_database_reading=(
+                        local_worker_learning_reading),
                 ))
         return tuple(workers)
 
@@ -1219,6 +1498,10 @@ class ChessAI:
         with self._worker_metrics_lock:
             self._local_worker_visited_nodes = visited_nodes
 
+    def _set_local_worker_learning_reading(self, is_reading):
+        with self._worker_metrics_lock:
+            self._local_worker_learning_reading = is_reading
+
     def choose_action(
         self,
         observation: GameObservation,
@@ -1234,6 +1517,7 @@ class ChessAI:
         if observation.current_turn != COLOR.BLACK:
             raise ValueError("It is not the AI player's turn")
 
+        self._root_learning_hint_actions = frozenset()
         self._metrics = (
             _SearchMetricsCollector() if self.config.metrics_enabled else None
         )
@@ -1286,7 +1570,9 @@ class ChessAI:
         )
         self._begin_search_progress("searching")
         self._cache_hits = self._cache_score_hits = self._cache_hints = 0
-        ordered_actions = self._order_actions_for_search(state, root_actions)
+        ordered_actions = self._order_actions_for_search(
+            state, root_actions, is_learning_position_eligible(state))
+        self._root_learning_hint_actions = self._last_learning_hint_actions
         action_order = {
             action: index for index, action in enumerate(ordered_actions)
         }
@@ -1371,6 +1657,8 @@ class ChessAI:
                     self._add_completed_nodes(result.nodes)
                     if self._metrics is not None:
                         self._metrics.merge(result.metrics)
+                    self._merge_move_learning_updates(
+                        getattr(result, "learning_updates", ()))
                     self._cache_hits += result.hits
                     self._cache_score_hits += result.score_hits
                     self._cache_hints += result.hints
@@ -1536,6 +1824,15 @@ class ChessAI:
                 best_score, best_action = max(
                     depth_scores,
                     key=lambda item: (item[0], -action_order[item[1]]))
+                if depth == 1:
+                    self._record_move_learning(
+                        state, best_action, "preferred")
+                    _, worst_action = min(
+                        depth_scores,
+                        key=lambda item: (item[0], action_order[item[1]]))
+                    if worst_action != best_action:
+                        self._record_move_learning(
+                            state, worst_action, "worst")
                 completed_depth = depth
                 self._set_completed_search_depth(completed_depth)
                 log_logic(
@@ -1564,6 +1861,7 @@ class ChessAI:
             raise
         finally:
             self._finish_search_progress()
+            self._flush_move_learning_updates()
 
         best_action = max(
             best_known_scores,
@@ -1629,7 +1927,13 @@ class ChessAI:
         if candidate_callback is not None:
             candidate_callback(best_action, best_action_depth, best_score)
         return SearchResult(
-            best_action, best_score, completed_depth, self._nodes, metrics)
+            best_action,
+            best_score,
+            completed_depth,
+            self._nodes,
+            metrics,
+            self.action_has_learning_hint(best_action),
+        )
 
     def _search_time_limit_for_depth(self, pondered_depth):
         if pondered_depth is None or self.config.max_depth <= 1:
@@ -1686,6 +1990,7 @@ class ChessAI:
             return PonderResult(0, 0, 0, "no-legal-replies")
 
         root_states = []
+        root_learning_eligible = []
         root_priorities = []
         root_order_keys = []
         root_branches = []
@@ -1710,8 +2015,11 @@ class ChessAI:
             if root_index not in task_groups:
                 root_state = root_states[root_index]
                 root_key = root_state.cache_key()
-                actions = self._order_actions(
-                    root_state, GameSimulation.available_actions(root_state))
+                actions = self._order_actions_for_search(
+                    root_state,
+                    GameSimulation.available_actions(root_state),
+                    root_learning_eligible[root_index],
+                )
                 task_groups[root_index] = (root_key, tuple(actions))
                 task_count += len(actions)
             root_key, actions = task_groups[root_index]
@@ -1894,7 +2202,11 @@ class ChessAI:
                             root_state,
                             action,
                             branch["current_depth"],
-                            ponder_config,
+                            replace(
+                                ponder_config,
+                                learning_path_eligible=(
+                                    root_learning_eligible[root_index]),
+                            ),
                             math.inf,
                             snapshot,
                             root_alpha=branch["root_alpha"],
@@ -1951,15 +2263,32 @@ class ChessAI:
                     result = future.result()
                     if task_info[0] == "expand":
                         expansion_index = task_info[1]
-                        for branch_index, root_state in enumerate(result):
+                        for branch_index, expanded_root in enumerate(result):
+                            if (
+                                isinstance(expanded_root, tuple)
+                                and len(expanded_root) == 2
+                                and isinstance(expanded_root[0], GameState)
+                                and isinstance(expanded_root[1], bool)
+                            ):
+                                root_state, learning_path_eligible = expanded_root
+                            else:
+                                root_state = expanded_root
+                                learning_path_eligible = (
+                                        is_learning_position_eligible(root_state)
+                                        and is_plain_move(
+                                        white_actions[expansion_index])
+                                )
                             root_index = len(root_branches)
                             root_states.append(root_state)
+                            root_learning_eligible.append(
+                                learning_path_eligible)
                             root_priorities.append(self.evaluate(root_state))
                             root_order_keys.append(
                                 (expansion_index, branch_index))
                             root_branches.append({
                                 "completed_depth": 0,
                                 "completed_score": None,
+                                "depth_action_scores": {},
                                 "candidate_score": None,
                                 "candidate_depth": 0,
                                 "current_depth": 1,
@@ -1983,6 +2312,8 @@ class ChessAI:
                     ) = task_info
                     total_nodes += result.nodes
                     self._add_completed_nodes(result.nodes)
+                    self._merge_move_learning_updates(
+                        getattr(result, "learning_updates", ()))
                     merge_result_entries(root_key, action, result.entries)
                     if result.score is None:
                         stopped_reason = "cancelled"
@@ -2003,6 +2334,7 @@ class ChessAI:
                     ):
                         branch["root_alpha"] = max(
                             branch["root_alpha"], result.score)
+                        branch["depth_action_scores"][action] = result.score
                     else:
                         raise RuntimeError(
                             "Ponder root action search returned an "
@@ -2016,6 +2348,16 @@ class ChessAI:
                     else:
                         branch["completed_depth"] = search_depth
                         branch["completed_score"] = branch["root_alpha"]
+                        if search_depth == 1 and branch["depth_action_scores"]:
+                            preferred_action = max(
+                                branch["depth_action_scores"],
+                                key=branch["depth_action_scores"].get,
+                            )
+                            root_state, _, root_actions = task_group_for(
+                                root_index)
+                            self._record_move_learning(
+                                root_state, preferred_action, "preferred",
+                                root_learning_eligible[root_index])
                         if search_depth == 1:
                             branch["candidate_score"] = branch["root_alpha"]
                             branch["candidate_depth"] = 2
@@ -2037,6 +2379,7 @@ class ChessAI:
                             branch["current_depth"] = search_depth + 1
                             branch["next_action"] = 0
                             branch["root_alpha"] = -math.inf
+                            branch["depth_action_scores"] = {}
                             queue_branch(root_index)
                         update_depth_progress()
 
@@ -2079,8 +2422,11 @@ class ChessAI:
                     self._add_completed_nodes(result.nodes)
                     if result.score is not None and result.reliable:
                         self._record_ponder_progress(root_actions_completed=1)
+                    self._merge_move_learning_updates(
+                        getattr(result, "learning_updates", ()))
                     merge_result_entries(root_key, action, result.entries)
             self._finish_search_progress()
+            self._flush_move_learning_updates()
             with self._ponder_state_lock:
                 if worker_cancel_event is not None:
                     worker_cancel_event.clear()
@@ -2193,14 +2539,21 @@ class ChessAI:
         self._metrics.add("generated_actions", len(actions))
         return actions
 
-    def _order_actions_for_search(self, state, actions):
-        if self._metrics is None:
-            return self._order_actions(state, actions)
-        ordered = self._measure_search_call(
-            "action_ordering_ns", "action_ordering_calls",
-            self._order_actions, state, actions)
-        self._metrics.add("actions_ordered", len(actions))
-        return ordered
+    def _order_actions_for_search(
+        self, state, actions, learning_path_eligible=True
+    ):
+        previous = getattr(self, "_learning_ordering_allowed", True)
+        self._learning_ordering_allowed = learning_path_eligible
+        try:
+            if self._metrics is None:
+                return self._order_actions(state, actions)
+            ordered = self._measure_search_call(
+                "action_ordering_ns", "action_ordering_calls",
+                self._order_actions, state, actions)
+            self._metrics.add("actions_ordered", len(actions))
+            return ordered
+        finally:
+            self._learning_ordering_allowed = previous
 
     def _apply_generated_action_for_search(self, state, action):
         if self._metrics is None:
@@ -2220,7 +2573,7 @@ class ChessAI:
 
     def _search_with_proof(
         self, state: GameState, depth: int, alpha: float, beta: float,
-        allow_lmr=True,
+        allow_lmr=True, learning_path_eligible=True,
     ):
         self._check_deadline()
         self._nodes += 1
@@ -2238,6 +2591,11 @@ class ChessAI:
         if depth <= 0:
             return self._evaluate_for_search(state), True
 
+        learning_path_eligible = (
+                learning_path_eligible
+                and getattr(self, "_initial_learning_path_eligible", True)
+                and is_learning_position_eligible(state)
+        )
         original_alpha, original_beta = alpha, beta
         key = None
         hint = None
@@ -2273,7 +2631,8 @@ class ChessAI:
                 self._cache.put(CacheEntry(key, depth, None, value, Bound.EXACT))
                 self._metric_finish("cache_store_ns", started)
             return value, True
-        actions = self._order_actions_for_search(state, actions)
+        actions = self._order_actions_for_search(
+            state, actions, learning_path_eligible)
         if hint in actions:
             actions.remove(hint)
             actions.insert(0, hint)
@@ -2297,9 +2656,12 @@ class ChessAI:
         maximizing = state.current_turn == COLOR.BLACK
         value = -math.inf if maximizing else math.inf
         best_action = None
+        cutoff_action = None
         reliable = True
         for action_index, action in enumerate(actions):
             child = self._apply_generated_action_for_search(state, action)
+            child_learning_path_eligible = (
+                learning_path_eligible and is_plain_move(action))
             should_reduce = (
                 _LMR_ENABLED
                 and allow_lmr
@@ -2313,18 +2675,21 @@ class ChessAI:
                 if self._metrics is not None:
                     self._metrics.add("lmr_probes", 1)
                 action_value, child_reliable = self._search_with_proof(
-                    child, depth - 2, alpha, beta, allow_lmr=allow_lmr)
+                    child, depth - 2, alpha, beta, allow_lmr=allow_lmr,
+                    learning_path_eligible=child_learning_path_eligible)
                 if (action_value > alpha if maximizing else action_value < beta):
                     if self._metrics is not None:
                         self._metrics.add("lmr_researches", 1)
                     action_value, child_reliable = self._search_with_proof(
-                        child, depth - 1, alpha, beta, allow_lmr=allow_lmr)
+                        child, depth - 1, alpha, beta, allow_lmr=allow_lmr,
+                        learning_path_eligible=child_learning_path_eligible)
                 else:
                     # The reduced probe does not establish a full-depth bound.
                     child_reliable = False
             else:
                 action_value, child_reliable = self._search_with_proof(
-                    child, depth - 1, alpha, beta, allow_lmr=allow_lmr)
+                    child, depth - 1, alpha, beta, allow_lmr=allow_lmr,
+                    learning_path_eligible=child_learning_path_eligible)
             reliable = reliable and child_reliable
             if best_action is None or (
                 action_value > value if maximizing else action_value < value
@@ -2338,17 +2703,27 @@ class ChessAI:
             if alpha >= beta:
                 if self._metrics is not None:
                     self._metrics.add("alpha_beta_cutoffs", 1)
+                cutoff_action = action
                 break
 
+        bound = None
+        if reliable:
+            if value <= original_alpha:
+                bound = Bound.UPPER
+            elif value >= original_beta:
+                bound = Bound.LOWER
+            else:
+                bound = Bound.EXACT
+        if bound == Bound.EXACT:
+            self._record_move_learning(
+                state, best_action, "preferred",
+                learning_path_eligible)
+        elif bound in (Bound.LOWER, Bound.UPPER) and cutoff_action is not None:
+            self._record_move_learning(
+                state, cutoff_action, "cutoff",
+                learning_path_eligible)
+
         if self._cache is not None:
-            bound = None
-            if reliable:
-                if value <= original_alpha:
-                    bound = Bound.UPPER
-                elif value >= original_beta:
-                    bound = Bound.LOWER
-                else:
-                    bound = Bound.EXACT
             started = self._metric_start()
             self._cache.put(CacheEntry(key, depth, best_action, value, bound))
             self._metric_finish("cache_store_ns", started)
@@ -2638,17 +3013,30 @@ class ChessAI:
             score += 0.3 * card_value * (black_access - white_access)
         return score
 
-    def _order_actions(self, state, actions):
+    def _order_actions(
+        self, state, actions, learning_path_eligible=None
+    ):
+        if learning_path_eligible is None:
+            learning_path_eligible = getattr(
+                self, "_learning_ordering_allowed", True)
         maximizing = state.current_turn == COLOR.BLACK
         book_order = {
             move: index for index, move in enumerate(opening_hints(state))
         }
+        learning_scores = (
+            self._move_learning_action_scores(state, actions)
+            if learning_path_eligible else {}
+        )
+        self._last_learning_hint_actions = frozenset(learning_scores)
         fallback_rank = len(book_order) + 1
 
         def action_order_key(action):
             score = self._quick_action_score(state, action)
             if state.current_turn == COLOR.WHITE:
                 score = -score
+            learning_score = learning_scores.get(action, 0.0)
+            if not maximizing:
+                learning_score = -learning_score
             move = (action.source, action.destination)
             rank = (
                 book_order.get(move)
@@ -2658,7 +3046,11 @@ class ChessAI:
             )
             if rank is None:
                 rank = fallback_rank
-            return score, -rank if maximizing else rank
+            return (
+                score,
+                learning_score,
+                -rank if maximizing else rank,
+            )
 
         return sorted(actions, key=action_order_key, reverse=maximizing)
 

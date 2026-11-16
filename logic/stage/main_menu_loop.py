@@ -319,7 +319,11 @@ class Game:
                 stats_window.close()
             self.ai_stats_window = None
             if self._loading_ai is not None:
-                self._loading_ai.shutdown_worker_pool()
+                close_ai = getattr(self._loading_ai, "close", None)
+                if close_ai is None:
+                    self._loading_ai.shutdown_worker_pool()
+                else:
+                    close_ai()
         else:
             self.menu_showed = True
             self._loading = False
@@ -397,7 +401,11 @@ class Game:
                 if self.chess is not None:
                     self.chess.close()
                 elif self._loading_ai is not None:
-                    self._loading_ai.shutdown_worker_pool()
+                    close_ai = getattr(self._loading_ai, "close", None)
+                    if close_ai is None:
+                        self._loading_ai.shutdown_worker_pool()
+                    else:
+                        close_ai()
             finally:
                 stats_window = self.ai_stats_window
                 if stats_window is not None:

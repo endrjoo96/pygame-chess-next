@@ -79,13 +79,17 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         cache_limit=256,
         cache_evictions=3,
         cache_deepest_entry_depth=3,
+        learning_database_size_bytes=1536,
+        learning_database_limit_bytes=16 * 1024 * 1024,
+        candidate_move_from_learning_database=True,
         workers=(
             AIWorkerStats(3, "idle", pid=789),
             AIWorkerStats(
                 4, "busy", pid=456, mode="prepare", root="D7"),
             AIWorkerStats(
                 2, "busy", pid=234, cache_entries=20,
-                mode="search", root="C2", search_depth=3),
+                mode="search", root="C2", search_depth=3,
+                learning_database_reading=True),
             AIWorkerStats(
                 1, "idle", pid=123, cache_entries=12),
             AIWorkerStats(
@@ -107,6 +111,7 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         final_score=1.5,
         completed_depth=3,
         visited_nodes=1234,
+        final_move_from_learning_database=False,
     ))
     window.draw(AISearchStats(
         cache_enabled=True,
@@ -154,12 +159,12 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         if position[0] == 16 and 196 <= position[1] <= 232
     ]
     assert progress_ys == [196, 214, 232]
-    expected_worker_rows = [374 + row * 18 for row in range(7)]
-    for column_x in (16, 236, 350, 470, 580):
+    expected_worker_rows = [396 + row * 18 for row in range(7)]
+    for column_x in (16, 236, 350, 470, 580, 640):
         worker_row_ys = [
             position[1]
             for position, _ in candidate_blits
-            if position[0] == column_x and position[1] >= 374
+            if position[0] == column_x and position[1] >= 396
         ]
         assert worker_row_ys == expected_worker_rows
     worker_labels = [
@@ -176,17 +181,27 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
         "W07",
     ]
     assert "Myślę, że najlepszy ruch to..." in rendered_text
-    assert "Ocena heurystyczna (czarne): +1.50 | głębokość: 3" in rendered_text
+    assert (
+        "Ocena heurystyczna (czarne): +1.50 | głębokość: 3"
+        in rendered_text
+    )
+    assert "Wskazówka z bazy: tak" in rendered_text
     assert "Ostatni wybrany ruch" in rendered_text
     assert "Wynik wyszukiwania (czarne): +1.50" in rendered_text
     assert "Ukończona głębokość: 3" in rendered_text
-    assert "Odwiedzone węzły: 1 234" in rendered_text
+    assert (
+        "Odwiedzone węzły: 1 234 | wskazówka z bazy: nie"
+        in rendered_text
+    )
     assert "Aktywność: wyszukiwanie" in rendered_text
     assert "Odwiedzone węzły: 9 876" in rendered_text
     assert "Głębokość wyszukiwania: aktualnie 3 | ukończona 2" in rendered_text
     assert "Kolejna karta pojawi się za 3 tury" in rendered_text
     assert "Główny: 42 / 256 | workery: 32 | wyparcia: 3" in rendered_text
     assert "Maks. głębokość wpisu cache: 3" in rendered_text
+    assert "Baza wiedzy: 1.5 KiB / 16.0 MiB" in rendered_text
+    assert "czyta" in rendered_text
+    assert "DB" in rendered_text
     assert "Największa ukończona głębokość gałęzi: 2" in rendered_text
     assert "Najgroźniejsze ruchy białych dla czarnych:" in rendered_text
     assert "1. e2-e4 | czarne: -1.25 | po odpowiedzi czarnych" in rendered_text
@@ -270,10 +285,10 @@ def test_stats_window_scrolls_worker_lists_over_visible_limit(monkeypatch):
     stats = AISearchStats(workers=workers)
 
     window.draw(stats)
-    assert "Workery (1-17 z 28)" in rendered_text
+    assert "Workery (1-15 z 28)" in rendered_text
     assert "W01" in rendered_text
-    assert "W17" in rendered_text
-    assert "W24" not in rendered_text
+    assert "W15" in rendered_text
+    assert "W16" not in rendered_text
 
     rendered_text.clear()
     scroll_down = pygame.event.Event(
@@ -285,10 +300,10 @@ def test_stats_window_scrolls_worker_lists_over_visible_limit(monkeypatch):
     assert not window.handle_event(scroll_down)
     window.draw(stats)
 
-    assert "Workery (3-19 z 28)" in rendered_text
+    assert "Workery (3-17 z 28)" in rendered_text
     assert "W03" in rendered_text
-    assert "W19" in rendered_text
-    assert "W20" not in rendered_text
+    assert "W17" in rendered_text
+    assert "W18" not in rendered_text
     assert "W01" not in rendered_text
 
 

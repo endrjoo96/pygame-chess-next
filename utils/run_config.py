@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from utils.system_info import physical_memory_bytes
+
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUN_CONFIG_PATH = Path(
@@ -117,12 +119,29 @@ def _load_properties():
 
 
 def _parse_cache_max_entries(value):
+    return _parse_binary_size(value)
+
+
+def _parse_binary_size(value):
     multipliers = {"k": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
     multiplier = 1
     if value and value[-1] in multipliers:
         multiplier = multipliers[value[-1]]
         value = value[:-1]
-    return int(value) * multiplier
+    result = int(value) * multiplier
+    if result < 1:
+        raise ValueError("The size must be positive")
+    return result
+
+
+def _default_learning_max_file_size():
+    try:
+        return physical_memory_bytes() // 4
+    except OSError as error:
+        raise ValueError(
+            "Unable to determine physical memory for the default "
+            "'ai.search.learning.max_file_size'; set it explicitly"
+        ) from error
 
 
 def _load_run_config():
@@ -272,6 +291,34 @@ def _load_run_config():
             "'ai.search.cache.max_entries' must be a positive integer or use "
             "a k, M, or G suffix in {}".format(properties_path))
 
+    learning_enabled_value = properties.get(
+        "ai.search.learning.enabled", "false").lower()
+    if learning_enabled_value not in ("true", "false"):
+        raise ValueError(
+            "'ai.search.learning.enabled' must be true or false in {}".format(
+                properties_path))
+    learning_save_enabled_value = properties.get(
+        "ai.search.learning.save_enabled", "false").lower()
+    if learning_save_enabled_value not in ("true", "false"):
+        raise ValueError(
+            "'ai.search.learning.save_enabled' must be true or false in "
+            "{}".format(properties_path))
+    learning_size_value = properties.get("ai.search.learning.max_file_size")
+    if learning_size_value is None:
+        learning_size_value = str(_default_learning_max_file_size())
+    try:
+        learning_max_file_size = _parse_binary_size(learning_size_value)
+    except ValueError:
+        raise ValueError(
+            "'ai.search.learning.max_file_size' must be a positive integer "
+            "or use a k, M, or G suffix in {}".format(properties_path)
+        ) from None
+    if learning_max_file_size < 16 * 1024:
+        raise ValueError(
+            "'ai.search.learning.max_file_size' must be at least 16k in "
+            "{}".format(properties_path)
+        )
+
     ai_search_metrics_enabled_value = properties.get(
         "ai.search.metrics.enabled", "false").lower()
     if ai_search_metrics_enabled_value not in ("true", "false"):
@@ -292,6 +339,9 @@ def _load_run_config():
         ai_search_ponder_cpu_worker_usage,
         cache_enabled_value == "true",
         cache_max_entries,
+        learning_enabled_value == "true",
+        learning_save_enabled_value == "true",
+        learning_max_file_size,
         ai_search_metrics_enabled_value == "true",
     )
 
@@ -309,6 +359,9 @@ def _load_run_config():
     AI_SEARCH_PONDER_CPU_WORKER_USAGE,
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
+    AI_SEARCH_LEARNING_ENABLED,
+    AI_SEARCH_LEARNING_SAVE_ENABLED,
+    AI_SEARCH_LEARNING_MAX_FILE_SIZE,
     AI_SEARCH_METRICS_ENABLED,
 ) = _load_run_config()
 

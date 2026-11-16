@@ -31,12 +31,18 @@ ai:
     cache:
       enabled: false
       max_entries: 8k
+    learning:
+      enabled: true
+      save_enabled: false
+      max_file_size: 2G
     metrics:
       enabled: true
 """,
         encoding="utf-8",
     )
     monkeypatch.setattr(run_config, "RUN_CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 4 * 1024 ** 3)
 
     assert run_config._load_run_config() == (
         run_config.RunMode.PROD,
@@ -51,6 +57,9 @@ ai:
         75,
         False,
         8 * 1024,
+        True,
+        False,
+        2 * 1024 ** 3,
         True,
     )
 
@@ -311,7 +320,7 @@ def test_search_cache_defaults(monkeypatch, tmp_path):
         run_config, "_load_properties",
         lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
-    assert run_config._load_run_config()[-3:-1] == (True, 2048)
+    assert run_config._load_run_config()[10:12] == (True, 2048)
 
 
 def test_search_metrics_default_to_disabled(monkeypatch, tmp_path):
@@ -425,7 +434,7 @@ def test_search_cache_enabled_configuration(monkeypatch, tmp_path, value, expect
             tmp_path / "run.yaml",
         ),
     )
-    assert run_config._load_run_config()[-3:-1] == (expected, 16384)
+    assert run_config._load_run_config()[10:12] == (expected, 16384)
 
 
 @pytest.mark.parametrize(("value", "expected"), [("true", True), ("FALSE", False)])
@@ -461,7 +470,87 @@ def test_search_cache_max_entries_accepts_binary_suffixes(
             tmp_path / "run.yaml",
         ),
     )
-    assert run_config._load_run_config()[-2] == expected
+    assert run_config._load_run_config()[11] == expected
+
+
+@pytest.mark.parametrize(("key", "expected"), [
+    ("ai.search.learning.enabled", False),
+    ("ai.search.learning.save_enabled", False),
+])
+def test_move_learning_switches_default_to_disabled(
+    monkeypatch, tmp_path, key, expected,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024 ** 3)
+    config = run_config._load_run_config()
+    assert config[12 if key.endswith(".enabled") else 13] is expected
+
+
+@pytest.mark.parametrize(
+    ("enabled", "save_enabled", "expected"),
+    [
+        ("false", "true", (False, True)),
+        ("true", "false", (True, False)),
+        ("true", "true", (True, True)),
+    ],
+)
+def test_move_learning_switches_are_independent_config_values(
+    monkeypatch, tmp_path, enabled, save_enabled, expected,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {
+                "mode": "PROD",
+                "ai.search.learning.enabled": enabled,
+                "ai.search.learning.save_enabled": save_enabled,
+            },
+            tmp_path / "run.yaml",
+        ),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024 ** 3)
+    assert run_config._load_run_config()[12:14] == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("16384", 16384),
+        ("16k", 16 * 1024),
+        ("2M", 2 * 1024 ** 2),
+        ("1G", 1024 ** 3),
+    ],
+)
+def test_move_learning_max_file_size_accepts_binary_suffixes(
+    monkeypatch, tmp_path, value, expected,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {"mode": "PROD", "ai.search.learning.max_file_size": value},
+            tmp_path / "run.yaml",
+        ),
+    )
+    assert run_config._load_run_config()[14] == expected
+
+
+def test_move_learning_max_file_size_defaults_to_quarter_physical_memory(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size",
+        lambda: 12 * 1024 ** 3,
+    )
+    assert run_config._load_run_config()[14] == 12 * 1024 ** 3
 
 
 @pytest.mark.parametrize(
@@ -480,6 +569,16 @@ def test_search_cache_max_entries_accepts_binary_suffixes(
         ("ai.search.cache.max_entries", "1g"),
         ("ai.search.cache.max_entries", "k"),
         ("ai.search.cache.max_entries", "invalid"),
+        ("ai.search.learning.enabled", "yes"),
+        ("ai.search.learning.save_enabled", ""),
+        ("ai.search.learning.max_file_size", "0"),
+        ("ai.search.learning.max_file_size", "-1"),
+        ("ai.search.learning.max_file_size", "1.5"),
+        ("ai.search.learning.max_file_size", "1K"),
+        ("ai.search.learning.max_file_size", "1m"),
+        ("ai.search.learning.max_file_size", "1g"),
+        ("ai.search.learning.max_file_size", "1k"),
+        ("ai.search.learning.max_file_size", "invalid"),
     ],
 )
 def test_search_cache_rejects_invalid_configuration(monkeypatch, tmp_path, key, value):

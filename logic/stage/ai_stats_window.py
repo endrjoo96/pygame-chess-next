@@ -123,6 +123,16 @@ class AIStatsWindow:
         rendered_detail = self._detail_font.render(
             detail, True, (220, 220, 220))
         surface.blit(rendered_detail, (16, 126))
+        source = self._learning_source_text(
+            stats.candidate_move_from_learning_database)
+        surface.blit(
+            self._detail_font.render(
+                "Wskazówka z bazy: {}".format(source),
+                True,
+                (220, 220, 220),
+            ),
+            (16, 150),
+        )
 
     def _draw_final_result(self, surface, stats):
         caption = self._body_font.render(
@@ -144,14 +154,38 @@ class AIStatsWindow:
             (220, 220, 220),
         )
         nodes = self._detail_font.render(
-            "Odwiedzone węzły: {}".format(
-                format(stats.visited_nodes, ",").replace(",", " ")),
+            "Odwiedzone węzły: {} | wskazówka z bazy: {}".format(
+                format(stats.visited_nodes, ",").replace(",", " "),
+                self._learning_source_text(
+                    stats.final_move_from_learning_database),
+            ),
             True,
             (220, 220, 220),
         )
         surface.blit(score, (16, 126))
         surface.blit(depth, (16, 150))
         surface.blit(nodes, (16, 174))
+
+    @staticmethod
+    def _learning_source_text(used):
+        if used is None:
+            return "brak danych"
+        return "tak" if used else "nie"
+
+    @staticmethod
+    def _format_bytes(size):
+        if size is None:
+            return "niedostępny"
+        value = float(size)
+        units = ("B", "KiB", "MiB", "GiB", "TiB")
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                number = (
+                    str(int(value))
+                    if unit == "B" else "{:.1f}".format(value)
+                )
+                return "{} {}".format(number, unit)
+            value /= 1024
 
     def _draw_live_progress(self, surface, stats):
         phase = stats.search_phase or (
@@ -280,10 +314,23 @@ class AIStatsWindow:
         )
         surface.blit(cache_depth_text, (16, 304 + y_offset))
 
+        database_size = self._format_bytes(
+            stats.learning_database_size_bytes)
+        database_limit = self._format_bytes(
+            stats.learning_database_limit_bytes)
+        surface.blit(
+            self._detail_font.render(
+                "Baza wiedzy: {} / {}".format(database_size, database_limit),
+                True,
+                (220, 220, 220),
+            ),
+            (16, 328 + y_offset),
+        )
+
         workers = sorted(stats.workers, key=self._worker_sort_key)
         total_workers = len(workers)
         surface_height = surface.get_size()[1]
-        first_worker_y = 374 + y_offset
+        first_worker_y = 396 + y_offset
         visible_workers = max(1, (surface_height - first_worker_y - 40) // 18)
         self._worker_scroll = min(
             max(0, self._worker_scroll),
@@ -297,7 +344,7 @@ class AIStatsWindow:
         )
         surface.blit(
             self._body_font.render(worker_heading, True, (220, 220, 220)),
-            (16, 328 + y_offset),
+            (16, 350 + y_offset),
         )
 
         for header, x in (
@@ -306,10 +353,11 @@ class AIStatsWindow:
             ("Tryb", 350),
             ("Root", 470),
             ("Głęb.", 580),
+            ("DB", 640),
         ):
             surface.blit(
                 self._detail_font.render(header, True, (160, 160, 160)),
-                (x, 352 + y_offset),
+                (x, 374 + y_offset),
             )
 
         if not stats.workers:
@@ -348,6 +396,13 @@ class AIStatsWindow:
                         and worker.search_depth is not None else "-",
                         580,
                         (220, 220, 220),
+                    ),
+                    (
+                        "czyta" if worker.learning_database_reading else "-",
+                        640,
+                        (255, 190, 110)
+                        if worker.learning_database_reading
+                        else (220, 220, 220),
                     ),
                 )
                 for text, x, color in worker_values:

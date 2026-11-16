@@ -1,0 +1,487 @@
+import hashlib
+import json
+import math
+import os
+import sqlite3
+import sys
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
+from threading import RLock
+
+from constants.piece_color import COLOR
+from logic.game_rules import GameAction, GameActionType
+from models.game_state import GameState
+
+
+_SCHEMA_VERSION = 1
+_MIN_DATABASE_SIZE_BYTES = 16 * 1024
+_MAX_SIGNAL_COUNT = 255
+_MAX_LOCAL_UPDATES = 2048
+_MAX_HINTS_PER_POSITION = 32
+_HINT_CACHE_SIZE = 2048
+_PRUNE_BATCH_SIZE = 256
+_WRITE_BATCH_SIZE = 128
+_DAY_SECONDS = 24 * 60 * 60
+
+
+@dataclass(frozen=True)
+class MoveLearningUpdate:
+    position_key: str
+    action_key: str
+    preferred: int = 0
+    cutoff: int = 0
+    worst: int = 0
+
+
+class MoveLearningAccumulator:
+    def __init__(self):
+        self._updates = OrderedDict()
+
+    def record(self, position_key, action, signal):
+        action_key = encode_action(action)
+        key = position_key, action_key
+        values = self._updates.get(key)
+        if values is None:
+            if len(self._updates) >= _MAX_LOCAL_UPDATES:
+                self._updates.popitem(last=False)
+            values = [0, 0, 0]
+            self._updates[key] = values
+        else:
+            self._updates.move_to_end(key)
+        signal_index = {"preferred": 0, "cutoff": 1, "worst": 2}.get(signal)
+        if signal_index is None:
+            raise ValueError("Unknown move-learning signal {!r}".format(signal))
+        values[signal_index] = min(
+            _MAX_SIGNAL_COUNT, values[signal_index] + 1)
+
+    def merge(self, updates):
+        for update in updates:
+            key = update.position_key, update.action_key
+            values = self._updates.get(key)
+            if values is None:
+                if len(self._updates) >= _MAX_LOCAL_UPDATES:
+                    self._updates.popitem(last=False)
+                values = [0, 0, 0]
+                self._updates[key] = values
+            else:
+                self._updates.move_to_end(key)
+            for index, count in enumerate((
+                update.preferred, update.cutoff, update.worst,
+            )):
+                values[index] = min(
+                    _MAX_SIGNAL_COUNT,
+                    values[index] + max(0, count),
+                )
+
+    def snapshot(self):
+        return tuple(
+            MoveLearningUpdate(
+                position_key,
+                action_key,
+                values[0],
+                values[1],
+                values[2],
+            )
+            for (position_key, action_key), values in self._updates.items()
+        )
+
+
+def default_move_learning_path():
+    override = os.environ.get("CHESS_MOVE_LEARNING_DB_PATH")
+    if override:
+        return Path(override).expanduser()
+
+    if os.name == "nt":
+        data_root = Path(os.environ.get(
+            "LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    elif sys.platform == "darwin":
+        data_root = Path.home() / "Library" / "Application Support"
+    else:
+        data_root = Path(os.environ.get(
+            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
+    return data_root / "pygame-chess-next" / "move-learning.sqlite3"
+
+
+def is_plain_move(action):
+    return (
+        action.action_type in (
+            GameActionType.MOVE,
+            GameActionType.PROMOTE,
+        )
+        and action.card_index == -1
+    )
+
+
+def is_learning_position_eligible(state):
+    if not isinstance(state, GameState):
+        return False
+    if state.get_winner() is not None:
+        return False
+    if (
+        state.pending_board_card_delay is not None
+        or state.rune_traps
+    ):
+        return False
+    if (
+        state.selected_card is not None
+        or state.selected_piece_position
+        or state.selected_captured_piece is not None
+        or state.double_move_step
+        or state.double_move_collected_board_card
+        or state.resurrection_moves
+    ):
+        return False
+    for piece in state.pieces_locations.values():
+        if not piece.exists():
+            continue
+        if piece.is_stunned() or piece.get_effects(
+            state.turns_started[piece.get_color()]
+        ):
+            return False
+    return True
+
+
+def learning_position_key(state):
+    if not is_learning_position_eligible(state):
+        return None
+    position = [
+        [
+            square,
+            piece.get_color().value,
+            piece.get_type().value,
+            piece.get_starting_position(),
+            piece.has_moved(),
+        ]
+        for square, piece in sorted(state.pieces_locations.items())
+        if piece.exists()
+    ]
+    payload = {
+        "version": _SCHEMA_VERSION,
+        "turn": state.current_turn.value,
+        "pieces": position,
+        "en_passant_target": state.en_passant_target,
+        "en_passant_targets": list(state.en_passant_targets),
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def encode_action(action):
+    payload = (
+        action.action_type.value,
+        action.source,
+        action.destination,
+        action.card_index,
+        action.captured_color.value,
+        action.captured_index,
+        action.secondary_source,
+    )
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+
+def decode_action(action_key):
+    values = json.loads(action_key)
+    if not isinstance(values, list) or len(values) != 7:
+        raise ValueError("Invalid serialized move-learning action")
+    return GameAction(
+        GameActionType(values[0]),
+        values[1],
+        values[2],
+        values[3],
+        COLOR(values[4]),
+        values[5],
+        values[6],
+    )
+
+
+class MoveLearningStore:
+    """Versioned, bounded SQLite store for move-order hints only."""
+
+    def __init__(self, path, max_file_size_bytes, read_only=False):
+        if (
+            not isinstance(max_file_size_bytes, int)
+            or isinstance(max_file_size_bytes, bool)
+            or max_file_size_bytes < _MIN_DATABASE_SIZE_BYTES
+        ):
+            raise ValueError(
+                "The move-learning database limit must be at least {} bytes"
+                .format(_MIN_DATABASE_SIZE_BYTES)
+            )
+        self.path = Path(path)
+        self.max_file_size_bytes = max_file_size_bytes
+        self.read_only = read_only
+        self._connection = None
+        self._lock = RLock()
+        self._hint_cache = OrderedDict()
+        self._connect()
+
+    @classmethod
+    def open_from_config(
+        cls, enabled, save_enabled, max_file_size_bytes, path=None,
+    ):
+        if not enabled:
+            return None
+        if path is None:
+            path = default_move_learning_path()
+        if not save_enabled and not Path(path).exists():
+            return None
+        return cls(
+            path,
+            max_file_size_bytes,
+            read_only=not save_enabled,
+        )
+
+    def _connect(self):
+        if self.read_only:
+            if not self.path.exists():
+                return
+            if self.path.stat().st_size > self.max_file_size_bytes:
+                raise sqlite3.DatabaseError(
+                    "Move-learning database exceeds its configured size limit"
+                )
+            uri = self.path.resolve().as_uri() + "?mode=ro"
+            connection = sqlite3.connect(
+                uri, uri=True, timeout=1.0, check_same_thread=False,
+                isolation_level=None,
+            )
+            connection.execute("PRAGMA query_only = ON")
+            self._check_schema(connection, allow_uninitialized=False)
+            self._connection = connection
+            return
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        is_new = not self.path.exists() or self.path.stat().st_size == 0
+        connection = sqlite3.connect(
+            str(self.path), timeout=1.0, check_same_thread=False,
+            isolation_level=None,
+        )
+        connection.execute("PRAGMA busy_timeout = 1000")
+        if is_new:
+            connection.execute("PRAGMA page_size = 4096")
+            connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
+        self._check_schema(connection, allow_uninitialized=True)
+        self._connection = connection
+        self._enforce_size_limit()
+        self._set_max_page_count()
+
+    @staticmethod
+    def _check_schema(connection, allow_uninitialized):
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version == 0 and allow_uninitialized:
+            tables = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+            if tables:
+                raise sqlite3.DatabaseError(
+                    "Move-learning database has no supported schema version"
+                )
+            connection.executescript(
+                """
+                CREATE TABLE move_hints (
+                    position_key TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    preferred_count INTEGER NOT NULL DEFAULT 0,
+                    cutoff_count INTEGER NOT NULL DEFAULT 0,
+                    worst_count INTEGER NOT NULL DEFAULT 0,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (position_key, action_key)
+                );
+                CREATE INDEX move_hints_last_seen
+                    ON move_hints(last_seen);
+                PRAGMA user_version = 1;
+                """
+            )
+            version = _SCHEMA_VERSION
+        if version != _SCHEMA_VERSION:
+            raise sqlite3.DatabaseError(
+                "Unsupported move-learning database schema version {}".format(
+                    version)
+            )
+        table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'move_hints'"
+        ).fetchone()
+        if table is None:
+            raise sqlite3.DatabaseError(
+                "Move-learning database is missing its hint table"
+            )
+
+    def _page_size(self):
+        return self._connection.execute(
+            "PRAGMA page_size"
+        ).fetchone()[0]
+
+    def _set_max_page_count(self):
+        page_size = self._page_size()
+        max_pages = max(1, self.max_file_size_bytes // page_size)
+        actual = self._connection.execute(
+            "PRAGMA max_page_count = {}".format(max_pages)
+        ).fetchone()[0]
+        page_count = self._connection.execute(
+            "PRAGMA page_count"
+        ).fetchone()[0]
+        if actual > max_pages or page_count > max_pages:
+            raise sqlite3.DatabaseError(
+                "Move-learning database cannot fit within its configured limit"
+            )
+
+    def _enforce_size_limit(self):
+        while self.path.exists() and self.path.stat().st_size > self.max_file_size_bytes:
+            row_count = self._connection.execute(
+                "SELECT COUNT(*) FROM move_hints"
+            ).fetchone()[0]
+            if row_count == 0:
+                raise sqlite3.DatabaseError(
+                    "Move-learning database schema exceeds its configured limit"
+                )
+            self._delete_oldest(max(
+                1, min(_PRUNE_BATCH_SIZE, row_count // 8 or 1)))
+
+    def _delete_oldest(self, count):
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._connection.execute(
+                "DELETE FROM move_hints WHERE rowid IN ("
+                "SELECT rowid FROM move_hints "
+                "ORDER BY last_seen ASC, rowid ASC LIMIT ?)",
+                (count,),
+            )
+            self._connection.execute("COMMIT")
+        except sqlite3.Error:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+        self._connection.execute(
+            "PRAGMA incremental_vacuum({})".format(count))
+        self._hint_cache.clear()
+
+    def get_action_scores(self, state, actions):
+        position_key = learning_position_key(state)
+        if position_key is None:
+            return {}
+        return self.get_hints(position_key, actions)
+
+    def clear_hint_cache(self):
+        with self._lock:
+            self._hint_cache.clear()
+
+    def get_hints(self, position_key, legal_actions=None):
+        if self._connection is None:
+            return {}
+        with self._lock:
+            cached = self._hint_cache.get(position_key)
+            if cached is None:
+                rows = self._connection.execute(
+                    "SELECT action_key, preferred_count, cutoff_count, "
+                    "worst_count, last_seen FROM move_hints "
+                    "WHERE position_key = ? "
+                    "ORDER BY (preferred_count + 2 * cutoff_count - "
+                    "2 * worst_count) DESC, last_seen DESC "
+                    "LIMIT ?",
+                    (position_key, _MAX_HINTS_PER_POSITION),
+                ).fetchall()
+                now = int(time.time())
+                cached = {}
+                for action_key, preferred, cutoff, worst, last_seen in rows:
+                    try:
+                        action = decode_action(action_key)
+                    except (ValueError, TypeError, json.JSONDecodeError) as error:
+                        raise sqlite3.DatabaseError(
+                            "Invalid move-learning action record: {}".format(error)
+                        ) from None
+                    raw_score = preferred + 2 * cutoff - 2 * worst
+                    age_days = max(0, now - last_seen) / _DAY_SECONDS
+                    cached[action] = math.tanh(raw_score / 8.0) * math.exp(
+                        -age_days / 180.0)
+                self._hint_cache[position_key] = cached
+                if len(self._hint_cache) > _HINT_CACHE_SIZE:
+                    self._hint_cache.popitem(last=False)
+            else:
+                self._hint_cache.move_to_end(position_key)
+            if legal_actions is None:
+                return dict(cached)
+            legal = set(legal_actions)
+            return {
+                action: score for action, score in cached.items()
+                if action in legal
+            }
+
+    def apply_updates(self, updates):
+        if not updates:
+            return
+        if self.read_only or self._connection is None:
+            raise RuntimeError("The move-learning store is not writable")
+        with self._lock:
+            batch_size = min(_WRITE_BATCH_SIZE, len(updates))
+            offset = 0
+            while offset < len(updates):
+                batch = updates[offset:offset + batch_size]
+                try:
+                    self._write_updates(batch)
+                except sqlite3.OperationalError as error:
+                    if "full" not in str(error).lower():
+                        raise
+                    row_count = self._connection.execute(
+                        "SELECT COUNT(*) FROM move_hints"
+                    ).fetchone()[0]
+                    if row_count:
+                        self._delete_oldest(max(
+                            1,
+                            min(_PRUNE_BATCH_SIZE, row_count // 8 or 1),
+                        ))
+                    elif batch_size > 1:
+                        batch_size = max(1, batch_size // 2)
+                    else:
+                        raise
+                    continue
+                offset += len(batch)
+            self._hint_cache.clear()
+            self._enforce_size_limit()
+            self._set_max_page_count()
+
+    def _write_updates(self, updates):
+        connection = self._connection
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            now = int(time.time())
+            for update in updates:
+                connection.execute(
+                    """
+                    INSERT INTO move_hints (
+                        position_key, action_key, preferred_count,
+                        cutoff_count, worst_count, last_seen
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(position_key, action_key) DO UPDATE SET
+                        preferred_count = MIN(?, preferred_count + excluded.preferred_count),
+                        cutoff_count = MIN(?, cutoff_count + excluded.cutoff_count),
+                        worst_count = MIN(?, worst_count + excluded.worst_count),
+                        last_seen = excluded.last_seen
+                    """,
+                    (
+                        update.position_key,
+                        update.action_key,
+                        min(_MAX_SIGNAL_COUNT, update.preferred),
+                        min(_MAX_SIGNAL_COUNT, update.cutoff),
+                        min(_MAX_SIGNAL_COUNT, update.worst),
+                        now,
+                        _MAX_SIGNAL_COUNT,
+                        _MAX_SIGNAL_COUNT,
+                        _MAX_SIGNAL_COUNT,
+                    ),
+                )
+            connection.execute("COMMIT")
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    def close(self):
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
+            self._hint_cache.clear()

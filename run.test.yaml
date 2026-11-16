@@ -18,5 +18,9 @@ ai:
     cache:
       enabled: true
       max_entries: 6k
+    learning:
+      enabled: true
+      save_enabled: true
+      max_file_size: 16M
     metrics:
       enabled: true

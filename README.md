@@ -178,7 +178,26 @@ normalne uruchomienie aplikacji.
 | `ai.search.ponder.cpu.worker_usage` | Docelowy udział aktywnego czasu każdego workera ponderingu, w procentach od `1` do `100`. Jeśli pominięty, dziedziczy `ai.search.cpu.worker_usage`; gdy pominięte są oba parametry, obowiązuje domyślne `100`. |
 | `ai.search.cache.enabled` | `true` włącza pamięć wyników i wskazówek ruchu; `false` wyłącza ich tworzenie i odczyt. Domyślnie `true`. |
 | `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii; dodatnia liczba całkowita z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne: 1024, 1024², 1024³). W dostarczonym `run.yaml` ustawiono `6k`. Tabele workerów mają dodatkowy limit. |
+| `ai.search.learning.enabled` | Włącza odczyt trwałych wskazówek kolejności ruchów; `false` wyłącza cały mechanizm. Domyślnie `false`, w dostarczonym `run.yaml` ustawiono `true`. |
+| `ai.search.learning.save_enabled` | Włącza zapis zebranych wskazówek; przy `false` mechanizm działa tylko do odczytu. Domyślnie `false`, w dostarczonym `run.yaml` ustawiono `true`. Wymaga `ai.search.learning.enabled=true`. |
+| `ai.search.learning.max_file_size` | Maksymalny rozmiar bazy SQLite z podpowiedziami; co najmniej `16k`, dodatnia liczba z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne). Domyślnie 1/4 fizycznej pamięci RAM, gdy parametr pominięto; w dostarczonym `run.yaml` ustawiono `16G`. |
 | `ai.search.metrics.enabled` | `true` włącza zbiorcze pomiary faz wyszukiwania, węzłów, odcięć, cache i workerów; raport jest emitowany raz po wyszukiwaniu. `false` wyłącza dodatkowe timery; domyślnie `false`. Benchmark ma osobny przełącznik `--metrics`, domyślnie `on`, i nie zmienia konfiguracji gry. |
+
+Trwałe uczenie zapisuje wyłącznie wskazówki porządkowania ruchów, nigdy ocen
+ani wyników alpha-beta. Sygnały są zbierane tylko w pozycjach bez aktywnych
+efektów i niedokończonych akcji oraz na liniach, które od początku wyszukiwania
+nie użyły karty; niewykorzystane karty w rękach lub na planszy nie wykluczają
+pozycji. Wskazówki obejmują ruchy preferowane, odcinające i najsłabsze. Każda
+podpowiedź jest ponownie sprawdzana względem aktualnej listy legalnych ruchów,
+więc baza nie wpływa na legalność ani wynik wyszukiwania. Baza SQLite znajduje
+się domyślnie w katalogu danych użytkownika (`%LOCALAPPDATA%` w Windows,
+`~/.local/share` w Linuxie lub `~/Library/Application Support` w macOS);
+zmienną `CHESS_MOVE_LEARNING_DB_PATH`
+można wskazać inną lokalizację. Workery otwierają bazę tylko do odczytu, a
+proces główny zapisuje aktualizacje. Błąd bazy jest logowany na poziomie
+`ERROR`, po czym bot kontynuuje bez trwałych wskazówek.
+Okno diagnostyczne pokazuje rozmiar bazy, workery aktualnie pobierające z niej
+wskazówki oraz to, czy wybrany ruch miał podpowiedź w bazie.
 
 `cpu.workers` podaje liczbę workerów wprost — nie jest przeliczane względem
 liczby logicznych procesorów. `cpu.worker_usage` steruje udziałem czasu pracy

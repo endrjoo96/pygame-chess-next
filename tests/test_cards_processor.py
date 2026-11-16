@@ -60,49 +60,38 @@ def test_buff_card_icon_is_loaded_from_its_resource(monkeypatch):
     assert GameContext().card_mod_buff_src in loaded_paths
 
 
-def test_reset_decks_gives_both_players_the_same_two_random_cards(monkeypatch):
-    draws = iter([
-        (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 2),
-        (EnchantmentCardType.PIECE_TELEPORT, None),
-    ])
-    monkeypatch.setattr(
-        EnchantmentCardType,
-        "sample_with_uses",
-        staticmethod(lambda rng=None: next(draws)),
-    )
+def test_reset_decks_leaves_both_players_with_empty_hands():
     processor = CardsProcessor.__new__(CardsProcessor)
     processor.rng = random.Random(23)
-    processor.white_cards = []
-    processor.black_cards = []
+    processor.white_cards = [
+        EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD.create(uses=2),
+    ]
+    processor.black_cards = [
+        EnchantmentCardType.PIECE_TELEPORT.create(),
+    ]
+    rng_state = processor.rng.getstate()
 
     processor.reset_decks()
 
-    white = processor.white_cards
-    black = processor.black_cards
-    assert len(white) == len(black) == 2
-    assert [
-        (card.get_card_type(), card.get_remaining_uses()) for card in white
-    ] == [
-        (card.get_card_type(), card.get_remaining_uses()) for card in black
-    ]
-    assert all(white_card is not black_card for white_card, black_card in zip(white, black))
+    assert processor.white_cards == []
+    assert processor.black_cards == []
+    assert processor.rng.getstate() == rng_state
 
 
-def test_same_seed_reproduces_starting_cards():
-    processors = []
-    for _ in range(2):
-        processor = CardsProcessor.__new__(CardsProcessor)
-        processor.rng = random.Random(20261030)
-        processor.white_cards = []
-        processor.black_cards = []
-        processor.reset_decks()
-        processors.append(processor)
+def test_reset_decks_clears_hands_again_without_randomizing():
+    processor = CardsProcessor.__new__(CardsProcessor)
+    processor.rng = random.Random(20261030)
+    processor.white_cards = []
+    processor.black_cards = []
+    processor.reset_decks()
+    rng_state = processor.rng.getstate()
 
-    def card_signature(cards):
-        return [
-            (card.get_card_type(), card.get_remaining_uses())
-            for card in cards
-        ]
+    processor.white_cards.append(
+        EnchantmentCardType.PAWN_UPGRADE_TO_KNIGHT.create())
+    processor.black_cards.append(
+        EnchantmentCardType.PAWN_UPGRADE_TO_ROOK.create())
+    processor.reset_decks()
 
-    assert card_signature(processors[0].white_cards) == card_signature(
-        processors[1].white_cards)
+    assert processor.white_cards == []
+    assert processor.black_cards == []
+    assert processor.rng.getstate() == rng_state
