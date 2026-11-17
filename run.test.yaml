@@ -21,6 +21,7 @@ ai:
     learning:
       enabled: true
       save_enabled: true
+      database_path: move-learning.sqlite3
       max_file_size: 16M
       soft_cutoff_threshold: -20
     metrics:

@@ -1,9 +1,7 @@
 import hashlib
 import json
 import math
-import os
 import sqlite3
-import sys
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -15,8 +13,10 @@ from logic.game_rules import GameAction, GameActionType
 from models.game_state import GameState
 
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _SEARCH_RESULT_EVALUATION_VERSION = 1
+_MOVE_HINT_KEY_VERSION = 2
+_LEGACY_MOVE_HINT_KEY_VERSIONS = (1,)
 _MIN_DATABASE_SIZE_BYTES = 16 * 1024
 _MAX_SIGNAL_COUNT = 255
 _MAX_LOCAL_UPDATES = 2048
@@ -46,6 +46,7 @@ class SearchResultUpdate:
     score: float
     bound: str
     evaluation_version: int = _SEARCH_RESULT_EVALUATION_VERSION
+    kind: str = "cutoff"
 
 
 def _stable_state_value(value):
@@ -110,7 +111,9 @@ class SearchResultAccumulator:
     def __init__(self):
         self._updates = OrderedDict()
 
-    def record(self, position_key, action, depth, score, bound):
+    def record(
+        self, position_key, action, depth, score, bound, kind="cutoff",
+    ):
         if (
             not isinstance(depth, int)
             or isinstance(depth, bool)
@@ -123,12 +126,16 @@ class SearchResultAccumulator:
         bound_value = getattr(bound, "value", bound)
         if bound_value not in ("exact", "lower", "upper"):
             raise ValueError("Unknown search-result bound {!r}".format(bound))
+        if kind not in ("best", "cutoff"):
+            raise ValueError("Unknown search-result kind {!r}".format(kind))
         update = SearchResultUpdate(
             position_key,
             encode_action(action),
             depth,
             float(score),
             bound_value,
+            _SEARCH_RESULT_EVALUATION_VERSION,
+            kind,
         )
         key = (
             update.position_key,
@@ -136,6 +143,7 @@ class SearchResultAccumulator:
             update.depth,
             update.bound,
             update.evaluation_version,
+            update.kind,
         )
         previous = self._updates.get(key)
         if previous is not None:
@@ -156,6 +164,7 @@ class SearchResultAccumulator:
                 update.depth,
                 update.score,
                 update.bound,
+                update.kind,
             )
 
     def snapshot(self):
@@ -215,20 +224,13 @@ class MoveLearningAccumulator:
         )
 
 
-def default_move_learning_path():
-    override = os.environ.get("CHESS_MOVE_LEARNING_DB_PATH")
-    if override:
-        return Path(override).expanduser()
-
-    if os.name == "nt":
-        data_root = Path(os.environ.get(
-            "LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    elif sys.platform == "darwin":
-        data_root = Path.home() / "Library" / "Application Support"
-    else:
-        data_root = Path(os.environ.get(
-            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
-    return data_root / "pygame-chess-next" / "move-learning.sqlite3"
+def default_move_learning_path(configured_path=None):
+    if configured_path is None:
+        configured_path = "move-learning.sqlite3"
+    path = Path(configured_path).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
 
 
 def is_plain_move(action):
@@ -241,6 +243,13 @@ def is_plain_move(action):
     )
 
 
+def has_collectible_board_card(state):
+    return (
+        isinstance(state, GameState)
+        and (state.board_card_available or bool(state.board_cards))
+    )
+
+
 def is_learning_position_eligible(state):
     if not isinstance(state, GameState):
         return False
@@ -249,6 +258,7 @@ def is_learning_position_eligible(state):
     if (
         state.pending_board_card_delay is not None
         or state.rune_traps
+        or has_collectible_board_card(state)
     ):
         return False
     if (
@@ -270,7 +280,7 @@ def is_learning_position_eligible(state):
     return True
 
 
-def learning_position_key(state):
+def learning_position_key(state, version=_MOVE_HINT_KEY_VERSION):
     if not is_learning_position_eligible(state):
         return None
     position = [
@@ -285,7 +295,7 @@ def learning_position_key(state):
         if piece.exists()
     ]
     payload = {
-        "version": _SCHEMA_VERSION,
+        "version": version,
         "turn": state.current_turn.value,
         "pieces": position,
         "en_passant_target": state.en_passant_target,
@@ -346,6 +356,8 @@ class MoveLearningStore:
         self._hint_cache = OrderedDict()
         self._search_result_cache = OrderedDict()
         self._supports_search_results = False
+        self._supports_best_moves = False
+        self._legacy_search_results = False
         self._connect()
 
     @classmethod
@@ -382,6 +394,8 @@ class MoveLearningStore:
                 schema_version = self._check_schema(
                     connection, allow_uninitialized=False)
                 self._supports_search_results = schema_version >= 2
+                self._supports_best_moves = schema_version >= 3
+                self._legacy_search_results = schema_version == 2
                 self._connection = connection
             except Exception:
                 connection.close()
@@ -401,6 +415,8 @@ class MoveLearningStore:
                 connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
             self._check_schema(connection, allow_uninitialized=True)
             self._supports_search_results = True
+            self._supports_best_moves = True
+            self._legacy_search_results = False
             self._connection = connection
             self._enforce_size_limit()
             self._set_max_page_count()
@@ -433,7 +449,7 @@ class MoveLearningStore:
                 );
                 CREATE INDEX move_hints_last_seen
                     ON move_hints(last_seen);
-                CREATE TABLE search_results (
+                CREATE TABLE search_cutoffs (
                     position_key TEXT NOT NULL,
                     action_key TEXT NOT NULL,
                     depth INTEGER NOT NULL,
@@ -448,14 +464,23 @@ class MoveLearningStore:
                         evaluation_version, bound
                     )
                 );
-                PRAGMA user_version = 2;
+                CREATE TABLE best_moves (
+                    position_key TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    depth INTEGER NOT NULL,
+                    score REAL NOT NULL,
+                    evaluation_version INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (position_key, evaluation_version)
+                );
+                PRAGMA user_version = 3;
                 """
             )
             version = _SCHEMA_VERSION
         if version == 1 and allow_uninitialized:
             connection.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS search_results (
+                CREATE TABLE search_cutoffs (
                     position_key TEXT NOT NULL,
                     action_key TEXT NOT NULL,
                     depth INTEGER NOT NULL,
@@ -470,11 +495,37 @@ class MoveLearningStore:
                         evaluation_version, bound
                     )
                 );
-                PRAGMA user_version = 2;
+                CREATE TABLE best_moves (
+                    position_key TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    depth INTEGER NOT NULL,
+                    score REAL NOT NULL,
+                    evaluation_version INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (position_key, evaluation_version)
+                );
+                PRAGMA user_version = 3;
                 """
             )
-            version = 2
-        if version not in (1, _SCHEMA_VERSION):
+            version = 3
+        if version == 2 and allow_uninitialized:
+            connection.executescript(
+                """
+                ALTER TABLE search_results RENAME TO search_cutoffs;
+                CREATE TABLE best_moves (
+                    position_key TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    depth INTEGER NOT NULL,
+                    score REAL NOT NULL,
+                    evaluation_version INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (position_key, evaluation_version)
+                );
+                PRAGMA user_version = 3;
+                """
+            )
+            version = 3
+        if version not in (1, 2, _SCHEMA_VERSION):
             raise sqlite3.DatabaseError(
                 "Unsupported move-learning database schema version {}".format(
                     version)
@@ -487,7 +538,7 @@ class MoveLearningStore:
             raise sqlite3.DatabaseError(
                 "Move-learning database is missing its hint table"
             )
-        if version >= 2:
+        if version == 2:
             results_table = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' "
                 "AND name = 'search_results'"
@@ -496,6 +547,17 @@ class MoveLearningStore:
                 raise sqlite3.DatabaseError(
                     "Move-learning database is missing its search-result table"
                 )
+        if version >= 3:
+            for table_name in ("search_cutoffs", "best_moves"):
+                table = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name = ?",
+                    (table_name,),
+                ).fetchone()
+                if table is None:
+                    raise sqlite3.DatabaseError(
+                        "Move-learning database is missing its {} table"
+                        .format(table_name))
         return version
 
     def _page_size(self):
@@ -523,8 +585,7 @@ class MoveLearningStore:
                 self._connection.execute(
                     "SELECT COUNT(*) FROM {}".format(table)
                 ).fetchone()[0]
-                for table in ("move_hints", "search_results")
-                if self._supports_search_results or table == "move_hints"
+                for table in self._storage_tables()
             )
             if row_count == 0:
                 raise sqlite3.DatabaseError(
@@ -536,9 +597,7 @@ class MoveLearningStore:
     def _delete_oldest(self, count):
         self._connection.execute("BEGIN IMMEDIATE")
         try:
-            tables = ["move_hints"]
-            if self._supports_search_results:
-                tables.append("search_results")
+            tables = self._storage_tables()
             oldest = []
             for table in tables:
                 row = self._connection.execute(
@@ -565,11 +624,28 @@ class MoveLearningStore:
         self._hint_cache.clear()
         self._search_result_cache.clear()
 
+    def _storage_tables(self):
+        tables = ["move_hints"]
+        if self._legacy_search_results:
+            tables.append("search_results")
+        elif self._supports_search_results:
+            tables.append("search_cutoffs")
+        if self._supports_best_moves:
+            tables.append("best_moves")
+        return tables
+
     def get_action_scores(self, state, actions):
-        position_key = learning_position_key(state)
-        if position_key is None:
+        current_position_key = learning_position_key(state)
+        if current_position_key is None:
             return {}
-        return self.get_hints(position_key, actions)
+        scores = self.get_hints(current_position_key, actions)
+        for version in _LEGACY_MOVE_HINT_KEY_VERSIONS:
+            legacy_key = learning_position_key(state, version)
+            if legacy_key is None or legacy_key == current_position_key:
+                continue
+            for action, score in self.get_hints(legacy_key, actions).items():
+                scores.setdefault(action, score)
+        return scores
 
     def get_search_results(
         self, state, legal_actions=None, state_key=None,
@@ -583,15 +659,26 @@ class MoveLearningStore:
         with self._lock:
             cached = self._search_result_cache.get(cache_key)
             if cached is None:
-                rows = self._connection.execute(
-                    "SELECT action_key, depth, score, bound, "
-                    "evaluation_version FROM search_results "
-                    "WHERE position_key = ? AND evaluation_version = ? "
-                    "ORDER BY depth DESC, last_seen DESC",
-                    cache_key,
-                ).fetchall()
                 cached = {}
-                for action_key, depth, score, bound, evaluation_version in rows:
+                if self._legacy_search_results:
+                    cutoff_rows = self._connection.execute(
+                        "SELECT action_key, depth, score, bound, "
+                        "evaluation_version FROM search_results "
+                        "WHERE position_key = ? AND evaluation_version = ? "
+                        "ORDER BY depth DESC, last_seen DESC",
+                        cache_key,
+                    ).fetchall()
+                elif self._supports_search_results:
+                    cutoff_rows = self._connection.execute(
+                        "SELECT action_key, depth, score, bound, "
+                        "evaluation_version FROM search_cutoffs "
+                        "WHERE position_key = ? AND evaluation_version = ? "
+                        "ORDER BY depth DESC, last_seen DESC",
+                        cache_key,
+                    ).fetchall()
+                else:
+                    cutoff_rows = ()
+                for action_key, depth, score, bound, evaluation_version in cutoff_rows:
                     try:
                         action = decode_action(action_key)
                     except (ValueError, TypeError, json.JSONDecodeError) as error:
@@ -605,7 +692,35 @@ class MoveLearningStore:
                         score,
                         bound,
                         evaluation_version,
+                        "cutoff",
                     ))
+                if self._supports_best_moves:
+                    best_rows = self._connection.execute(
+                        "SELECT action_key, depth, score, evaluation_version "
+                        "FROM best_moves WHERE position_key = ? "
+                        "AND evaluation_version = ?",
+                        cache_key,
+                    ).fetchall()
+                    for action_key, depth, score, evaluation_version in best_rows:
+                        try:
+                            action = decode_action(action_key)
+                        except (
+                            ValueError, TypeError, json.JSONDecodeError,
+                        ) as error:
+                            raise sqlite3.DatabaseError(
+                                "Invalid persistent best action: {}".format(
+                                    error)
+                            ) from None
+                        cached.setdefault(action, []).append(
+                            SearchResultUpdate(
+                                position_key,
+                                action_key,
+                                depth,
+                                score,
+                                "exact",
+                                evaluation_version,
+                                "best",
+                            ))
                 cached = {
                     action: tuple(records)
                     for action, records in cached.items()
@@ -705,7 +820,7 @@ class MoveLearningStore:
             return
         if self.read_only or self._connection is None:
             raise RuntimeError("The move-learning store is not writable")
-        if not self._supports_search_results:
+        if not self._supports_search_results or not self._supports_best_moves:
             raise sqlite3.DatabaseError(
                 "The move-learning database does not support search results")
         with self._lock:
@@ -745,38 +860,66 @@ class MoveLearningStore:
                     or update.evaluation_version
                     != _SEARCH_RESULT_EVALUATION_VERSION
                     or update.bound not in ("exact", "lower", "upper")
+                    or update.kind not in ("best", "cutoff")
                     or not math.isfinite(update.score)
                 ):
                     continue
-                connection.execute(
-                    """
-                    INSERT INTO search_results (
-                        position_key, action_key, depth, score, bound,
-                        evaluation_version, last_seen
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (
-                        position_key, action_key, depth,
-                        evaluation_version, bound
-                    ) DO UPDATE SET
-                        score = CASE
-                            WHEN excluded.bound = 'lower'
-                                THEN MAX(search_results.score, excluded.score)
-                            WHEN excluded.bound = 'upper'
-                                THEN MIN(search_results.score, excluded.score)
-                            ELSE excluded.score
-                        END,
-                        last_seen = excluded.last_seen
-                    """,
-                    (
-                        update.position_key,
-                        update.action_key,
-                        update.depth,
-                        update.score,
-                        update.bound,
-                        update.evaluation_version,
-                        now,
-                    ),
-                )
+                if update.kind == "best":
+                    if update.bound != "exact":
+                        continue
+                    connection.execute(
+                        """
+                        INSERT INTO best_moves (
+                            position_key, action_key, depth, score,
+                            evaluation_version, last_seen
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (position_key, evaluation_version)
+                        DO UPDATE SET
+                            action_key = excluded.action_key,
+                            depth = excluded.depth,
+                            score = excluded.score,
+                            last_seen = excluded.last_seen
+                        WHERE excluded.depth >= best_moves.depth
+                        """,
+                        (
+                            update.position_key,
+                            update.action_key,
+                            update.depth,
+                            update.score,
+                            update.evaluation_version,
+                            now,
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO search_cutoffs (
+                            position_key, action_key, depth, score, bound,
+                            evaluation_version, last_seen
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (
+                            position_key, action_key, depth,
+                            evaluation_version, bound
+                        ) DO UPDATE SET
+                            score = CASE
+                                WHEN excluded.bound = 'lower'
+                                    THEN MAX(search_cutoffs.score, excluded.score)
+                                WHEN excluded.bound = 'upper'
+                                    THEN MIN(search_cutoffs.score, excluded.score)
+                                ELSE excluded.score
+                            END,
+                            last_seen = excluded.last_seen
+                        """,
+                        (
+                            update.position_key,
+                            update.action_key,
+                            update.depth,
+                            update.score,
+                            update.bound,
+                            update.evaluation_version,
+                            now,
+                        ),
+                    )
             connection.execute("COMMIT")
         except sqlite3.Error:
             if connection.in_transaction:
@@ -784,14 +927,12 @@ class MoveLearningStore:
             raise
 
     def _search_result_row_count(self):
-        count = self._connection.execute(
-            "SELECT COUNT(*) FROM move_hints"
-        ).fetchone()[0]
-        if self._supports_search_results:
-            count += self._connection.execute(
-                "SELECT COUNT(*) FROM search_results"
+        return sum(
+            self._connection.execute(
+                "SELECT COUNT(*) FROM {}".format(table)
             ).fetchone()[0]
-        return count
+            for table in self._storage_tables()
+        )
 
     def _write_updates(self, updates):
         connection = self._connection

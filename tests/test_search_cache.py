@@ -422,16 +422,17 @@ def test_persistent_soft_cutoff_reuses_good_line_and_skips_proven_bad_move(
         GameAction(GameActionType.MOVE, 1, 2),
         GameAction(GameActionType.MOVE, 1, 3),
     ]
-    records = {
-        action: (
+    records = {}
+    for action, score in zip(actions, scores):
+        mover_score = score if turn == COLOR.BLACK else -score
+        records[action] = (
             SimpleNamespace(
                 depth=1,
                 bound="exact",
                 score=score,
+                kind="cutoff" if mover_score < -20 else "best",
             ),
         )
-        for action, score in zip(actions, scores)
-    }
     evaluated = []
     monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
     monkeypatch.setattr(
@@ -480,8 +481,10 @@ def test_all_persistently_bad_moves_reactivates_best_as_fresh_fallback(
         GameAction(GameActionType.MOVE, 1, 3),
     ]
     records = {
-        actions[0]: (SimpleNamespace(depth=1, bound="exact", score=-25.0),),
-        actions[1]: (SimpleNamespace(depth=1, bound="exact", score=-40.0),),
+        actions[0]: (SimpleNamespace(
+            depth=1, bound="exact", score=-25.0, kind="cutoff"),),
+        actions[1]: (SimpleNamespace(
+            depth=1, bound="exact", score=-40.0, kind="cutoff"),),
     }
     evaluated = []
     monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
@@ -530,7 +533,8 @@ def test_persisted_upper_bound_skips_action_only_after_alpha_proves_it_cannot_wi
         GameAction(GameActionType.MOVE, 1, 3),
     ]
     records = {
-        actions[0]: (SimpleNamespace(depth=1, bound="upper", score=-5.0),),
+        actions[0]: (SimpleNamespace(
+            depth=1, bound="upper", score=-5.0, kind="cutoff"),),
     }
     evaluated = []
     monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
@@ -574,7 +578,8 @@ def test_white_persistent_lower_bound_skips_action_after_beta_is_good_enough(
         GameAction(GameActionType.MOVE, 1, 3),
     ]
     records = {
-        actions[0]: (SimpleNamespace(depth=1, bound="lower", score=25.0),),
+        actions[0]: (SimpleNamespace(
+            depth=1, bound="lower", score=25.0, kind="cutoff"),),
     }
     evaluated = []
     monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)

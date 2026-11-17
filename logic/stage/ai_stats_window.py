@@ -7,14 +7,17 @@ from models.ai_search_stats import AISearchStats
 
 
 class AIStatsWindow:
+    _MINIMUM_SIZE = (700, 480)
+
     def __init__(self):
         self._window = Window(
             "Statystyki AI",
             size=(700, 720),
             position=(0, 0),
-            borderless=True,
+            borderless=False,
         )
-        self._dragging = False
+        self._window.resizable = True
+        self._window.minimum_size = self._MINIMUM_SIZE
         self._worker_scroll = 0
         self._title_font = pygame.font.SysFont(None, 29)
         self._body_font = pygame.font.SysFont(None, 21)
@@ -28,15 +31,7 @@ class AIStatsWindow:
             self.close()
             return True
 
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            self._dragging = True
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            self._dragging = False
-        elif event.type == pygame.MOUSEMOTION and self._dragging:
-            x, y = self._window.position
-            dx, dy = event.rel
-            self._window.position = (x + dx, y + dy)
-        elif event.type == pygame.MOUSEWHEEL:
+        if event.type == pygame.MOUSEWHEEL:
             self._worker_scroll = max(0, self._worker_scroll - event.y * 2)
         return False
 
@@ -330,6 +325,8 @@ class AIStatsWindow:
         workers = sorted(stats.workers, key=self._worker_sort_key)
         total_workers = len(workers)
         surface_height = surface.get_size()[1]
+        column_positions = self._worker_column_positions(
+            surface.get_size()[0])
         first_worker_y = 396 + y_offset
         visible_workers = max(1, (surface_height - first_worker_y - 40) // 18)
         self._worker_scroll = min(
@@ -347,13 +344,9 @@ class AIStatsWindow:
             (16, 350 + y_offset),
         )
 
-        for header, x in (
-            ("Worker", 16),
-            ("Stan", 236),
-            ("Tryb", 350),
-            ("Root", 470),
-            ("Głęb.", 580),
-            ("DB", 640),
+        for header, x in zip(
+            ("Worker", "Stan", "Tryb", "Root", "Głęb.", "DB"),
+            column_positions,
         ):
             surface.blit(
                 self._detail_font.render(header, True, (160, 160, 160)),
@@ -382,24 +375,24 @@ class AIStatsWindow:
                         name += " PID {}".format(worker.pid)
                 y = first_worker_y + visible_index * 18
                 worker_values = (
-                    (name, 16, (200, 200, 200)),
+                    (name, column_positions[0], (200, 200, 200)),
                     (
                         worker.state,
-                        236,
+                        column_positions[1],
                         state_colors.get(worker.state, (200, 200, 200)),
                     ),
-                    (worker.mode, 350, (220, 220, 220)),
-                    (worker.root, 470, (220, 220, 220)),
+                    (worker.mode, column_positions[2], (220, 220, 220)),
+                    (worker.root, column_positions[3], (220, 220, 220)),
                     (
                         str(worker.search_depth)
                         if worker.mode == "search"
                         and worker.search_depth is not None else "-",
-                        580,
+                        column_positions[4],
                         (220, 220, 220),
                     ),
                     (
                         "czyta" if worker.learning_database_reading else "-",
-                        640,
+                        column_positions[5],
                         (255, 190, 110)
                         if worker.learning_database_reading
                         else (220, 220, 220),
@@ -419,6 +412,23 @@ class AIStatsWindow:
             )
 
     @staticmethod
+    def _worker_column_positions(surface_width):
+        baseline_width = 700
+        left_padding = 16
+        right_padding = 16
+        available_width = surface_width - left_padding - right_padding
+        baseline_content_width = baseline_width - left_padding - right_padding
+        baseline_positions = (16, 236, 350, 470, 580, 640)
+        return tuple(
+            left_padding + round(
+                (position - left_padding)
+                * available_width
+                / baseline_content_width
+            )
+            for position in baseline_positions
+        )
+
+    @staticmethod
     def _worker_sort_key(worker):
         if worker.state == "busy":
             mode_order = {"search": 0, "prepare": 1}
@@ -436,5 +446,4 @@ class AIStatsWindow:
         if self._window is not None:
             self._window.destroy()
             self._window = None
-        self._dragging = False
         self._worker_scroll = 0

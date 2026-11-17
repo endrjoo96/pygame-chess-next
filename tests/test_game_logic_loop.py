@@ -8,6 +8,7 @@ from constants.piece_type import PIECE_TYPE
 from constants.pos import POS, id_to_xy
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
+from logic.stage.action_animation import ActionAnimation, PieceMotion
 from logic.stage.game_logic_loop import GameLogicLoop
 from models.chess_pieces import Piece
 from models.enchantment_cards import EnchantmentCardType
@@ -30,6 +31,10 @@ class FakeCardsProcessor:
         """Dodaje kartę do testowej talii i sygnalizuje powodzenie."""
         self.decks[color].append(card)
         return True
+
+    def reset_decks(self):
+        for deck in self.decks.values():
+            deck.clear()
 
 
 class FakeCaptureProcessor:
@@ -76,6 +81,8 @@ def make_game(card_type=None, uses=None):
         cards.append(card_type.create(uses=uses))
 
     game = GameLogicLoop.__new__(GameLogicLoop)
+    game.black_ai = None
+    game.seed = 23
     game.current_turn = COLOR.WHITE
     game.selected_piece_position = 0
     game.moves = []
@@ -109,6 +116,9 @@ def make_game(card_type=None, uses=None):
     game._ai_active_generation = None
     game._ponder_future = None
     game._ponder_cancel_event = Event()
+    game._action_animation = None
+    game._position_evaluation = 0.0
+    game._position_evaluation_stale = True
     game.rng = random.Random(23)
     return game
 
@@ -133,6 +143,150 @@ def test_player_can_apply_buff_and_select_its_new_piece_move():
     assert [source_x - 1, source_y] in game.moves
     assert [source_x + 1, source_y] in game.moves
     game._ai_executor.shutdown(wait=True)
+
+
+def test_position_evaluation_is_cached_and_refreshed_after_action(monkeypatch):
+    game = make_game()
+    game.pieces_locations[POS.E1.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.KING)
+    game.pieces_locations[POS.E8.value] = Piece(
+        COLOR.BLACK, PIECE_TYPE.KING)
+    game.pieces_locations[POS.E2.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.PAWN)
+    score_values = iter((1.25, -0.75))
+    evaluated_states = []
+
+    def evaluate(evaluated_state):
+        evaluated_states.append(evaluated_state.cache_key())
+        return next(score_values)
+
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.ChessAI.evaluate", evaluate)
+
+    assert game.position_evaluation == -1.25
+    assert game.position_evaluation == -1.25
+    assert len(evaluated_states) == 1
+
+    state = GameState.from_game(game)
+    action = next(
+        action
+        for action in GameSimulation.available_actions(state)
+        if (
+            action.action_type == GameActionType.MOVE
+            and action.source == POS.E2.value
+        )
+    )
+    game._GameLogicLoop__apply_domain_action(action)
+
+    assert game.position_evaluation == 0.75
+    assert len(evaluated_states) == 2
+
+
+def test_position_evaluation_cache_is_invalidated_by_reset(monkeypatch):
+    game = make_game()
+    scores = iter((1.0, 2.0))
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.ChessAI.evaluate",
+        lambda state: next(scores),
+    )
+    monkeypatch.setattr(
+        game, "_GameLogicLoop__schedule_next_board_card", lambda: None)
+
+    assert game.position_evaluation == -1.0
+    game.reset()
+
+    assert game._position_evaluation_stale
+    assert game.position_evaluation == -2.0
+    game._ai_executor.shutdown(wait=True)
+
+
+def test_domain_action_starts_a_piece_animation_when_configured(monkeypatch):
+    game = make_game()
+    game.pieces_locations[POS.E1.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.KING)
+    game.pieces_locations[POS.E8.value] = Piece(
+        COLOR.BLACK, PIECE_TYPE.KING)
+    game.pieces_locations[POS.E2.value] = Piece(
+        COLOR.WHITE, PIECE_TYPE.PAWN)
+    game.context = SimpleNamespace(
+        chessboard_coordinates=[
+            [(x * 80, y * 80) for y in range(8)]
+            for x in range(8)
+        ],
+    )
+    game.chess_pieces = object()
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.UI_ACTION_ANIMATION_DURATION_MS", 300)
+    monkeypatch.setattr(
+        "logic.stage.action_animation.pygame.time.get_ticks", lambda: 0)
+    state = GameState.from_game(game)
+    action = next(
+        action
+        for action in GameSimulation.available_actions(state)
+        if (
+            action.action_type == GameActionType.MOVE
+            and action.source == POS.E2.value
+        )
+    )
+
+    game._GameLogicLoop__apply_domain_action(action)
+
+    assert game._action_animation is not None
+    assert game._action_animation.duration_ms == 300
+    assert game._action_animation.hidden_piece_positions() == (
+        action.destination,)
+
+
+def test_player_input_is_blocked_while_action_animation_is_active(monkeypatch):
+    game = make_game()
+    monkeypatch.setattr(
+        "logic.stage.action_animation.pygame.time.get_ticks", lambda: 100)
+    game._action_animation = ActionAnimation(
+        300,
+        (PieceMotion("white_pawn", (0, 0), (80, 0), POS.A1.value),),
+        started_at=0,
+    )
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.input_processor.get_clicked_chessboard_field_id",
+        lambda: (_ for _ in ()).throw(AssertionError("input should be blocked")),
+    )
+
+    game.process_player_turn()
+
+
+def test_ai_thinking_blurs_and_reuses_the_background(monkeypatch):
+    import pygame
+
+    game = GameLogicLoop.__new__(GameLogicLoop)
+    game.screen = pygame.Surface((160, 120))
+    game.context = SimpleNamespace(comic_sans_font=None)
+    game._ai_thinking_background = None
+    blurred_sources = []
+
+    def blur(source):
+        blurred_sources.append(source.copy())
+        background = pygame.Surface(source.get_size())
+        background.fill((80, 90, 100))
+        return background
+
+    class FakeFont:
+        @staticmethod
+        def render(_text, _antialias, _color):
+            return pygame.Surface((80, 20), pygame.SRCALPHA)
+
+    monkeypatch.setattr("logic.stage.game_logic_loop.blur_surface", blur)
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.SysFont",
+        lambda *_args, **_kwargs: FakeFont(),
+    )
+
+    game.draw_ai_thinking_overlay()
+    game.screen.fill((10, 20, 30))
+    game.draw_ai_thinking_overlay()
+
+    assert len(blurred_sources) == 1
+    assert blurred_sources[0].get_at((0, 0))[:3] != (10, 20, 30)
+    assert game._ai_thinking_background.get_size() == (160, 120)
 
 
 def click_board(game, position, monkeypatch):

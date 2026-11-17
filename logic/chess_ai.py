@@ -20,6 +20,7 @@ from logic.move_learning import (
     MoveLearningStore,
     learning_position_key,
     default_move_learning_path,
+    has_collectible_board_card,
     is_learning_position_eligible,
     is_plain_move,
     search_result_position_key,
@@ -44,6 +45,7 @@ from utils.run_config import (
     AI_SEARCH_CACHE_ENABLED,
     AI_SEARCH_CACHE_MAX_ENTRIES,
     AI_SEARCH_LEARNING_ENABLED,
+    AI_SEARCH_LEARNING_DATABASE_PATH,
     AI_SEARCH_LEARNING_MAX_FILE_SIZE,
     AI_SEARCH_LEARNING_SAVE_ENABLED,
     AI_SEARCH_LEARNING_SOFT_CUTOFF_THRESHOLD,
@@ -439,7 +441,8 @@ def _initialize_search_worker(
     if learning_enabled:
         try:
             _WORKER_MOVE_LEARNING_STORE = MoveLearningStore(
-                learning_database_path or default_move_learning_path(),
+                learning_database_path or default_move_learning_path(
+                    AI_SEARCH_LEARNING_DATABASE_PATH),
                 learning_max_file_size_bytes,
                 read_only=True,
             )
@@ -574,9 +577,6 @@ def _evaluate_root_action(
                 if reliable and score < root_alpha
                 else Bound.EXACT if reliable else None
             )
-            if reliable:
-                worker._record_search_result(
-                    state, action, depth, score, root_bound)
         except _SearchTimeout:
             score = None
             reliable = False
@@ -809,7 +809,8 @@ class ChessAI:
         )
         global _WORKER_MOVE_LEARNING_STORE
         self.config = replace(config, cpu_worker_usage=cpu_worker_usage)
-        self._learning_database_path = default_move_learning_path()
+        self._learning_database_path = default_move_learning_path(
+            AI_SEARCH_LEARNING_DATABASE_PATH)
         self._learning_database_size_error_reported = False
         self._move_learning_store = None
         self._learning_active = False
@@ -1133,6 +1134,7 @@ class ChessAI:
             not self.config.cache_enabled
             or not self.config.learning_enabled
             or store is None
+            or has_collectible_board_card(state)
         ):
             return {}
         is_process_worker = _WORKER_STATUS_INDEX is not None
@@ -1158,6 +1160,7 @@ class ChessAI:
             state_cache_key is None
             or not self.config.learning_enabled
             or store is None
+            or has_collectible_board_card(state)
         ):
             return None
         try:
@@ -1168,6 +1171,7 @@ class ChessAI:
 
     def _record_search_result(
         self, state, action, depth, score, bound, position_key=None,
+        kind="cutoff",
     ):
         store = self._move_learning_store or _WORKER_MOVE_LEARNING_STORE
         if (
@@ -1177,6 +1181,7 @@ class ChessAI:
             or store is None
             or action is None
             or not isinstance(state, GameState)
+            or has_collectible_board_card(state)
         ):
             return
         try:
@@ -1184,10 +1189,23 @@ class ChessAI:
                 position_key = search_result_position_key(state)
             if position_key is not None:
                 self._search_result_updates.record(
-                    position_key, action, depth, score, bound)
+                    position_key, action, depth, score, bound, kind)
         except (TypeError, ValueError) as error:
             log_error("Unable to record persistent search result: {}".format(
                 error))
+
+    def _record_best_search_result(
+        self, state, action, depth, score, position_key=None,
+    ):
+        self._record_search_result(
+            state,
+            action,
+            depth,
+            score,
+            Bound.EXACT,
+            position_key,
+            kind="best",
+        )
 
     def _merge_search_result_updates(self, updates):
         if (
@@ -1783,15 +1801,19 @@ class ChessAI:
                     action: result
                     for action, records in persistent_root_results.items()
                     for result in records
-                    if result.depth == depth and result.bound == Bound.EXACT.value
+                    if (
+                        result.depth == depth
+                        and result.kind == "best"
+                        and result.bound == Bound.EXACT.value
+                    )
                 }
                 bad_root_actions = {
                     action
                     for action, records in persistent_root_results.items()
                     if any(
-                        result.depth == depth
-                        and self._is_persistently_soft_cutoff(state, result)
-                        for result in records
+                        self._is_persistently_soft_cutoff(state, result)
+                        for result in self._search_results_at_depth(
+                            records, depth)
                     )
                 }
                 has_recommended_root_action = any(
@@ -1811,9 +1833,10 @@ class ChessAI:
                             max(
                                 (
                                     result.score
-                                    for result in persistent_root_results[action]
-                                    if result.depth == depth
-                                    and self._is_persistently_soft_cutoff(
+                                    for result
+                                    in self._search_results_at_depth(
+                                        persistent_root_results[action], depth)
+                                    if self._is_persistently_soft_cutoff(
                                         state, result)
                                 ),
                                 key=lambda score: self._mover_relative_score(
@@ -1821,6 +1844,23 @@ class ChessAI:
                             ),
                         ),
                     )
+                    for action, records in persistent_root_results.items():
+                        if action == fallback_root_action:
+                            continue
+                        cutoff_exact = next(
+                            (
+                                result
+                                for result in self._search_results_at_depth(
+                                    records, depth)
+                                if result.kind == "cutoff"
+                                and result.bound == Bound.EXACT.value
+                                and self._is_persistently_soft_cutoff(
+                                    state, result)
+                            ),
+                            None,
+                        )
+                        if cutoff_exact is not None:
+                            exact_root_results[action] = cutoff_exact
                 root_alpha = max(
                     (
                         result.score
@@ -1912,12 +1952,41 @@ class ChessAI:
                         continue
                     if action == fallback_root_action:
                         continue
+                    cached_soft_cutoff = next(
+                        (
+                            result for result
+                            in self._search_results_at_depth(
+                                persistent_root_results.get(action, ()), depth)
+                            if result.kind == "cutoff"
+                            and result.bound == Bound.EXACT.value
+                            and self._is_persistently_soft_cutoff(
+                                state, result)
+                        ),
+                        None,
+                    )
+                    if (
+                        cached_soft_cutoff is not None
+                        and self._mover_relative_score(state, root_alpha)
+                            >= self.config.learning_soft_cutoff_threshold
+                    ):
+                        precompleted_root_actions.add(action_index)
+                        self._cache_score_hits += 1
+                        if self._metrics is not None:
+                            self._metrics.add("cache_score_hits", 1)
+                        record_result(action_index, _RootEvaluation(
+                            cached_soft_cutoff.score,
+                            0,
+                            bound=Bound.UPPER,
+                            reliable=True,
+                        ))
+                        continue
                     cached_upper_bound = next(
                         (
                             result for result
-                            in persistent_root_results.get(action, ())
-                            if result.depth == depth
-                            and result.bound == Bound.UPPER.value
+                            in self._search_results_at_depth(
+                                persistent_root_results.get(action, ()), depth)
+                            if result.bound == Bound.UPPER.value
+                            and result.kind == "cutoff"
                             and result.score < root_alpha
                         ),
                         None,
@@ -2044,22 +2113,6 @@ class ChessAI:
                     break
                 self._merge_search_result_updates(
                     iteration_search_result_updates)
-                for action_index, action in enumerate(ordered_actions):
-                    result = outcomes.get(action_index)
-                    if (
-                        result is not None
-                        and result.score is not None
-                        and result.reliable
-                        and result.bound is not None
-                    ):
-                        self._record_search_result(
-                            state,
-                            action,
-                            depth,
-                            result.score,
-                            result.bound,
-                            persistent_root_key,
-                        )
                 depth_scores = [
                     (completed_scores[index], action)
                     for index, action in enumerate(ordered_actions)
@@ -2069,6 +2122,38 @@ class ChessAI:
                 best_score, best_action = max(
                     depth_scores,
                     key=lambda item: (item[0], -action_order[item[1]]))
+                self._record_best_search_result(
+                    state,
+                    best_action,
+                    depth,
+                    best_score,
+                    persistent_root_key,
+                )
+                for action_index, action in enumerate(ordered_actions):
+                    if action == best_action:
+                        continue
+                    result = outcomes.get(action_index)
+                    if (
+                        result is None
+                        or result.score is None
+                        or not result.reliable
+                        or result.bound is None
+                    ):
+                        continue
+                    if (
+                        result.bound != Bound.EXACT
+                        or self._mover_relative_score(state, result.score)
+                        < self.config.learning_soft_cutoff_threshold
+                    ):
+                        self._record_search_result(
+                            state,
+                            action,
+                            depth,
+                            result.score,
+                            result.bound,
+                            persistent_root_key,
+                            kind="cutoff",
+                        )
                 if depth == 1:
                     self._record_move_learning(
                         state, best_action, "preferred")
@@ -2241,6 +2326,7 @@ class ChessAI:
         root_order_keys = []
         root_branches = []
         task_groups = {}
+        task_group_search_position_keys = {}
         task_count = 0
         next_expansion_dispatch = 0
         next_task = 0
@@ -2266,7 +2352,20 @@ class ChessAI:
                     GameSimulation.available_actions(root_state),
                     root_learning_eligible[root_index],
                 )
+                persistent_position_key = (
+                    self._persistent_search_position_key(root_state, root_key)
+                )
+                persistent_results = self._persistent_search_results(
+                    root_state, actions, persistent_position_key)
+                actions = self._order_actions_with_persistent_results(
+                    root_state,
+                    actions,
+                    persistent_results,
+                    self.config.max_depth,
+                )
                 task_groups[root_index] = (root_key, tuple(actions))
+                task_group_search_position_keys[root_index] = (
+                    self._persistent_search_position_key(root_state, root_key))
                 task_count += len(actions)
             root_key, actions = task_groups[root_index]
             if root_index not in discovered_root_indexes:
@@ -2543,6 +2642,7 @@ class ChessAI:
                                 "in_flight": False,
                                 "terminal": False,
                                 "search_result_updates": [],
+                                "root_action_results": [],
                             })
                             active_branches.add(root_index)
                             queue_branch(root_index)
@@ -2571,6 +2671,8 @@ class ChessAI:
                     branch = root_branches[root_index]
                     branch["search_result_updates"].extend(
                         getattr(result, "search_result_updates", ()))
+                    branch["root_action_results"].append((
+                        action, result.score, result.bound, result.reliable))
                     if (
                         result.bound == Bound.UPPER
                         and result.reliable
@@ -2600,6 +2702,47 @@ class ChessAI:
                         self._merge_search_result_updates(
                             branch["search_result_updates"])
                         branch["search_result_updates"] = []
+                        if branch["depth_action_scores"]:
+                            preferred_action = max(
+                                branch["depth_action_scores"],
+                                key=branch["depth_action_scores"].get,
+                            )
+                            best_score = branch["depth_action_scores"][
+                                preferred_action]
+                            root_state, _, _ = task_group_for(root_index)
+                            self._record_best_search_result(
+                                root_state,
+                                preferred_action,
+                                search_depth,
+                                best_score,
+                                task_group_search_position_keys[root_index],
+                            )
+                            for (
+                                candidate_action,
+                                candidate_score,
+                                candidate_bound,
+                                candidate_reliable,
+                            ) in branch["root_action_results"]:
+                                if (
+                                    not candidate_reliable
+                                    or candidate_action == preferred_action
+                                ):
+                                    continue
+                                if (
+                                    candidate_bound != Bound.EXACT
+                                    or self._mover_relative_score(
+                                        root_state, candidate_score)
+                                    < self.config.learning_soft_cutoff_threshold
+                                ):
+                                    self._record_search_result(
+                                        root_state,
+                                        candidate_action,
+                                        search_depth,
+                                        candidate_score,
+                                        candidate_bound,
+                                        task_group_search_position_keys[root_index],
+                                        kind="cutoff",
+                                    )
                         if search_depth == 1 and branch["depth_action_scores"]:
                             preferred_action = max(
                                 branch["depth_action_scores"],
@@ -2632,6 +2775,7 @@ class ChessAI:
                             branch["next_action"] = 0
                             branch["root_alpha"] = -math.inf
                             branch["depth_action_scores"] = {}
+                            branch["root_action_results"] = []
                             queue_branch(root_index)
                         update_depth_progress()
 
@@ -2847,13 +2991,22 @@ class ChessAI:
     def _search_result_at_depth(records, depth):
         matches = ChessAI._search_results_at_depth(records, depth)
         return next(
-            (result for result in matches if result.bound == Bound.EXACT.value),
+            (
+                result for result in matches
+                if result.kind == "best"
+                and result.bound == Bound.EXACT.value
+            ),
             matches[0] if matches else None,
         )
 
     @staticmethod
     def _search_results_at_depth(records, depth):
-        return tuple(result for result in records if result.depth == depth)
+        matches = tuple(result for result in records if result.depth == depth)
+        best = next(
+            (result for result in matches if result.kind == "best"),
+            None,
+        )
+        return (best,) if best is not None else matches
 
     def _order_actions_with_persistent_results(
         self, state, actions, results, depth,
@@ -2879,6 +3032,7 @@ class ChessAI:
                     records,
                     key=lambda item: (
                         item.depth,
+                        item.kind == "best",
                         item.bound == Bound.EXACT.value,
                     ),
                 )
@@ -3024,6 +3178,7 @@ class ChessAI:
         best_action = None
         cutoff_action = None
         reliable = True
+        completed_action_results = []
         for action_index, action in enumerate(actions):
             persisted_records = current_depth_results.get(action, ())
             soft_cutoff_result = next(
@@ -3049,33 +3204,54 @@ class ChessAI:
             if (
                 persisted_result is not None
                 and persisted_result.bound == Bound.EXACT.value
+                and (
+                    persisted_result.kind == "best"
+                    or (
+                        not has_recommended_action
+                        and action != fallback_action
+                    )
+                )
             ):
                 action_value = persisted_result.score
                 child_reliable = True
+                completed_action_results.append(
+                    (action, action_value, Bound.EXACT))
             else:
                 skip_persisted_action = False
                 for result in persisted_records:
                     if (
-                        maximizing
-                        and result.bound == Bound.UPPER.value
-                        and best_action is not None
-                        and result.score <= alpha
-                    ) or (
-                        not maximizing
-                        and result.bound == Bound.LOWER.value
-                        and best_action is not None
-                        and result.score >= beta
+                        result.kind == "cutoff"
+                        and (
+                            (
+                                maximizing
+                                and result.bound == Bound.UPPER.value
+                                and best_action is not None
+                                and result.score <= alpha
+                            )
+                            or (
+                                not maximizing
+                                and result.bound == Bound.LOWER.value
+                                and best_action is not None
+                                and result.score >= beta
+                            )
+                        )
                     ):
                         skip_persisted_action = True
                         break
                     if (
-                        maximizing
-                        and result.bound == Bound.LOWER.value
-                        and result.score >= beta
-                    ) or (
-                        not maximizing
-                        and result.bound == Bound.UPPER.value
-                        and result.score <= alpha
+                        result.kind == "cutoff"
+                        and (
+                            (
+                                maximizing
+                                and result.bound == Bound.LOWER.value
+                                and result.score >= beta
+                            )
+                            or (
+                                not maximizing
+                                and result.bound == Bound.UPPER.value
+                                and result.score <= alpha
+                            )
+                        )
                     ):
                         cutoff_result = result
                         break
@@ -3084,6 +3260,8 @@ class ChessAI:
                 if cutoff_result is not None:
                     action_value = cutoff_result.score
                     child_reliable = True
+                    completed_action_results.append(
+                        (action, action_value, Bound(cutoff_result.bound)))
                 else:
                     persisted_result = None
             if persisted_result is None and cutoff_result is None:
@@ -3127,14 +3305,8 @@ class ChessAI:
                         if action_value >= beta_before
                         else Bound.EXACT
                     )
-                    self._record_search_result(
-                        state,
-                        action,
-                        depth,
-                        action_value,
-                        action_bound,
-                        persistent_position_key,
-                    )
+                    completed_action_results.append(
+                        (action, action_value, action_bound))
             reliable = reliable and child_reliable
             if best_action is None or (
                 action_value > value if maximizing else action_value < value
@@ -3159,6 +3331,39 @@ class ChessAI:
                 bound = Bound.LOWER
             else:
                 bound = Bound.EXACT
+        if bound == Bound.EXACT:
+            self._record_best_search_result(
+                state, best_action, depth, value, persistent_position_key)
+        for action, action_value, action_bound in completed_action_results:
+            if bound == Bound.EXACT and action == best_action:
+                continue
+            if (
+                action_bound != Bound.EXACT
+                or self._mover_relative_score(state, action_value)
+                    < self.config.learning_soft_cutoff_threshold
+            ):
+                self._record_search_result(
+                    state,
+                    action,
+                    depth,
+                    action_value,
+                    action_bound,
+                    persistent_position_key,
+                    kind="cutoff",
+                )
+        if (
+            bound in (Bound.LOWER, Bound.UPPER)
+            and cutoff_action is not None
+        ):
+            self._record_search_result(
+                state,
+                cutoff_action,
+                depth,
+                value,
+                bound,
+                persistent_position_key,
+                kind="cutoff",
+            )
         if bound == Bound.EXACT:
             self._record_move_learning(
                 state, best_action, "preferred",

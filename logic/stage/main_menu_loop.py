@@ -1,6 +1,7 @@
 import os
 import textwrap
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from threading import Event, Lock
 from typing import Optional
 
@@ -11,13 +12,18 @@ from pygame.locals import *
 from logic.chess_ai import ChessAI, WorkerPoolInitializationCancelled
 from logic.stage.ai_stats_window import AIStatsWindow
 from logic.stage.game_logic_loop import GameLogicLoop
+from logic.stage.help_screen import HelpScreen
+from logic.stage.position_evaluation_bar import PositionEvaluationBar
 from utils.gamecontext import GameContext
 from utils import utils
 from utils.logging import log_error
-from utils.run_config import resolve_game_seed
+from utils.run_config import RUN_MODE, RunMode, resolve_game_seed
+from utils.visual import blur_surface
 
 
 _WORKER_PROGRESS_DISPLAY_SECONDS = 0.06
+_HELP_DOCUMENT_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "game-help.md")
 
 
 class Game:
@@ -30,6 +36,7 @@ class Game:
         self.play_against_ai = True
         self.chess = None
         self.ai_stats_window: Optional[AIStatsWindow] = None
+        self._help_screen: Optional[HelpScreen] = None
         self.paused = False
         self._pause_background = None
         # flag to set game loop
@@ -46,11 +53,13 @@ class Game:
         self._loading_progress_lock = Lock()
         self._loading_progress = ("", 0, 0)
         self._loading_error = None
+        self._blurred_menu_background = None
 
         # initialize game window
         pygame.display.init()
         # initialize font for text
         pygame.font.init()
+        self.position_evaluation_bar = PositionEvaluationBar()
 
         # create game window
         self.screen = pygame.display.set_mode(
@@ -65,6 +74,7 @@ class Game:
         board_src = os.path.join(self.resources, "board.png")
         # load the chess board image
         self.board_img = pygame.image.load(board_src).convert()
+        self._blurred_menu_background = self._create_blurred_menu_background()
 
         # set window caption
         pygame.display.set_caption(context.window_title)
@@ -75,6 +85,29 @@ class Game:
         pygame.display.flip()
         # set game clock
         self.clock = pygame.time.Clock()
+
+    def _create_blurred_menu_background(self):
+        screen_width, screen_height = self.screen.get_size()
+        board_width, board_height = self.board_img.get_size()
+        scale = max(
+            screen_width / board_width,
+            screen_height / board_height,
+        )
+        scaled_size = (
+            max(screen_width, round(board_width * scale)),
+            max(screen_height, round(board_height * scale)),
+        )
+        scaled_board = pygame.transform.smoothscale(
+            self.board_img, scaled_size)
+        background = pygame.Surface((screen_width, screen_height))
+        background.blit(
+            scaled_board,
+            (
+                (screen_width - scaled_size[0]) // 2,
+                (screen_height - scaled_size[1]) // 2,
+            ),
+        )
+        return blur_surface(background)
 
     def start_game(self):
         """Inicjalizuje geometrię planszy i prowadzi główną pętlę zdarzeń gry."""
@@ -97,7 +130,7 @@ class Game:
         # game loop
         try:
             while self.running:
-                self.clock.tick(20)
+                self.clock.tick(60)
                 pause_was_open = self.paused
                 events = []
                 for event in pygame.event.get():
@@ -125,6 +158,9 @@ class Game:
                     utils.begin_input_frame([])
                 if self._loading or self._loading_error is not None:
                     self.draw_loading_screen()
+                elif self._help_screen is not None:
+                    if self._help_screen.draw(self.screen):
+                        self._help_screen = None
                 elif not self.menu_showed:
                     self.menu()
                 elif self.paused:
@@ -152,6 +188,11 @@ class Game:
     def _handle_app_event(self, event):
         if event.type == pygame.QUIT:
             self.running = False
+        elif self._help_screen is not None:
+            if event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
+                self._help_screen = None
+            elif event.type == pygame.MOUSEWHEEL:
+                self._help_screen.scroll(event.y)
         elif event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
             if (
                 self.menu_showed
@@ -162,7 +203,7 @@ class Game:
                     self.paused = False
                     self._pause_background = None
                 else:
-                    self._pause_background = self.screen.copy()
+                    self._pause_background = blur_surface(self.screen)
                     self.paused = True
             else:
                 self.running = False
@@ -176,6 +217,7 @@ class Game:
             event.type == pygame.KEYDOWN
             and event.key == K_SPACE
             and self.chess is not None
+            and not self.chess.is_action_animation_active
             and not self.paused
         ):
             self.chess.reset()
@@ -183,6 +225,12 @@ class Game:
     def menu(self):
         """Rysuje menu startowe i przełącza do gry po kliknięciu lub Enterze."""
         context = GameContext()
+        background = getattr(self, "_blurred_menu_background", None)
+        if background is not None:
+            self.screen.blit(background, (0, 0))
+        else:
+            self.screen.fill((24, 24, 24))
+
         """method to show game menu"""
         # black color
         black_color = (0, 0, 0)
@@ -235,6 +283,20 @@ class Game:
                 ai_toggle_btn.y + (ai_toggle_btn.height - ai_toggle_label.get_height()) // 2,
             ),
         )
+        help_button = pygame.Rect(0, 0, 100, 36)
+        help_button.center = (
+            self.screen.get_rect().centerx,
+            ai_toggle_btn.bottom + 32,
+        )
+        pygame.draw.rect(self.screen, black_color, help_button)
+        help_label = small_font.render("Pomoc", True, white_color)
+        self.screen.blit(
+            help_label,
+            (
+                help_button.centerx - help_label.get_width() // 2,
+                help_button.centery - help_label.get_height() // 2,
+            ),
+        )
 
         # get pressed keys
         key_pressed = pygame.key.get_pressed()
@@ -251,6 +313,8 @@ class Game:
                 pygame.draw.rect(self.screen, white_color, start_btn, 3)
 
                 self._start_new_game()
+            elif help_button.collidepoint(mouse_coords[0], mouse_coords[1]):
+                self._open_help_screen()
         # check if enter or return key was pressed
         elif key_pressed[K_RETURN]:
             self._start_new_game()
@@ -301,7 +365,8 @@ class Game:
         stats_window: Optional[AIStatsWindow] = None
         try:
             self._loading_future.result()
-            stats_window = AIStatsWindow()
+            if RUN_MODE is not RunMode.PROD:
+                stats_window = AIStatsWindow()
             self.chess = GameLogicLoop(
                 self.screen,
                 black_ai=self._loading_ai,
@@ -387,6 +452,14 @@ class Game:
         with self._loading_progress_lock:
             self._loading_progress = ("", 0, 0)
 
+    def _open_help_screen(self):
+        background = (
+            self._pause_background
+            if self.paused and self._pause_background is not None
+            else getattr(self, "_blurred_menu_background", None)
+        )
+        self._help_screen = HelpScreen(_HELP_DOCUMENT_PATH, background)
+
     def _shutdown_resources(self):
         self._loading_cancel_event.set()
         if self._loading_future is not None:
@@ -431,7 +504,12 @@ class Game:
 
         # call self.chess. something
         winner = self.chess.play_turn()
-        # draw pieces on the chess board
+        self.position_evaluation_bar.draw(
+            self.screen,
+            self.board_img.get_rect(topleft=context.board_starting_point),
+            self.chess.position_evaluation,
+        )
+        # draw pieces and previews above the evaluation bar
         self.chess.draw_pieces()
         if self.chess.is_ai_thinking:
             self.chess.draw_ai_thinking_overlay()
@@ -445,8 +523,9 @@ class Game:
             ("resume", "Wznów grę"),
             ("main_menu", "Zakończ grę i wróć do menu głównego"),
             ("quit", "Wyjdź z gry"),
+            ("help", "Pomoc"),
         ]
-        if (
+        if RUN_MODE is not RunMode.PROD and (
             self.ai_stats_window is not None
             or (self.chess is not None and self.chess.black_ai is not None)
         ):
@@ -560,7 +639,11 @@ class Game:
             self.running = False
             self.paused = False
             self._pause_background = None
+        elif action == "help":
+            self._open_help_screen()
         elif action == "toggle_debug":
+            if RUN_MODE is RunMode.PROD:
+                return
             if self.ai_stats_window is not None:
                 self.ai_stats_window.close()
                 self.ai_stats_window = None

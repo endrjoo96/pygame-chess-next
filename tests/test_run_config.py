@@ -16,6 +16,8 @@ log:
   level: " info "
 game:
   seed: 42
+ui:
+  action_animation_duration_ms: 300
 ai:
   search:
     max_depth: 7
@@ -34,6 +36,7 @@ ai:
     learning:
       enabled: true
       save_enabled: false
+      database_path: data/custom.sqlite3
       max_file_size: 2G
     metrics:
       enabled: true
@@ -62,7 +65,42 @@ ai:
         2 * 1024 ** 3,
         True,
         -20.0,
+        "data/custom.sqlite3",
+        300,
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("DEBUG", run_config.RunMode.DEBUG),
+        ("PROD", run_config.RunMode.PROD),
+        ("DIAG", run_config.RunMode.DIAG),
+    ],
+)
+def test_run_config_accepts_modes(monkeypatch, tmp_path, mode, expected):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: ({"mode": mode}, tmp_path / "run.yaml"),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024)
+
+    assert run_config._load_run_config()[0] == expected
+
+
+def test_run_config_rejects_unknown_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_config,
+        "_load_properties",
+        lambda: ({"mode": "INVALID"}, tmp_path / "run.yaml"),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024)
+
+    with pytest.raises(ValueError, match="expected DEBUG, PROD, or DIAG"):
+        run_config._load_run_config()
 
 
 def test_run_config_rejects_duplicate_yaml_keys(monkeypatch, tmp_path):
@@ -329,7 +367,7 @@ def test_search_metrics_default_to_disabled(monkeypatch, tmp_path):
         run_config, "_load_properties",
         lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
-    assert run_config._load_run_config()[-2] is False
+    assert run_config._load_run_config()[-4] is False
 
 
 def test_ponder_cpu_worker_usage_defaults_to_full_usage(monkeypatch, tmp_path):
@@ -449,7 +487,7 @@ def test_search_metrics_enabled_configuration(
             tmp_path / "run.yaml",
         ),
     )
-    assert run_config._load_run_config()[-2] is expected
+    assert run_config._load_run_config()[-4] is expected
 
 
 @pytest.mark.parametrize(("value", "expected"), [("-20", -20.0), ("1.5", 1.5)])
@@ -466,7 +504,70 @@ def test_learning_soft_cutoff_threshold_configuration(
             tmp_path / "run.yaml",
         ),
     )
-    assert run_config._load_run_config()[-1] == expected
+    assert run_config._load_run_config()[-3] == expected
+
+
+def test_learning_database_path_defaults_to_working_directory_name(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024)
+    assert run_config._load_run_config()[-2] == "move-learning.sqlite3"
+
+
+def test_action_animation_duration_defaults_to_zero(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024)
+
+    assert run_config._load_run_config()[-1] == 0
+
+
+@pytest.mark.parametrize("value", ["0", "300", "2000"])
+def test_action_animation_duration_accepts_inclusive_range(
+    monkeypatch, tmp_path, value,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {
+                "mode": "PROD",
+                "ui.action_animation_duration_ms": value,
+            },
+            tmp_path / "run.yaml",
+        ),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024)
+
+    assert run_config._load_run_config()[-1] == int(value)
+
+
+@pytest.mark.parametrize("value", ["-1", "2001", "1.5", "invalid"])
+def test_action_animation_duration_rejects_invalid_values(
+    monkeypatch, tmp_path, value,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {
+                "mode": "PROD",
+                "ui.action_animation_duration_ms": value,
+            },
+            tmp_path / "run.yaml",
+        ),
+    )
+    monkeypatch.setattr(
+        run_config, "_default_learning_max_file_size", lambda: 16 * 1024)
+
+    with pytest.raises(ValueError, match="ui.action_animation_duration_ms"):
+        run_config._load_run_config()
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "invalid"])
@@ -615,6 +716,7 @@ def test_move_learning_max_file_size_defaults_to_quarter_physical_memory(
         ("ai.search.learning.max_file_size", "1g"),
         ("ai.search.learning.max_file_size", "1k"),
         ("ai.search.learning.max_file_size", "invalid"),
+        ("ai.search.learning.database_path", ""),
     ],
 )
 def test_search_cache_rejects_invalid_configuration(monkeypatch, tmp_path, key, value):

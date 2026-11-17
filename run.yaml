@@ -1,25 +1,28 @@
-mode: PROD
+mode: DIAG
 log:
   level: WARN
 game:
   seed: ""
+ui:
+  action_animation_duration_ms: 300
 ai:
   search:
-    max_depth: 6
+    max_depth: 7
     time_limit_seconds: 20.0
     cpu:
-      workers: 6
+      workers: 16
       worker_usage: 75
     ponder:
       enabled: true
       cpu:
-        worker_usage: 20
+        worker_usage: 35
     cache:
       enabled: true
-      max_entries: 6k
+      max_entries: 8k
     learning:
       enabled: true
       save_enabled: true
+      database_path: move-learning.sqlite3
       max_file_size: 16G
       soft_cutoff_threshold: -20
     metrics:

@@ -25,10 +25,22 @@ class FakeWindow:
         self.title = title
         self.position = position
         self.borderless = borderless
+        self._size = size
+        self.resizable = False
+        self.minimum_size = None
         self.id = 42
         self.surface = RecordingSurface(size)
         self.flip_count = 0
         self.destroyed = False
+
+    @property
+    def size(self):
+        return self._size
+
+    @size.setter
+    def size(self, size):
+        self._size = size
+        self.surface = RecordingSurface(size)
 
     def get_surface(self):
         return self.surface
@@ -141,7 +153,9 @@ def test_stats_window_draws_progress_and_final_results(monkeypatch):
     assert window._window.flip_count == 3
     assert window._window.surface.get_size() == (700, 720)
     assert window._window.position == (0, 0)
-    assert window._window.borderless
+    assert not window._window.borderless
+    assert window._window.resizable
+    assert window._window.minimum_size == (700, 480)
     assert font_sizes == [29, 21, 17]
     blits_by_x = {}
     for (x, y), (_, height) in candidate_blits:
@@ -338,7 +352,9 @@ def test_stats_window_close_event_does_not_match_another_window(monkeypatch):
     assert window._window is None
 
 
-def test_stats_window_can_be_dragged_from_anywhere_in_its_content(monkeypatch):
+def test_stats_window_uses_system_frame_and_does_not_drag_from_content(
+    monkeypatch,
+):
     if not pygame.font.get_init():
         pygame.font.init()
     monkeypatch.setattr("logic.stage.ai_stats_window.Window", FakeWindow)
@@ -365,7 +381,44 @@ def test_stats_window_can_be_dragged_from_anywhere_in_its_content(monkeypatch):
     assert not window.handle_event(start_drag)
     assert window.owns_event(start_drag)
     assert not window.handle_event(move_window)
-    assert window._window.position == (24, -12)
+    assert window._window.position == (0, 0)
     assert not window.handle_event(stop_drag)
-    window.handle_event(move_window)
-    assert window._window.position == (24, -12)
+    assert window._window.borderless is False
+    assert window._window.resizable
+
+
+def test_stats_window_reflows_worker_details_after_system_resize(monkeypatch):
+    import logic.stage.ai_stats_window as ai_stats_window
+
+    rendered_text = []
+
+    class RecordingFont:
+        @staticmethod
+        def render(text, _antialias, color):
+            rendered_text.append(text)
+            image = pygame.Surface((max(1, len(text) * 8), 17), pygame.SRCALPHA)
+            image.fill(color)
+            return image
+
+    monkeypatch.setattr("logic.stage.ai_stats_window.Window", FakeWindow)
+    monkeypatch.setattr(
+        ai_stats_window.pygame.font,
+        "SysFont",
+        lambda *args, **kwargs: RecordingFont(),
+    )
+    window = AIStatsWindow()
+    workers = tuple(
+        AIWorkerStats(worker_id, "idle")
+        for worker_id in range(1, 29)
+    )
+    stats = AISearchStats(workers=workers)
+    window._window.size = (1000, 920)
+
+    window.draw(stats)
+    assert "Workery (1-26 z 28)" in rendered_text
+    assert "///" not in rendered_text
+    root_header = next(
+        position for position, _ in window._window.surface.blits
+        if position[1] == 374 and position[0] > 600
+    )
+    assert root_header[0] == 674

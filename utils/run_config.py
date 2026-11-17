@@ -56,6 +56,7 @@ _UniqueKeySafeLoader.add_constructor(
 class RunMode(Enum):
     DEBUG = "DEBUG"
     PROD = "PROD"
+    DIAG = "DIAG"
 
 
 class LogLevel(IntEnum):
@@ -167,7 +168,7 @@ def _load_run_config():
         run_mode = RunMode(properties["mode"])
     except ValueError:
         raise ValueError(
-            "Invalid mode {!r} in {}; expected DEBUG or PROD".format(
+            "Invalid mode {!r} in {}; expected DEBUG, PROD, or DIAG".format(
                 properties["mode"], properties_path)
         ) from None
 
@@ -340,6 +341,27 @@ def _load_run_config():
             "'ai.search.learning.soft_cutoff_threshold' must be a finite "
             "number in {}".format(properties_path))
 
+    ai_search_learning_database_path = properties.get(
+        "ai.search.learning.database_path", "move-learning.sqlite3")
+    if not ai_search_learning_database_path:
+        raise ValueError(
+            "'ai.search.learning.database_path' must be a non-empty path "
+            "in {}".format(properties_path))
+
+    try:
+        ui_action_animation_duration_ms = int(
+            properties.get("ui.action_animation_duration_ms", "0"))
+    except ValueError:
+        raise ValueError(
+            "Invalid 'ui.action_animation_duration_ms' in {}; expected an "
+            "integer from 0 to 2000".format(properties_path)
+        ) from None
+    if not 0 <= ui_action_animation_duration_ms <= 2000:
+        raise ValueError(
+            "'ui.action_animation_duration_ms' must be between 0 and 2000 "
+            "in {}".format(properties_path)
+        )
+
     return (
         run_mode,
         log_level,
@@ -358,6 +380,8 @@ def _load_run_config():
         learning_max_file_size,
         ai_search_metrics_enabled_value == "true",
         ai_search_learning_soft_cutoff_threshold,
+        ai_search_learning_database_path,
+        ui_action_animation_duration_ms,
     )
 
 
@@ -379,6 +403,8 @@ def _load_run_config():
     AI_SEARCH_LEARNING_MAX_FILE_SIZE,
     AI_SEARCH_METRICS_ENABLED,
     AI_SEARCH_LEARNING_SOFT_CUTOFF_THRESHOLD,
+    AI_SEARCH_LEARNING_DATABASE_PATH,
+    UI_ACTION_ANIMATION_DURATION_MS,
 ) = _load_run_config()
 
 

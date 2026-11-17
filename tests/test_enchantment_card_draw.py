@@ -47,8 +47,11 @@ def test_effective_weight_log_is_descending_without_reordering_candidates(monkey
     ]
 
 
-def test_prod_draw_uses_weights_in_original_candidate_order(monkeypatch):
-    """Potwierdza ważone losowanie PROD oraz kolejność jego kandydatów."""
+@pytest.mark.parametrize("run_mode", [RunMode.PROD, RunMode.DIAG])
+def test_prod_and_diag_draw_use_weights_in_original_candidate_order(
+    monkeypatch, run_mode,
+):
+    """Potwierdza ważone losowanie PROD/DIAG i kolejność kandydatów."""
     selected_candidate = (EnchantmentCardType.PAWN_TWO_FIELDS_FORWARD, 3)
     captured = {}
 
@@ -67,7 +70,7 @@ def test_prod_draw_uses_weights_in_original_candidate_order(monkeypatch):
         def choices(candidates, weights, k):
             return fake_choices(candidates, weights, k)
 
-    monkeypatch.setattr("models.enchantment_cards.RUN_MODE", RunMode.PROD)
+    monkeypatch.setattr("models.enchantment_cards.RUN_MODE", run_mode)
     monkeypatch.setattr("models.enchantment_cards.log_debug", lambda message: None)
 
     result = EnchantmentCardType._random_choice_with_uses(FakeRandom())

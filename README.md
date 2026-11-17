@@ -15,7 +15,9 @@ python -m logic.game_init
 W menu wybierz **Graj**, aby rozpocząć partię. Przełącznik **Bot czarnych**
 pozwala włączyć grę przeciwko AI; gdy jest wyłączony, czarne obsługuje drugi
 gracz. W trakcie gry `Esc` otwiera menu pauzy, z którego można wznowić grę,
-wrócić do menu głównego, wyjść z aplikacji lub przełączyć okno debugowania AI.
+wrócić do menu głównego, wyjść z aplikacji lub — w trybach `DEBUG` i `DIAG` —
+przełączyć okno debugowania AI. Przycisk **Pomoc** w menu głównym i menu pauzy
+otwiera instrukcję gry i opisy wszystkich kart.
 Bot kontynuuje obliczenia w tle podczas pauzy. `Esc` ponownie wznawia grę, a
 `Spacja` rozpoczyna partię od nowa.
 
@@ -25,14 +27,19 @@ Na planszy pojawiają się również karty do zebrania przez figury. Odliczanie 
 następnej karty rozpoczyna się w chwili wyłożenia poprzedniej; gdy dojdzie do
 zera, nowa karta pojawi się niezależnie od tego, czy inne nadal leżą na planszy.
 Licznik tur jest widoczny nad planszą, a zebranie karty nie wpływa na odliczanie.
+Wąski pasek po prawej stronie planszy pokazuje bieżącą ocenę heurystyczną
+pozycji (+ dla białych); pasek i liczbowy wynik płynnie przechodzą do nowej oceny.
+Ruch figury i użycie karty są animowane; podczas animacji nie można wykonać
+następnej akcji.
+Menu, pauza i ekran namysłu AI używają rozmytego tła z planszą.
 
 ## Bot
 
 Bot gra czarnymi. Podczas namysłu plansza jest przyciemniona, wyświetla się
-animowany spinner. Przy partii przeciwko botowi otwiera się osobne okno
-statystyk, w którym widać najlepszy dotychczas znaleziony ruch, jego ocenę i
-głębokość; po zakończeniu wyszukiwania także wybrany ruch i liczbę odwiedzonych
-węzłów. Podczas ponderingu panel pokazuje do pięciu najgroźniejszych ruchów
+animowany spinner. W trybach `DEBUG` i `DIAG` przy partii przeciwko botowi
+otwiera się osobne okno statystyk, w którym widać najlepszy dotychczas znaleziony
+ruch, jego ocenę i głębokość; po zakończeniu wyszukiwania także wybrany ruch i
+liczbę odwiedzonych węzłów. Podczas ponderingu panel pokazuje do pięciu najgroźniejszych ruchów
 białych, uszeregowanych wyłącznie według oceny z perspektywy czarnych; głębokość
 nie wpływa na ranking. Wynik ruchu pochodzi z oceny pozycji po ruchu białych i
 najlepszej znalezionej odpowiedzi czarnych (głębokość 2, czyli dwa półruchy).
@@ -166,7 +173,8 @@ normalne uruchomienie aplikacji.
 
 | Klucz | Znaczenie |
 |---|---|
-| `mode` | `PROD` losuje karty planszowe według rzadkości; `DEBUG` wybiera je równomiernie i umieszcza natychmiast. |
+| `mode` | `PROD` i `DIAG` losują karty planszowe według rzadkości; `DEBUG` wybiera je równomiernie i umieszcza natychmiast. Okno diagnostyczne jest dostępne w `DEBUG` i `DIAG`, ale nie w `PROD`. |
+| `ui.action_animation_duration_ms` | Czas animacji ruchu figury i użycia karty w milisekundach; `0` wyłącza animacje, dozwolony zakres to `0`–`2000`. Domyślnie `0`; dostarczony `run.yaml` ustawia `300`. |
 | `log.level` | Poziom logów: `ERROR`, `WARN`, `INFO`, `LOGIC`, `DEBUG` lub `OFF`; domyślnie `WARN`. |
 | `game.seed` | Opcjonalny seed losowości. Jeśli klucz jest pominięty lub pusty, nowy seed 64-bitowy jest losowany przy rozpoczęciu partii. |
 | `ai.search.max_depth` | Maksymalna głębokość wyszukiwania AI w półruchach. |
@@ -180,20 +188,31 @@ normalne uruchomienie aplikacji.
 | `ai.search.cache.max_entries` | Maksymalna liczba wpisów pamięci partii; dodatnia liczba całkowita z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne: 1024, 1024², 1024³). W dostarczonym `run.yaml` ustawiono `6k`. Tabele workerów mają dodatkowy limit. |
 | `ai.search.learning.enabled` | Włącza odczyt trwałych wskazówek kolejności ruchów; `false` wyłącza cały mechanizm. Domyślnie `false`, w dostarczonym `run.yaml` ustawiono `true`. |
 | `ai.search.learning.save_enabled` | Włącza zapis zebranych wskazówek; przy `false` mechanizm działa tylko do odczytu. Domyślnie `false`, w dostarczonym `run.yaml` ustawiono `true`. Wymaga `ai.search.learning.enabled=true`. |
+| `ai.search.learning.database_path` | Ścieżka do bazy SQLite; ścieżki względne są liczone od bieżącego katalogu roboczego. Domyślnie `move-learning.sqlite3`. |
 | `ai.search.learning.max_file_size` | Maksymalny rozmiar bazy SQLite z podpowiedziami; co najmniej `16k`, dodatnia liczba z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne). Domyślnie 1/4 fizycznej pamięci RAM, gdy parametr pominięto; w dostarczonym `run.yaml` ustawiono `16G`. |
 | `ai.search.learning.soft_cutoff_threshold` | Próg miękkiego obniżenia priorytetu w perspektywie gracza wykonującego ruch; domyślnie `-20`. Wymaga `ai.search.cache.enabled=true` oraz wiarygodnego wyniku dla tego samego pełnego stanu i głębokości. |
 | `ai.search.metrics.enabled` | `true` włącza zbiorcze pomiary faz wyszukiwania, węzłów, odcięć, cache i workerów; raport jest emitowany raz po wyszukiwaniu. `false` wyłącza dodatkowe timery; domyślnie `false`. Benchmark ma osobny przełącznik `--metrics`, domyślnie `on`, i nie zmienia konfiguracji gry. |
 
-Trwała baza zawiera dwie osobne tabele. `move_hints` gromadzi ogólne sygnały
+Trwała baza zawiera trzy osobne tabele. `move_hints` gromadzi ogólne sygnały
 preferowanych, odcinających i słabych zwykłych ruchów; jej wskazówki są
 filtrowane względem aktualnych legalnych akcji i służą tylko do kolejności.
-`search_results` przechowuje dla pełnego, stabilnie zahashowanego stanu każdą
-wiarygodnie ukończoną akcję, głębokość, wynik z perspektywy czarnych oraz bound
-alpha-beta (`exact`, `lower`, `upper`). Klucz obejmuje też obie ręce, efekty,
-karty planszowe i stan RNG. Wpisy są wersjonowane względem oceny/reguł i
-oddzielne dla każdej głębokości; zwiększenie wersji oceny/reguł wymaga
-unieważnienia albo migracji starych wyników. Workery otwierają bazę read-only,
-a proces główny zapisuje aktualizacje po ukończonej iteracji.
+Nie zapisuje wskazówek z pozycji z aktywnym efektem, użyciem karty w linii ani
+kartą do podniesienia na planszy; niewykorzystane karty na ręce są dozwolone.
+
+`best_moves` przechowuje jeden najlepszy ruch exact na pełną pozycję i wersję
+oceny/reguł — wpis zastępuje się tylko wynikiem z co najmniej tak dużej,
+ukończonej głębokości. `search_cutoffs` przechowuje osobno wiarygodne granice
+alpha-beta (`lower`/`upper`) oraz exact ruchy miękko odcięte, wraz z akcją i
+głębokością. Dzięki temu głębszy najlepszy ruch nie usuwa dowodów odcięć dla
+alternatyw. Przy migracji starszej tabeli `search_results` jej wpisy są
+zachowywane jako dane odcięć; nie są arbitralnie zamieniane na najlepszy ruch.
+Klucz wyników to stabilny hash pełnego stanu, obejmującego obie
+ręce, efekty, karty planszowe i RNG. Zgodny exact wpis zastępuje obliczenia
+tylko na tej samej głębokości; głębszy ruch służy jedynie do porządkowania.
+Workery otwierają bazę read-only, a proces główny zapisuje aktualizacje po
+ukończonych iteracjach. Pozycja z kartą czekającą na planszy na podniesienie
+nie jest źródłem ani odbiorcą wpisów; po podniesieniu karta w ręce tworzy nowy
+pełny stan.
 
 Wyniki exact dla zgodnego stanu i głębokości mogą zastąpić ponowne liczenie
 akcji, a granice są używane tylko wtedy, gdy rzeczywiście spełniają warunek
@@ -205,12 +224,11 @@ sprawdzany jako awaryjny kandydat. Płytsza analiza nie gwarantuje optymalności
 na większej głębokości, a próg pozostaje heurystyką, nie dowodem najlepszego
 ruchu w całej partii.
 
-Baza SQLite znajduje się domyślnie w katalogu danych użytkownika
-(`%LOCALAPPDATA%` w Windows,
-`~/.local/share` w Linuxie lub `~/Library/Application Support` w macOS);
-zmienną `CHESS_MOVE_LEARNING_DB_PATH` można wskazać inną lokalizację. Błąd bazy
-jest logowany na poziomie `ERROR`, po czym bot kontynuuje bez trwałych wskazówek.
-Okno diagnostyczne pokazuje rozmiar bazy, workery aktualnie pobierające z niej
+Baza SQLite znajduje się domyślnie w bieżącym katalogu roboczym procesu jako
+`move-learning.sqlite3`; jej lokalizację można zmienić przez
+`ai.search.learning.database_path` w `run.yaml`. Błąd bazy jest logowany na
+poziomie `ERROR`, po czym bot kontynuuje bez trwałych wskazówek. Okno
+diagnostyczne pokazuje rozmiar bazy, workery aktualnie pobierające z niej
 wskazówki oraz to, czy wybrany ruch miał podpowiedź w bazie.
 
 `cpu.workers` podaje liczbę workerów wprost — nie jest przeliczane względem

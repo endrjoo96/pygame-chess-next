@@ -13,6 +13,7 @@ from logic.move_learning import (
     MoveLearningUpdate,
     learning_position_key,
     encode_action,
+    default_move_learning_path,
     is_learning_position_eligible,
     is_plain_move,
     search_result_position_key,
@@ -44,17 +45,25 @@ def make_learning_state():
     )
 
 
-def test_learning_keys_allow_unused_cards_but_reject_active_effects():
+def test_learning_keys_allow_hand_cards_but_reject_board_cards_and_effects():
     state = make_learning_state()
     initial_key = learning_position_key(state)
     card = EnchantmentCardType.ROOK_TREBUCHET.create()
 
     state.black_cards.append(card)
+    assert is_learning_position_eligible(state)
+    assert learning_position_key(state) == initial_key
+
     state.board_card_available = True
     state.board_card_position = 18
     state.board_enchantment = card
-    assert is_learning_position_eligible(state)
-    assert learning_position_key(state) == initial_key
+    state.board_cards = [(18, card)]
+    assert not is_learning_position_eligible(state)
+    assert learning_position_key(state) is None
+
+    state.board_card_available = False
+    state.board_cards = []
+    state.board_enchantment = None
 
     state.pieces_locations[1].set_enchantment(card)
     assert not is_learning_position_eligible(state)
@@ -94,10 +103,38 @@ def test_move_learning_store_persists_only_legal_hints(tmp_path):
 
     read_only = MoveLearningStore(
         store_path, 64 * 1024, read_only=True)
-    assert read_only.get_action_scores(state, [preferred]) == scores
+    assert read_only.get_action_scores(state, [preferred]) == pytest.approx(
+        scores)
     with pytest.raises(RuntimeError, match="not writable"):
         read_only.apply_updates((MoveLearningUpdate(key, encode_action(other), 1),))
     read_only.close()
+
+
+def test_default_move_learning_path_uses_working_directory_and_configured_path(
+        monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    assert default_move_learning_path() == tmp_path / "move-learning.sqlite3"
+
+    assert default_move_learning_path("data/custom.sqlite3") == (
+        tmp_path / "data" / "custom.sqlite3")
+    absolute_path = tmp_path / "custom.sqlite3"
+    assert default_move_learning_path(absolute_path) == absolute_path
+
+
+def test_chess_ai_uses_configured_move_learning_database_path(
+        monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "logic.chess_ai.AI_SEARCH_LEARNING_DATABASE_PATH",
+        "data/custom.sqlite3",
+    )
+    ai = ChessAI(
+        config=SearchConfig(learning_enabled=False),
+        initialize_move_learning=False,
+    )
+
+    assert ai._learning_database_path == (
+        tmp_path / "data" / "custom.sqlite3")
 
 
 def test_move_learning_store_keeps_database_within_size_limit(tmp_path):
@@ -151,25 +188,34 @@ def test_search_results_persist_per_action_depth_and_bound(tmp_path):
     preferred = GameAction(GameActionType.MOVE, 1, 2)
     alternative = GameAction(GameActionType.MOVE, 1, 3)
     accumulator = SearchResultAccumulator()
-    accumulator.record(key, preferred, 4, 12.5, "exact")
+    accumulator.record(key, alternative, 3, 7.0, "exact", "best")
+    accumulator.record(key, preferred, 4, 12.5, "exact", "best")
+    accumulator.record(key, alternative, 2, 6.0, "exact", "best")
     accumulator.record(key, preferred, 4, 10.0, "upper")
     accumulator.record(key, preferred, 4, 9.0, "upper")
-    accumulator.record(key, preferred, 3, 5.0, "exact")
+    accumulator.record(key, preferred, 3, 5.0, "exact", "cutoff")
     accumulator.record(key, alternative, 4, -25.0, "exact")
     path = tmp_path / "search-results.sqlite3"
 
     store = MoveLearningStore(path, 64 * 1024)
     store.apply_search_result_updates(accumulator.snapshot())
-    results = store.get_search_results(state, [preferred])
+    results = store.get_search_results(state, [preferred, alternative])
     assert {
-        (result.depth, result.bound, result.score)
+        (result.depth, result.bound, result.score, result.kind)
         for result in results[preferred]
     } == {
-        (4, "exact", 12.5),
-        (4, "upper", 9.0),
-        (3, "exact", 5.0),
+        (4, "exact", 12.5, "best"),
+        (4, "upper", 9.0, "cutoff"),
+        (3, "exact", 5.0, "cutoff"),
     }
-    assert alternative not in results
+    assert {
+        (result.depth, result.bound, result.score, result.kind)
+        for result in results[alternative]
+    } == {(4, "exact", -25.0, "cutoff")}
+    assert len([
+        result for records in results.values()
+        for result in records if result.kind == "best"
+    ]) == 1
     store.close()
 
     read_only = MoveLearningStore(path, 64 * 1024, read_only=True)
@@ -200,22 +246,81 @@ def test_v1_database_migrates_without_losing_move_hints(tmp_path):
     connection.close()
 
     state = make_learning_state()
+    action = GameAction(GameActionType.MOVE, 1, 2)
+    legacy_key = learning_position_key(state, version=1)
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "INSERT INTO move_hints VALUES (?, ?, ?, ?, ?, ?)",
+        (legacy_key, encode_action(action), 2, 0, 0, 1),
+    )
+    connection.commit()
+    connection.close()
+
     legacy_reader = MoveLearningStore(path, 64 * 1024, read_only=True)
     assert legacy_reader.get_search_results(state) == {}
+    assert legacy_reader.get_action_scores(state, [action])[action] > 0
     legacy_reader.close()
 
-    action = GameAction(GameActionType.MOVE, 1, 2)
-    key = learning_position_key(state)
-    legacy_update = MoveLearningUpdate(
-        key, encode_action(action), preferred=1)
     writable = MoveLearningStore(path, 64 * 1024)
-    writable.apply_updates((legacy_update,))
     writable.close()
 
     read_only = MoveLearningStore(path, 64 * 1024, read_only=True)
     assert read_only.get_action_scores(state, [action])[action] > 0
     assert read_only.get_search_results(state) == {}
     read_only.close()
+
+
+def test_v2_search_results_migrate_as_cutoff_hints(tmp_path):
+    path = tmp_path / "v2-learning.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE move_hints (
+            position_key TEXT NOT NULL,
+            action_key TEXT NOT NULL,
+            preferred_count INTEGER NOT NULL DEFAULT 0,
+            cutoff_count INTEGER NOT NULL DEFAULT 0,
+            worst_count INTEGER NOT NULL DEFAULT 0,
+            last_seen INTEGER NOT NULL,
+            PRIMARY KEY (position_key, action_key)
+        );
+        CREATE INDEX move_hints_last_seen ON move_hints(last_seen);
+        CREATE TABLE search_results (
+            position_key TEXT NOT NULL,
+            action_key TEXT NOT NULL,
+            depth INTEGER NOT NULL,
+            score REAL NOT NULL,
+            bound TEXT NOT NULL,
+            evaluation_version INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL,
+            PRIMARY KEY (
+                position_key, action_key, depth, evaluation_version, bound
+            )
+        );
+        PRAGMA user_version = 2;
+        """
+    )
+    state = make_learning_state()
+    action = GameAction(GameActionType.MOVE, 1, 2)
+    key = search_result_position_key(state)
+    connection.execute(
+        "INSERT INTO search_results VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (key, encode_action(action), 3, -25.0, "exact", 1, 1),
+    )
+    connection.commit()
+    connection.close()
+
+    legacy_reader = MoveLearningStore(path, 64 * 1024, read_only=True)
+    legacy_results = legacy_reader.get_search_results(state, [action])
+    assert legacy_results[action][0].kind == "cutoff"
+    legacy_reader.close()
+
+    writer = MoveLearningStore(path, 64 * 1024)
+    results = writer.get_search_results(state, [action])
+    assert [(item.depth, item.bound, item.kind) for item in results[action]] == [
+        (3, "exact", "cutoff"),
+    ]
+    writer.close()
 
 
 def test_search_reuses_persisted_exact_root_results(monkeypatch, tmp_path):
@@ -260,22 +365,14 @@ def test_search_reuses_persisted_exact_root_results(monkeypatch, tmp_path):
     assert first.action is not None
     assert first_count == len(actions) * 2
     persisted_results = ai._move_learning_store.get_search_results(state, actions)
-    assert persisted_results
-    assert any(
-        result.bound == "exact"
+    best_records = [
+        result
         for records in persisted_results.values()
         for result in records
-    )
-    assert any(
-        result.bound == "upper"
-        for records in persisted_results.values()
-        for result in records
-    )
-    assert {
-        result.depth
-        for records in persisted_results.values()
-        for result in records
-    } == {1, 2}
+        if result.kind == "best"
+    ]
+    assert len(best_records) == 1
+    assert best_records[0].depth == 2
     child_state = GameSimulation._apply_generated_action(state, actions[0])
     child_actions = GameSimulation.available_actions(child_state)
     assert ai._move_learning_store.get_search_results(
@@ -287,6 +384,40 @@ def test_search_reuses_persisted_exact_root_results(monkeypatch, tmp_path):
 
     assert second.action is not None
     assert len(root_evaluation_count) < first_count
+    ai.close()
+
+
+def test_persistent_search_results_skip_positions_with_board_card(tmp_path):
+    state = make_learning_state()
+    card = EnchantmentCardType.PIECE_TELEPORT.create()
+    state.board_card_available = True
+    state.board_card_position = 18
+    state.board_enchantment = card
+    state.board_cards = [(18, card)]
+    action = GameAction(GameActionType.MOVE, 1, 2)
+    store = MoveLearningStore(tmp_path / "board-card-results.sqlite3", 64 * 1024)
+    ai = ChessAI(
+        SearchConfig(
+            cache_enabled=True,
+            learning_enabled=True,
+            learning_save_enabled=True,
+            learning_max_file_size_bytes=64 * 1024,
+        ),
+        max_workers=1,
+        initialize_move_learning=False,
+    )
+    ai._move_learning_store = store
+
+    assert ai._persistent_search_results(state, [action]) == {}
+    ai._record_search_result(state, action, 1, -25.0, "exact")
+    assert ai._search_result_updates.snapshot() == ()
+
+    state.board_card_available = False
+    state.board_cards.clear()
+    state.board_enchantment = None
+    assert ai._persistent_search_results(state, [action]) == {}
+    ai._record_search_result(state, action, 1, -25.0, "exact")
+    assert len(ai._search_result_updates.snapshot()) == 1
     ai.close()
 
 

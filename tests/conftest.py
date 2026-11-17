@@ -11,7 +11,7 @@ os.environ["CHESS_RUN_CONFIG_PATH"] = str(
 
 @pytest.fixture(autouse=True)
 def isolate_move_learning_database(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        "CHESS_MOVE_LEARNING_DB_PATH",
+    monkeypatch.setattr(
+        "logic.chess_ai.AI_SEARCH_LEARNING_DATABASE_PATH",
         str(tmp_path / "move-learning.sqlite3"),
     )

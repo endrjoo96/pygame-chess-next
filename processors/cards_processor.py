@@ -99,16 +99,24 @@ class CardsProcessor:
         card_deck.append(card)
         return True
 
-    def render(self, screen: Surface, chess_pieces: PieceSprite, selected_card=None):
+    def render(
+        self,
+        screen: Surface,
+        chess_pieces: PieceSprite,
+        selected_card=None,
+        hidden_card_slot=None,
+    ):
         """Rysuje talie obu graczy, wyróżniając opcjonalnie aktualnie wybraną kartę."""
         context = GameContext()
         card_size = (context.card_width, context.card_height)
         self.__render_cards(
             screen, context.white_cards_coordinates, chess_pieces, self.white_cards,
-            card_size, PREDEFINED_COLOR.transparent_green, COLOR.WHITE.value, COLOR.WHITE, selected_card)
+            card_size, PREDEFINED_COLOR.transparent_green, COLOR.WHITE.value,
+            COLOR.WHITE, selected_card, hidden_card_slot)
         self.__render_cards(
             screen, context.black_cards_coordinates, chess_pieces, self.black_cards,
-            card_size, PREDEFINED_COLOR.transparent_blue, COLOR.BLACK.value, COLOR.BLACK, selected_card)
+            card_size, PREDEFINED_COLOR.transparent_blue, COLOR.BLACK.value,
+            COLOR.BLACK, selected_card, hidden_card_slot)
 
     def render_preview(
         self, screen: Surface, chess_pieces: PieceSprite, card: Enchantment,
@@ -175,13 +183,19 @@ class CardsProcessor:
             lines.append(current_line)
         return lines
 
-    def __render_cards(self, screen, coordinates, chess_pieces, card_deck, card_size, bg_color, color_name, color, selected_card):
+    def __render_cards(
+        self, screen, coordinates, chess_pieces, card_deck, card_size,
+        bg_color, color_name, color, selected_card, hidden_card_slot,
+    ):
         """Rysuje karty talii w siatce i obramowuje wybraną pozycję."""
         iterator = 0
         for row in coordinates:
             for coord in row:
                 if iterator >= len(card_deck):
                     return
+                if hidden_card_slot == (color, iterator):
+                    iterator += 1
+                    continue
                 card: Enchantment = card_deck[iterator]
                 self.__render_card(
                     screen, coord, chess_pieces, card, card_size, bg_color, color_name)

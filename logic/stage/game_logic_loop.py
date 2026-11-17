@@ -14,6 +14,7 @@ from constants.predefined_colors import PREDEFINED_COLOR
 from logic.chess_ai import ChessAI
 from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
+from logic.stage.action_animation import ActionAnimation
 from models.ai_search_stats import AISearchStats
 from models.game_observation import GameObservation
 from models.game_state import GameState
@@ -27,7 +28,14 @@ from processors.cards_processor import CardsProcessor
 from processors.movement_processor import process_possible_basic_moves
 from utils.gamecontext import GameContext
 from utils.logging import log_debug, log_error, log_info, log_logic, log_warn
-from utils.run_config import LOG_LEVEL, RUN_MODE, RunMode, resolve_game_seed
+from utils.run_config import (
+    LOG_LEVEL,
+    RUN_MODE,
+    RunMode,
+    UI_ACTION_ANIMATION_DURATION_MS,
+    resolve_game_seed,
+)
+from utils.visual import blur_surface
 
 
 class GameLogicLoop(object):
@@ -51,6 +59,10 @@ class GameLogicLoop(object):
         self._ai_active_generation = None
         self._ponder_future: Optional[Future] = None
         self._ponder_cancel_event = Event()
+        self._ai_thinking_background: Optional[Surface] = None
+        self._action_animation: Optional[ActionAnimation] = None
+        self._position_evaluation = 0.0
+        self._position_evaluation_stale = True
         # create an object of class to show chess pieces on the board
         self.chess_pieces = PieceSprite(self.context.pieces_src, cols=6, rows=2)
         passive_icon = pygame.image.load(self.context.card_mod_passive_src).convert_alpha()
@@ -93,9 +105,30 @@ class GameLogicLoop(object):
 
         self.reset()
 
+    @property
+    def position_evaluation(self) -> float:
+        """Zwraca ocenę bieżącej pozycji w perspektywie białych."""
+        if self._position_evaluation_stale:
+            self._position_evaluation = -ChessAI.evaluate(
+                GameState.from_game(self))
+            self._position_evaluation_stale = False
+        return self._position_evaluation
+
+    @property
+    def is_action_animation_active(self) -> bool:
+        if self._action_animation is None:
+            return False
+        if self._action_animation.is_active:
+            return True
+        self._action_animation = None
+        return False
+
     def reset(self):
         """Przywraca planszę, talie i liczniki do stanu początkowego nowej partii."""
         self._cancel_pondering()
+        self._ai_thinking_background = None
+        self._action_animation = None
+        self._position_evaluation_stale = True
         log_info(
             "Initializing game state: seed={}, mode={}, log_level={}, black_ai={}".format(
                 self.seed,
@@ -239,6 +272,8 @@ class GameLogicLoop(object):
             return
         if not self._ai_future.done():
             return
+        if self.is_action_animation_active:
+            return
 
         try:
             decision = self._ai_future.result()
@@ -321,11 +356,14 @@ class GameLogicLoop(object):
 
     @property
     def is_ai_thinking(self):
-        return (
+        thinking = (
             self.black_ai is not None
             and self.current_turn == COLOR.BLACK
             and self._ai_future is not None
         )
+        if not thinking:
+            self._ai_thinking_background = None
+        return thinking
 
     @property
     def ai_search_stats(self) -> AISearchStats:
@@ -391,9 +429,16 @@ class GameLogicLoop(object):
         )
 
     def draw_ai_thinking_overlay(self):
-        """Rysuje przyciemnioną nakładkę ze spinnerem podczas obliczeń bota."""
+        """Rysuje rozmyte tło ze spinnerem podczas obliczeń bota."""
+        if (
+            self._ai_thinking_background is None
+            or self._ai_thinking_background.get_size() != self.screen.get_size()
+        ):
+            self._ai_thinking_background = blur_surface(self.screen)
+        self.screen.blit(self._ai_thinking_background, (0, 0))
+
         overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 190))
+        overlay.fill((0, 0, 0, 100))
         self.screen.blit(overlay, (0, 0))
 
         center_x = self.screen.get_width() // 2
@@ -510,6 +555,17 @@ class GameLogicLoop(object):
         state = GameState.from_game(self)
         result = GameSimulation.apply(
             state, action, advance_board_card_clock=True)
+        action_animation = None
+        if UI_ACTION_ANIMATION_DURATION_MS > 0:
+            action_animation = ActionAnimation.from_transition(
+                state,
+                result,
+                action,
+                self.context,
+                self.cards_processor,
+                self.chess_pieces,
+                UI_ACTION_ANIMATION_DURATION_MS,
+            )
 
         self.pieces_locations = result.pieces_locations
         self.current_turn = result.current_turn
@@ -546,10 +602,24 @@ class GameLogicLoop(object):
         self.rng.setstate(result.random_state)
         if result.current_turn == COLOR.BLACK:
             self._cancel_pondering()
+        self._action_animation = action_animation
+        self._position_evaluation_stale = True
 
     # method to draw pieces on the chess board
     def draw_pieces(self):
         """Rysuje karty planszowe, figury, ich efekty oraz panele kart i zbić."""
+        animation_time = pygame.time.get_ticks()
+        animation = self._action_animation
+        if (
+            animation is not None
+            and not animation.is_active_at(animation_time)
+        ):
+            self._action_animation = None
+            animation = None
+        hidden_piece_positions = (
+            set(animation.hidden_piece_positions(animation_time))
+            if animation is not None else set()
+        )
         board_cards = getattr(self, "board_cards", []) or (
             [(self.board_card_position, self.board_enchantment)]
             if self.board_card_available and self.board_enchantment is not None
@@ -591,7 +661,7 @@ class GameLogicLoop(object):
             #  coordinates of the current piece
 
             # change background color of piece if it is selected
-            if piece.exists():
+            if piece.exists() and position not in hidden_piece_positions:
                 piece_coord_x, piece_coord_y = id_to_xy(position)
                 if self.selected_piece_position == position:
                     self.__change_background_to_selection(position)
@@ -613,10 +683,20 @@ class GameLogicLoop(object):
         self.__draw_resurrection_moves()
 
         # draw captured pieces on the top and bottom of chessboard
-        self.draw_captured_pieces()
-        self.cards_processor.render(self.screen, self.chess_pieces, self.selected_card)
+        self.draw_captured_pieces(animation, animation_time)
+        self.cards_processor.render(
+            self.screen,
+            self.chess_pieces,
+            self.selected_card,
+            hidden_card_slot=(
+                animation.hidden_card_slot_at(animation_time)
+                if animation is not None else None),
+        )
         self.__draw_board_card_preview()
         self.__draw_piece_effect_preview()
+        if animation is not None and not animation.draw(
+            self.screen, self.chess_pieces, animation_time):
+            self._action_animation = None
 
     def __draw_promotion_targets(self):
         """Podświetla własne figury możliwe do ulepszenia wybraną kartą."""
@@ -748,6 +828,9 @@ class GameLogicLoop(object):
 
     def process_player_turn(self):
         """Pobiera jedno kliknięcie i przekazuje je do obsługi odpowiedniego obszaru."""
+        if self.is_action_animation_active:
+            return
+
         if not self.__selected_card_allows_captured_piece_selection():
             self.selected_captured_piece = None
             self.resurrection_moves = []
@@ -1609,7 +1692,7 @@ class GameLogicLoop(object):
                              (int(left_margin + (column * self.context.square_length - rendered.get_width() / 2)),
                               int(self.context.board_offset_y + (self.context.square_length * 8) + 5)))
 
-    def draw_captured_pieces(self):
+    def draw_captured_pieces(self, animation=None, animation_time=None):
         """Ustala położenie paneli zbitych figur i rysuje obie grupy."""
         if not (self.context.captured_white_starting_point and self.context.captured_black_starting_point):
             self.context.captured_white_starting_point = (self.context.board_offset_x,
@@ -1618,22 +1701,45 @@ class GameLogicLoop(object):
                                                                   2 * self.context.piece_cell_thumbnail_height))
             self.context.captured_black_starting_point = (self.context.board_offset_x, 0)
 
+        if animation_time is None:
+            animation_time = pygame.time.get_ticks()
+        if animation is None:
+            animation = self._action_animation
+        if (
+            animation is not None
+            and not animation.is_active_at(animation_time)
+        ):
+            animation = None
+        captured_slot = (
+            animation.hidden_captured_slot_at(animation_time)
+            if animation is not None else None
+        )
         self.__draw_captured_group(
             self.capture_processor.get_captured_black(),
             COLOR.BLACK,
             self.context.captured_black_starting_point,
+            captured_slot[1]
+            if captured_slot is not None and captured_slot[0] == COLOR.BLACK
+            else None,
         )
         self.__draw_captured_group(
             self.capture_processor.get_captured_white(),
             COLOR.WHITE,
             self.context.captured_white_starting_point,
+            captured_slot[1]
+            if captured_slot is not None and captured_slot[0] == COLOR.WHITE
+            else None,
         )
 
-    def __draw_captured_group(self, pieces, color, starting_point):
+    def __draw_captured_group(
+        self, pieces, color, starting_point, hidden_index=None,
+    ):
         """Rysuje miniatury zbitych figur w panelu i obramowuje aktualny wybór."""
         width = self.context.piece_cell_thumbnail_width
         height = self.context.piece_cell_thumbnail_height
         for index, piece in enumerate(pieces):
+            if index == hidden_index:
+                continue
             coords = (
                 starting_point[0] + (index // 2) * width,
                 starting_point[1] + (index % 2) * height,

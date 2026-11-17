@@ -3,8 +3,10 @@ from threading import Event, Lock
 from types import SimpleNamespace
 
 import pygame
+import pytest
 
 from logic.stage.main_menu_loop import Game
+from utils.run_config import RunMode
 
 
 class ImmediateExecutor:
@@ -80,6 +82,7 @@ def make_game(play_against_ai=True):
     game._loading_error = None
     game.menu_showed = False
     game.ai_stats_window = None
+    game._help_screen = None
     game.paused = False
     game._pause_background = None
     game.running = True
@@ -89,7 +92,10 @@ def make_game(play_against_ai=True):
     return game
 
 
-def test_ai_startup_reports_worker_progress_before_creating_game(monkeypatch):
+@pytest.mark.parametrize("run_mode", [RunMode.DEBUG, RunMode.DIAG])
+def test_ai_startup_reports_worker_progress_before_creating_game(
+    monkeypatch, run_mode,
+):
     game = make_game()
     ai = FakeAI()
     created_games = []
@@ -101,6 +107,7 @@ def test_ai_startup_reports_worker_progress_before_creating_game(monkeypatch):
         return window
 
     monkeypatch.setattr("logic.stage.main_menu_loop.ChessAI", lambda: ai)
+    monkeypatch.setattr("logic.stage.main_menu_loop.RUN_MODE", run_mode)
     monkeypatch.setattr(
         "logic.stage.main_menu_loop.AIStatsWindow", create_stats_window)
     monkeypatch.setattr("logic.stage.main_menu_loop.resolve_game_seed", lambda: 23)
@@ -141,6 +148,34 @@ def test_starting_without_ai_skips_worker_initialization(monkeypatch):
     assert created_games == [(game.screen, None, 24)]
 
 
+def test_prod_mode_skips_diagnostics_and_hides_pause_toggle(monkeypatch):
+    game = make_game()
+    game._loading_future = Future()
+    game._loading_future.set_result(None)
+    game._loading_ai = FakeAI()
+    game._loading_seed = 27
+    monkeypatch.setattr("logic.stage.main_menu_loop.RUN_MODE", RunMode.PROD)
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.GameLogicLoop",
+        lambda _screen, black_ai, seed: FakeChess(black_ai),
+    )
+
+    def unexpected_stats_window():
+        raise AssertionError("PROD must not create an AI diagnostics window")
+
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.AIStatsWindow", unexpected_stats_window)
+
+    game._finish_startup_if_ready()
+
+    assert game.menu_showed
+    assert game.ai_stats_window is None
+    assert [action for action, _ in game._pause_menu_options()] == [
+        "resume", "main_menu", "quit", "help"]
+    game._handle_pause_menu_action("toggle_debug")
+    assert game.ai_stats_window is None
+
+
 def test_worker_startup_failure_is_shown_and_pool_is_shutdown(monkeypatch):
     game = make_game()
     ai = FakeAI(fail=True)
@@ -168,6 +203,7 @@ def test_game_initialization_failure_closes_stats_window(monkeypatch):
         return window
 
     monkeypatch.setattr("logic.stage.main_menu_loop.ChessAI", lambda: ai)
+    monkeypatch.setattr("logic.stage.main_menu_loop.RUN_MODE", RunMode.DIAG)
     monkeypatch.setattr(
         "logic.stage.main_menu_loop.AIStatsWindow", create_stats_window)
     monkeypatch.setattr("logic.stage.main_menu_loop.resolve_game_seed", lambda: 26)
@@ -193,6 +229,144 @@ def test_game_initialization_failure_closes_stats_window(monkeypatch):
     assert stats_windows[0].closed
     assert game.ai_stats_window is None
     assert ai.shutdown_calls == 1
+
+
+def test_game_draws_position_evaluation_to_the_right_of_the_board():
+    draw_calls = []
+
+    class GameChessStub:
+        is_ai_thinking = True
+        position_evaluation = 0.75
+
+        @staticmethod
+        def play_turn():
+            return None
+
+        @staticmethod
+        def draw_pieces():
+            draw_calls.append("pieces")
+
+        @staticmethod
+        def draw_ai_thinking_overlay():
+            draw_calls.append("thinking_overlay")
+
+    class RecordingEvaluationBar:
+        def __init__(self):
+            self.draw_args = None
+
+        def draw(self, target_surface, target_board_rect, target_score):
+            draw_calls.append("evaluation_bar")
+            self.draw_args = (
+                target_surface, target_board_rect, target_score)
+
+    game = Game.__new__(Game)
+    game.winner = None
+    game.screen = pygame.Surface((1240, 880))
+    game.board_img = pygame.Surface((640, 640))
+    game.chess = GameChessStub()
+    game.position_evaluation_bar = RecordingEvaluationBar()
+
+    game.game()
+
+    surface, board_rect, score = game.position_evaluation_bar.draw_args
+    assert surface is game.screen
+    assert board_rect == pygame.Rect(300, 120, 640, 640)
+    assert score == 0.75
+    assert draw_calls == ["evaluation_bar", "pieces", "thinking_overlay"]
+
+
+def test_main_menu_help_button_opens_the_help_screen(monkeypatch):
+    if not pygame.font.get_init():
+        pygame.font.init()
+
+    class FakeHelpScreen:
+        def __init__(self, path, background):
+            self.path = path
+            self.background = background
+
+    game = make_game()
+    game.screen = pygame.Surface((1240, 880))
+    game._blurred_menu_background = pygame.Surface((1240, 880))
+    game.play_against_ai = False
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.HelpScreen", FakeHelpScreen)
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.utils.left_click_event", lambda: True)
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.utils.get_mouse_event",
+        lambda: (620, 560),
+    )
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.pygame.key.get_pressed",
+        lambda: [0] * 512,
+    )
+
+    game.menu()
+
+    assert isinstance(game._help_screen, FakeHelpScreen)
+    assert game._help_screen.background is game._blurred_menu_background
+
+
+def test_pause_menu_help_opens_without_leaving_pause(monkeypatch):
+    class FakeHelpScreen:
+        def __init__(self, path, background):
+            self.path = path
+            self.background = background
+
+    game = make_game()
+    game.paused = True
+    game._pause_background = pygame.Surface((800, 600))
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.HelpScreen", FakeHelpScreen)
+
+    game._handle_pause_menu_action("help")
+
+    assert game.paused
+    assert isinstance(game._help_screen, FakeHelpScreen)
+    assert game._help_screen.background is game._pause_background
+
+
+def test_help_screen_scrolls_and_escape_returns_to_pause():
+    class ScrollableHelpScreen:
+        def __init__(self):
+            self.scroll_amounts = []
+
+        def scroll(self, amount):
+            self.scroll_amounts.append(amount)
+
+    game = make_game()
+    game.menu_showed = True
+    game.paused = True
+    game._help_screen = ScrollableHelpScreen()
+
+    game._handle_app_event(
+        pygame.event.Event(pygame.MOUSEWHEEL, y=-1))
+    assert game._help_screen.scroll_amounts == [-1]
+
+    game._handle_app_event(
+        pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
+    assert game._help_screen is None
+    assert game.paused
+
+
+def test_menu_uses_its_blurred_board_background(monkeypatch):
+    if not pygame.font.get_init():
+        pygame.font.init()
+    game = Game.__new__(Game)
+    game.screen = pygame.Surface((1240, 880))
+    game._blurred_menu_background = pygame.Surface((1240, 880))
+    game._blurred_menu_background.fill((60, 70, 80))
+    game.play_against_ai = False
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.utils.left_click_event", lambda: False)
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.pygame.key.get_pressed",
+        lambda: [0] * 512,
+    )
+
+    game.menu()
+
+    assert game.screen.get_at((0, 0))[:3] == (60, 70, 80)
 
 
 def test_loading_screen_renders_worker_progress_bar():
@@ -244,6 +418,7 @@ def test_pause_menu_has_requested_actions_and_toggles_debug_window(monkeypatch):
     if not pygame.font.get_init():
         pygame.font.init()
     game = make_game()
+    monkeypatch.setattr("logic.stage.main_menu_loop.RUN_MODE", RunMode.DIAG)
     game.screen = pygame.Surface((800, 600))
     game.paused = True
     game._pause_background = pygame.Surface((800, 600))
@@ -265,7 +440,7 @@ def test_pause_menu_has_requested_actions_and_toggles_debug_window(monkeypatch):
     )
 
     assert [action for action, _ in game._pause_menu_options()] == [
-        "resume", "main_menu", "quit", "toggle_debug"]
+        "resume", "main_menu", "quit", "help", "toggle_debug"]
     game.draw_pause_menu()
     assert not game.paused
 
@@ -280,21 +455,44 @@ def test_pause_menu_has_requested_actions_and_toggles_debug_window(monkeypatch):
     assert stats_windows[0].closed
 
 
-def test_escape_opens_and_closes_pause_during_a_game():
+def test_escape_opens_and_closes_pause_during_a_game(monkeypatch):
     game = make_game()
     game.screen = pygame.Surface((800, 600))
     game.menu_showed = True
+    blurred_background = pygame.Surface((800, 600))
+    monkeypatch.setattr(
+        "logic.stage.main_menu_loop.blur_surface",
+        lambda _surface: blurred_background,
+    )
     escape_event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE)
 
     game._handle_app_event(escape_event)
 
     assert game.paused
-    assert game._pause_background.get_size() == (800, 600)
+    assert game._pause_background is blurred_background
 
     game._handle_app_event(escape_event)
 
     assert not game.paused
     assert game._pause_background is None
+
+
+def test_space_does_not_reset_game_during_action_animation():
+    class AnimatingChess:
+        is_action_animation_active = True
+        reset_calls = 0
+
+        def reset(self):
+            self.reset_calls += 1
+
+    game = make_game()
+    game.menu_showed = True
+    game.chess = AnimatingChess()
+
+    game._handle_app_event(
+        pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE))
+
+    assert game.chess.reset_calls == 0
 
 
 def test_pause_menu_can_end_game_and_return_to_main_menu():
