@@ -16,11 +16,13 @@ from logic.game_rules import GameAction, GameActionType, GameRules
 from logic.game_simulation import GameSimulation
 from logic.move_learning import (
     MoveLearningAccumulator,
+    SearchResultAccumulator,
     MoveLearningStore,
     learning_position_key,
     default_move_learning_path,
     is_learning_position_eligible,
     is_plain_move,
+    search_result_position_key,
 )
 from logic.opening_book import opening_hints
 from logic.search_cache import Bound, CacheEntry, SearchCache
@@ -44,6 +46,7 @@ from utils.run_config import (
     AI_SEARCH_LEARNING_ENABLED,
     AI_SEARCH_LEARNING_MAX_FILE_SIZE,
     AI_SEARCH_LEARNING_SAVE_ENABLED,
+    AI_SEARCH_LEARNING_SOFT_CUTOFF_THRESHOLD,
     AI_SEARCH_CPU_WORKERS,
     AI_SEARCH_CPU_WORKER_USAGE,
     AI_SEARCH_MAX_DEPTH,
@@ -145,6 +148,8 @@ class SearchConfig:
     learning_enabled: bool = AI_SEARCH_LEARNING_ENABLED
     learning_save_enabled: bool = AI_SEARCH_LEARNING_SAVE_ENABLED
     learning_max_file_size_bytes: int = AI_SEARCH_LEARNING_MAX_FILE_SIZE
+    learning_soft_cutoff_threshold: float = (
+        AI_SEARCH_LEARNING_SOFT_CUTOFF_THRESHOLD)
     metrics_enabled: bool = AI_SEARCH_METRICS_ENABLED
     cpu_worker_usage: int = AI_SEARCH_CPU_WORKER_USAGE
     learning_path_eligible: bool = True
@@ -171,6 +176,13 @@ class SearchConfig:
         ):
             raise ValueError(
                 "The move-learning database limit must be at least 16 KiB")
+        if (
+            not isinstance(self.learning_soft_cutoff_threshold, (int, float))
+            or isinstance(self.learning_soft_cutoff_threshold, bool)
+            or not math.isfinite(self.learning_soft_cutoff_threshold)
+        ):
+            raise ValueError(
+                "The move-learning soft-cutoff threshold must be finite")
         if (
             not isinstance(self.cpu_worker_usage, int)
             or isinstance(self.cpu_worker_usage, bool)
@@ -263,6 +275,7 @@ class _RootEvaluation:
     reliable: bool = True
     metrics: Optional[AISearchMetrics] = None
     learning_updates: tuple = ()
+    search_result_updates: tuple = ()
 
 
 class _SearchMetricsCollector:
@@ -561,6 +574,9 @@ def _evaluate_root_action(
                 if reliable and score < root_alpha
                 else Bound.EXACT if reliable else None
             )
+            if reliable:
+                worker._record_search_result(
+                    state, action, depth, score, root_bound)
         except _SearchTimeout:
             score = None
             reliable = False
@@ -585,6 +601,15 @@ def _evaluate_root_action(
             (
                 worker._move_learning_updates.snapshot()
                 if config.learning_enabled and config.learning_save_enabled
+                else ()
+            ),
+            (
+                worker._search_result_updates.snapshot()
+                if (
+                    config.learning_enabled
+                    and config.learning_save_enabled
+                    and reliable
+                )
                 else ()
             ))
     finally:
@@ -789,6 +814,7 @@ class ChessAI:
         self._move_learning_store = None
         self._learning_active = False
         self._move_learning_updates = MoveLearningAccumulator()
+        self._search_result_updates = SearchResultAccumulator()
         self._last_learning_hint_actions = frozenset()
         self._root_learning_hint_actions = frozenset()
         if initialize_move_learning and self.config.learning_enabled:
@@ -1038,6 +1064,7 @@ class ChessAI:
         global _WORKER_MOVE_LEARNING_STORE
         self.shutdown_worker_pool()
         self._flush_move_learning_updates()
+        self._flush_search_result_updates()
         if self._move_learning_store is not None:
             if _WORKER_MOVE_LEARNING_STORE is self._move_learning_store:
                 _WORKER_MOVE_LEARNING_STORE = None
@@ -1055,6 +1082,7 @@ class ChessAI:
             self._move_learning_store = None
         self._learning_active = False
         self._move_learning_updates = MoveLearningAccumulator()
+        self._search_result_updates = SearchResultAccumulator()
 
     def learning_database_file_size(self):
         try:
@@ -1098,6 +1126,94 @@ class ChessAI:
                 _set_current_worker_learning_reading(False)
             else:
                 self._set_local_worker_learning_reading(False)
+
+    def _persistent_search_results(self, state, actions, position_key=None):
+        store = self._move_learning_store or _WORKER_MOVE_LEARNING_STORE
+        if (
+            not self.config.cache_enabled
+            or not self.config.learning_enabled
+            or store is None
+        ):
+            return {}
+        is_process_worker = _WORKER_STATUS_INDEX is not None
+        if is_process_worker:
+            _set_current_worker_learning_reading(True)
+        else:
+            self._set_local_worker_learning_reading(True)
+        try:
+            return store.get_search_results(
+                state, actions, state_key=position_key)
+        except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+            self._disable_move_learning(error)
+            return {}
+        finally:
+            if is_process_worker:
+                _set_current_worker_learning_reading(False)
+            else:
+                self._set_local_worker_learning_reading(False)
+
+    def _persistent_search_position_key(self, state, state_cache_key):
+        store = self._move_learning_store or _WORKER_MOVE_LEARNING_STORE
+        if (
+            state_cache_key is None
+            or not self.config.learning_enabled
+            or store is None
+        ):
+            return None
+        try:
+            return search_result_position_key(state, state_cache_key)
+        except (TypeError, ValueError) as error:
+            self._disable_move_learning(error)
+            return None
+
+    def _record_search_result(
+        self, state, action, depth, score, bound, position_key=None,
+    ):
+        store = self._move_learning_store or _WORKER_MOVE_LEARNING_STORE
+        if (
+            not self.config.cache_enabled
+            or not self.config.learning_enabled
+            or not self.config.learning_save_enabled
+            or store is None
+            or action is None
+            or not isinstance(state, GameState)
+        ):
+            return
+        try:
+            if position_key is None:
+                position_key = search_result_position_key(state)
+            if position_key is not None:
+                self._search_result_updates.record(
+                    position_key, action, depth, score, bound)
+        except (TypeError, ValueError) as error:
+            log_error("Unable to record persistent search result: {}".format(
+                error))
+
+    def _merge_search_result_updates(self, updates):
+        if (
+            self.config.cache_enabled
+            and self.config.learning_enabled
+            and self.config.learning_save_enabled
+            and updates
+        ):
+            self._search_result_updates.merge(updates)
+
+    def _flush_search_result_updates(self):
+        updates = self._search_result_updates.snapshot()
+        if not updates:
+            return
+        self._search_result_updates = SearchResultAccumulator()
+        if (
+            not self.config.cache_enabled
+            or not self.config.learning_enabled
+            or not self.config.learning_save_enabled
+            or self._move_learning_store is None
+        ):
+            return
+        try:
+            self._move_learning_store.apply_search_result_updates(updates)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            self._disable_move_learning(error)
 
     def _record_move_learning(
         self, state, action, signal, learning_path_eligible=True
@@ -1573,9 +1689,19 @@ class ChessAI:
         ordered_actions = self._order_actions_for_search(
             state, root_actions, is_learning_position_eligible(state))
         self._root_learning_hint_actions = self._last_learning_hint_actions
+        persistent_root_key = self._persistent_search_position_key(
+            state, root_key)
+        persistent_root_results = self._persistent_search_results(
+            state, ordered_actions, persistent_root_key)
         action_order = {
             action: index for index, action in enumerate(ordered_actions)
         }
+        ordered_actions = self._order_actions_with_persistent_results(
+            state,
+            ordered_actions,
+            persistent_root_results,
+            self.config.max_depth,
+        )
         if hint in ordered_actions:
             ordered_actions.remove(hint)
             ordered_actions.insert(0, hint)
@@ -1648,9 +1774,61 @@ class ChessAI:
                 )
                 completed_scores = {}
                 outcomes = {}
+                precompleted_root_actions = set()
                 next_merge = 0
                 root_alpha = -math.inf
                 finished_root_actions = 0
+                iteration_search_result_updates = []
+                exact_root_results = {
+                    action: result
+                    for action, records in persistent_root_results.items()
+                    for result in records
+                    if result.depth == depth and result.bound == Bound.EXACT.value
+                }
+                bad_root_actions = {
+                    action
+                    for action, records in persistent_root_results.items()
+                    if any(
+                        result.depth == depth
+                        and self._is_persistently_soft_cutoff(state, result)
+                        for result in records
+                    )
+                }
+                has_recommended_root_action = any(
+                    action not in bad_root_actions
+                    for action in ordered_actions
+                )
+                fallback_root_action = None
+                if (
+                    not has_recommended_root_action
+                    and bad_root_actions
+                    and len(bad_root_actions) == len(ordered_actions)
+                ):
+                    fallback_root_action = max(
+                        bad_root_actions,
+                        key=lambda action: self._mover_relative_score(
+                            state,
+                            max(
+                                (
+                                    result.score
+                                    for result in persistent_root_results[action]
+                                    if result.depth == depth
+                                    and self._is_persistently_soft_cutoff(
+                                        state, result)
+                                ),
+                                key=lambda score: self._mover_relative_score(
+                                    state, score),
+                            ),
+                        ),
+                    )
+                root_alpha = max(
+                    (
+                        result.score
+                        for action, result in exact_root_results.items()
+                        if action != fallback_root_action
+                    ),
+                    default=-math.inf,
+                )
 
                 def record_result(index, result):
                     nonlocal next_merge, root_alpha, finished_root_actions
@@ -1659,6 +1837,8 @@ class ChessAI:
                         self._metrics.merge(result.metrics)
                     self._merge_move_learning_updates(
                         getattr(result, "learning_updates", ()))
+                    iteration_search_result_updates.extend(
+                        getattr(result, "search_result_updates", ()))
                     self._cache_hits += result.hits
                     self._cache_score_hits += result.score_hits
                     self._cache_hints += result.hints
@@ -1714,8 +1894,50 @@ class ChessAI:
                             ordered_actions, completed_scores, depth,
                             candidate_callback, previous_leader)
 
+                for action_index, action in enumerate(ordered_actions):
+                    cached_result = exact_root_results.get(action)
+                    if action != fallback_root_action and cached_result is not None:
+                        precompleted_root_actions.add(action_index)
+                        best_known_scores[action] = (
+                            cached_result.score, depth)
+                        self._cache_score_hits += 1
+                        if self._metrics is not None:
+                            self._metrics.add("cache_score_hits", 1)
+                        record_result(action_index, _RootEvaluation(
+                            cached_result.score,
+                            0,
+                            bound=Bound.EXACT,
+                            reliable=True,
+                        ))
+                        continue
+                    if action == fallback_root_action:
+                        continue
+                    cached_upper_bound = next(
+                        (
+                            result for result
+                            in persistent_root_results.get(action, ())
+                            if result.depth == depth
+                            and result.bound == Bound.UPPER.value
+                            and result.score < root_alpha
+                        ),
+                        None,
+                    )
+                    if cached_upper_bound is not None:
+                        precompleted_root_actions.add(action_index)
+                        self._cache_score_hits += 1
+                        if self._metrics is not None:
+                            self._metrics.add("cache_score_hits", 1)
+                        record_result(action_index, _RootEvaluation(
+                            cached_upper_bound.score,
+                            0,
+                            bound=Bound.UPPER,
+                            reliable=True,
+                        ))
+
                 if executor is None:
                     for action_index, action in enumerate(ordered_actions):
+                        if action_index in precompleted_root_actions:
+                            continue
                         self._set_local_worker_busy(
                             True, _WORKER_MODE_SEARCH, action.source, depth)
                         try:
@@ -1740,6 +1962,11 @@ class ChessAI:
                     pending = {}
                     next_action = 0
                     while time.monotonic() < self._deadline:
+                        while (
+                            next_action < len(ordered_actions)
+                            and next_action in precompleted_root_actions
+                        ):
+                            next_action += 1
                         while (
                             next_action < len(ordered_actions)
                             and len(pending) < worker_count
@@ -1815,6 +2042,24 @@ class ChessAI:
                 if finished_root_actions != len(ordered_actions):
                     interrupted = True
                     break
+                self._merge_search_result_updates(
+                    iteration_search_result_updates)
+                for action_index, action in enumerate(ordered_actions):
+                    result = outcomes.get(action_index)
+                    if (
+                        result is not None
+                        and result.score is not None
+                        and result.reliable
+                        and result.bound is not None
+                    ):
+                        self._record_search_result(
+                            state,
+                            action,
+                            depth,
+                            result.score,
+                            result.bound,
+                            persistent_root_key,
+                        )
                 depth_scores = [
                     (completed_scores[index], action)
                     for index, action in enumerate(ordered_actions)
@@ -1862,6 +2107,7 @@ class ChessAI:
         finally:
             self._finish_search_progress()
             self._flush_move_learning_updates()
+            self._flush_search_result_updates()
 
         best_action = max(
             best_known_scores,
@@ -2296,6 +2542,7 @@ class ChessAI:
                                 "root_alpha": -math.inf,
                                 "in_flight": False,
                                 "terminal": False,
+                                "search_result_updates": [],
                             })
                             active_branches.add(root_index)
                             queue_branch(root_index)
@@ -2322,6 +2569,8 @@ class ChessAI:
                         break
 
                     branch = root_branches[root_index]
+                    branch["search_result_updates"].extend(
+                        getattr(result, "search_result_updates", ()))
                     if (
                         result.bound == Bound.UPPER
                         and result.reliable
@@ -2348,6 +2597,9 @@ class ChessAI:
                     else:
                         branch["completed_depth"] = search_depth
                         branch["completed_score"] = branch["root_alpha"]
+                        self._merge_search_result_updates(
+                            branch["search_result_updates"])
+                        branch["search_result_updates"] = []
                         if search_depth == 1 and branch["depth_action_scores"]:
                             preferred_action = max(
                                 branch["depth_action_scores"],
@@ -2427,6 +2679,7 @@ class ChessAI:
                     merge_result_entries(root_key, action, result.entries)
             self._finish_search_progress()
             self._flush_move_learning_updates()
+            self._flush_search_result_updates()
             with self._ponder_state_lock:
                 if worker_cancel_event is not None:
                     worker_cancel_event.clear()
@@ -2568,6 +2821,79 @@ class ChessAI:
         return self._measure_search_call(
             "evaluation_ns", "evaluation_calls", self.evaluate, state)
 
+    @staticmethod
+    def _mover_relative_score(state, black_perspective_score):
+        return (
+            black_perspective_score
+            if state.current_turn == COLOR.BLACK
+            else -black_perspective_score
+        )
+
+    def _is_persistently_soft_cutoff(self, state, result):
+        threshold = self.config.learning_soft_cutoff_threshold
+        if result.bound == Bound.EXACT.value:
+            return self._mover_relative_score(state, result.score) < threshold
+        if state.current_turn == COLOR.BLACK:
+            return (
+                result.bound == Bound.UPPER.value
+                and result.score < threshold
+            )
+        return (
+            result.bound == Bound.LOWER.value
+            and result.score > -threshold
+        )
+
+    @staticmethod
+    def _search_result_at_depth(records, depth):
+        matches = ChessAI._search_results_at_depth(records, depth)
+        return next(
+            (result for result in matches if result.bound == Bound.EXACT.value),
+            matches[0] if matches else None,
+        )
+
+    @staticmethod
+    def _search_results_at_depth(records, depth):
+        return tuple(result for result in records if result.depth == depth)
+
+    def _order_actions_with_persistent_results(
+        self, state, actions, results, depth,
+    ):
+        if not results:
+            return actions
+        original_order = {action: index for index, action in enumerate(actions)}
+        current_results = {
+            action: self._search_result_at_depth(records, depth)
+            for action, records in results.items()
+        }
+        bad_actions = {
+            action for action, result in current_results.items()
+            if result is not None
+            and self._is_persistently_soft_cutoff(state, result)
+        }
+
+        def action_key(action):
+            records = results.get(action, ())
+            result = current_results.get(action)
+            if result is None and records:
+                result = max(
+                    records,
+                    key=lambda item: (
+                        item.depth,
+                        item.bound == Bound.EXACT.value,
+                    ),
+                )
+            mover_score = (
+                self._mover_relative_score(state, result.score)
+                if result is not None else 0.0
+            )
+            return (
+                action in bad_actions,
+                -mover_score,
+                original_order[action],
+            )
+
+        return sorted(actions, key=action_key)
+
     def _search(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
         return self._search_with_proof(state, depth, alpha, beta)[0]
 
@@ -2631,8 +2957,14 @@ class ChessAI:
                 self._cache.put(CacheEntry(key, depth, None, value, Bound.EXACT))
                 self._metric_finish("cache_store_ns", started)
             return value, True
+        persistent_position_key = self._persistent_search_position_key(
+            state, key)
+        persistent_results = self._persistent_search_results(
+            state, actions, persistent_position_key)
         actions = self._order_actions_for_search(
             state, actions, learning_path_eligible)
+        actions = self._order_actions_with_persistent_results(
+            state, actions, persistent_results, depth)
         if hint in actions:
             actions.remove(hint)
             actions.insert(0, hint)
@@ -2654,42 +2986,155 @@ class ChessAI:
                 )
 
         maximizing = state.current_turn == COLOR.BLACK
+        current_depth_results = {
+            action: self._search_results_at_depth(records, depth)
+            for action, records in persistent_results.items()
+        }
+        bad_actions = {
+            action for action, records in current_depth_results.items()
+            if any(
+                self._is_persistently_soft_cutoff(state, result)
+                for result in records
+            )
+        }
+        has_recommended_action = any(
+            action not in bad_actions for action in actions)
+        fallback_action = None
+        if (
+            not has_recommended_action
+            and bad_actions
+            and len(bad_actions) == len(actions)
+        ):
+            fallback_action = max(
+                bad_actions,
+                key=lambda action: self._mover_relative_score(
+                    state,
+                    max(
+                        (
+                            result.score
+                            for result in current_depth_results[action]
+                            if self._is_persistently_soft_cutoff(state, result)
+                        ),
+                        key=lambda score: self._mover_relative_score(
+                            state, score),
+                    ),
+                ),
+            )
         value = -math.inf if maximizing else math.inf
         best_action = None
         cutoff_action = None
         reliable = True
         for action_index, action in enumerate(actions):
-            child = self._apply_generated_action_for_search(state, action)
-            child_learning_path_eligible = (
-                learning_path_eligible and is_plain_move(action))
-            should_reduce = (
-                _LMR_ENABLED
-                and allow_lmr
-                and not king_threatened
-                and self._should_reduce_late_move(
-                    state, action, depth, action_index)
-                and not self._move_attacks_king(
-                    child, action, opposing_king_position)
+            persisted_records = current_depth_results.get(action, ())
+            soft_cutoff_result = next(
+                (
+                    result for result in persisted_records
+                    if self._is_persistently_soft_cutoff(state, result)
+                ),
+                None,
             )
-            if should_reduce:
-                if self._metrics is not None:
-                    self._metrics.add("lmr_probes", 1)
-                action_value, child_reliable = self._search_with_proof(
-                    child, depth - 2, alpha, beta, allow_lmr=allow_lmr,
-                    learning_path_eligible=child_learning_path_eligible)
-                if (action_value > alpha if maximizing else action_value < beta):
+            if (
+                soft_cutoff_result is not None
+                and has_recommended_action
+                and best_action is not None
+                and self._mover_relative_score(state, value)
+                >= self.config.learning_soft_cutoff_threshold
+            ):
+                continue
+            if action == fallback_action:
+                persisted_records = ()
+            persisted_result = self._search_result_at_depth(
+                persisted_records, depth)
+            cutoff_result = None
+            if (
+                persisted_result is not None
+                and persisted_result.bound == Bound.EXACT.value
+            ):
+                action_value = persisted_result.score
+                child_reliable = True
+            else:
+                skip_persisted_action = False
+                for result in persisted_records:
+                    if (
+                        maximizing
+                        and result.bound == Bound.UPPER.value
+                        and best_action is not None
+                        and result.score <= alpha
+                    ) or (
+                        not maximizing
+                        and result.bound == Bound.LOWER.value
+                        and best_action is not None
+                        and result.score >= beta
+                    ):
+                        skip_persisted_action = True
+                        break
+                    if (
+                        maximizing
+                        and result.bound == Bound.LOWER.value
+                        and result.score >= beta
+                    ) or (
+                        not maximizing
+                        and result.bound == Bound.UPPER.value
+                        and result.score <= alpha
+                    ):
+                        cutoff_result = result
+                        break
+                if skip_persisted_action:
+                    continue
+                if cutoff_result is not None:
+                    action_value = cutoff_result.score
+                    child_reliable = True
+                else:
+                    persisted_result = None
+            if persisted_result is None and cutoff_result is None:
+                alpha_before, beta_before = alpha, beta
+                child = self._apply_generated_action_for_search(state, action)
+                child_learning_path_eligible = (
+                    learning_path_eligible and is_plain_move(action))
+                should_reduce = (
+                    _LMR_ENABLED
+                    and allow_lmr
+                    and not king_threatened
+                    and self._should_reduce_late_move(
+                        state, action, depth, action_index)
+                    and not self._move_attacks_king(
+                        child, action, opposing_king_position)
+                )
+                if should_reduce:
                     if self._metrics is not None:
-                        self._metrics.add("lmr_researches", 1)
+                        self._metrics.add("lmr_probes", 1)
+                    action_value, child_reliable = self._search_with_proof(
+                        child, depth - 2, alpha, beta, allow_lmr=allow_lmr,
+                        learning_path_eligible=child_learning_path_eligible)
+                    if (action_value > alpha if maximizing else action_value < beta):
+                        if self._metrics is not None:
+                            self._metrics.add("lmr_researches", 1)
+                        action_value, child_reliable = self._search_with_proof(
+                            child, depth - 1, alpha, beta, allow_lmr=allow_lmr,
+                            learning_path_eligible=child_learning_path_eligible)
+                    else:
+                        # The reduced probe does not establish a full-depth bound.
+                        child_reliable = False
+                else:
                     action_value, child_reliable = self._search_with_proof(
                         child, depth - 1, alpha, beta, allow_lmr=allow_lmr,
                         learning_path_eligible=child_learning_path_eligible)
-                else:
-                    # The reduced probe does not establish a full-depth bound.
-                    child_reliable = False
-            else:
-                action_value, child_reliable = self._search_with_proof(
-                    child, depth - 1, alpha, beta, allow_lmr=allow_lmr,
-                    learning_path_eligible=child_learning_path_eligible)
+                if child_reliable:
+                    action_bound = (
+                        Bound.UPPER
+                        if action_value <= alpha_before
+                        else Bound.LOWER
+                        if action_value >= beta_before
+                        else Bound.EXACT
+                    )
+                    self._record_search_result(
+                        state,
+                        action,
+                        depth,
+                        action_value,
+                        action_bound,
+                        persistent_position_key,
+                    )
             reliable = reliable and child_reliable
             if best_action is None or (
                 action_value > value if maximizing else action_value < value

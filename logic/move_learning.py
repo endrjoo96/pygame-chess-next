@@ -15,12 +15,15 @@ from logic.game_rules import GameAction, GameActionType
 from models.game_state import GameState
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_SEARCH_RESULT_EVALUATION_VERSION = 1
 _MIN_DATABASE_SIZE_BYTES = 16 * 1024
 _MAX_SIGNAL_COUNT = 255
 _MAX_LOCAL_UPDATES = 2048
+_MAX_LOCAL_SEARCH_RESULT_UPDATES = 8192
 _MAX_HINTS_PER_POSITION = 32
 _HINT_CACHE_SIZE = 2048
+_SEARCH_RESULT_CACHE_SIZE = 2048
 _PRUNE_BATCH_SIZE = 256
 _WRITE_BATCH_SIZE = 128
 _DAY_SECONDS = 24 * 60 * 60
@@ -33,6 +36,130 @@ class MoveLearningUpdate:
     preferred: int = 0
     cutoff: int = 0
     worst: int = 0
+
+
+@dataclass(frozen=True)
+class SearchResultUpdate:
+    position_key: str
+    action_key: str
+    depth: int
+    score: float
+    bound: str
+    evaluation_version: int = _SEARCH_RESULT_EVALUATION_VERSION
+
+
+def _stable_state_value(value):
+    from enum import Enum
+
+    if isinstance(value, Enum):
+        return [
+            "enum",
+            value.__class__.__module__,
+            value.__class__.__qualname__,
+            _stable_state_value(value.value),
+        ]
+    if isinstance(value, tuple):
+        return ["tuple", [_stable_state_value(item) for item in value]]
+    if isinstance(value, list):
+        return ["list", [_stable_state_value(item) for item in value]]
+    if isinstance(value, dict):
+        items = [
+            [
+                _stable_state_value(key),
+                _stable_state_value(item),
+            ]
+            for key, item in value.items()
+        ]
+        items.sort(key=lambda item: json.dumps(
+            item, separators=(",", ":"), sort_keys=True))
+        return [
+            "dict",
+            items,
+        ]
+    if isinstance(value, float):
+        return ["float", value.hex()]
+    if callable(value):
+        module = getattr(value, "__module__", None)
+        name = getattr(value, "__qualname__", None)
+        if module is not None and name is not None:
+            return ["callable", module, name]
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    raise TypeError(
+        "Unsupported value in persistent game-state key: {}".format(
+            type(value).__name__))
+
+
+def search_result_position_key(state, state_cache_key=None):
+    if not isinstance(state, GameState):
+        return None
+    if state_cache_key is None:
+        state_cache_key = state.cache_key()
+    payload = [
+        "search-state",
+        _SEARCH_RESULT_EVALUATION_VERSION,
+        _stable_state_value(state_cache_key),
+    ]
+    encoded = json.dumps(
+        payload, separators=(",", ":"), ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class SearchResultAccumulator:
+    def __init__(self):
+        self._updates = OrderedDict()
+
+    def record(self, position_key, action, depth, score, bound):
+        if (
+            not isinstance(depth, int)
+            or isinstance(depth, bool)
+            or depth < 1
+            or not isinstance(score, (int, float))
+            or isinstance(score, bool)
+            or not math.isfinite(score)
+        ):
+            return
+        bound_value = getattr(bound, "value", bound)
+        if bound_value not in ("exact", "lower", "upper"):
+            raise ValueError("Unknown search-result bound {!r}".format(bound))
+        update = SearchResultUpdate(
+            position_key,
+            encode_action(action),
+            depth,
+            float(score),
+            bound_value,
+        )
+        key = (
+            update.position_key,
+            update.action_key,
+            update.depth,
+            update.bound,
+            update.evaluation_version,
+        )
+        previous = self._updates.get(key)
+        if previous is not None:
+            if bound_value == "lower" and previous.score > update.score:
+                update = previous
+            elif bound_value == "upper" and previous.score < update.score:
+                update = previous
+            self._updates.move_to_end(key)
+        elif len(self._updates) >= _MAX_LOCAL_SEARCH_RESULT_UPDATES:
+            self._updates.popitem(last=False)
+        self._updates[key] = update
+
+    def merge(self, updates):
+        for update in updates:
+            self.record(
+                update.position_key,
+                decode_action(update.action_key),
+                update.depth,
+                update.score,
+                update.bound,
+            )
+
+    def snapshot(self):
+        return tuple(self._updates.values())
 
 
 class MoveLearningAccumulator:
@@ -199,7 +326,7 @@ def decode_action(action_key):
 
 
 class MoveLearningStore:
-    """Versioned, bounded SQLite store for move-order hints only."""
+    """Versioned, bounded SQLite store for move hints and search results."""
 
     def __init__(self, path, max_file_size_bytes, read_only=False):
         if (
@@ -217,6 +344,8 @@ class MoveLearningStore:
         self._connection = None
         self._lock = RLock()
         self._hint_cache = OrderedDict()
+        self._search_result_cache = OrderedDict()
+        self._supports_search_results = False
         self._connect()
 
     @classmethod
@@ -248,9 +377,15 @@ class MoveLearningStore:
                 uri, uri=True, timeout=1.0, check_same_thread=False,
                 isolation_level=None,
             )
-            connection.execute("PRAGMA query_only = ON")
-            self._check_schema(connection, allow_uninitialized=False)
-            self._connection = connection
+            try:
+                connection.execute("PRAGMA query_only = ON")
+                schema_version = self._check_schema(
+                    connection, allow_uninitialized=False)
+                self._supports_search_results = schema_version >= 2
+                self._connection = connection
+            except Exception:
+                connection.close()
+                raise
             return
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,14 +394,20 @@ class MoveLearningStore:
             str(self.path), timeout=1.0, check_same_thread=False,
             isolation_level=None,
         )
-        connection.execute("PRAGMA busy_timeout = 1000")
-        if is_new:
-            connection.execute("PRAGMA page_size = 4096")
-            connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
-        self._check_schema(connection, allow_uninitialized=True)
-        self._connection = connection
-        self._enforce_size_limit()
-        self._set_max_page_count()
+        try:
+            connection.execute("PRAGMA busy_timeout = 1000")
+            if is_new:
+                connection.execute("PRAGMA page_size = 1024")
+                connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
+            self._check_schema(connection, allow_uninitialized=True)
+            self._supports_search_results = True
+            self._connection = connection
+            self._enforce_size_limit()
+            self._set_max_page_count()
+        except Exception:
+            connection.close()
+            self._connection = None
+            raise
 
     @staticmethod
     def _check_schema(connection, allow_uninitialized):
@@ -292,11 +433,48 @@ class MoveLearningStore:
                 );
                 CREATE INDEX move_hints_last_seen
                     ON move_hints(last_seen);
-                PRAGMA user_version = 1;
+                CREATE TABLE search_results (
+                    position_key TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    depth INTEGER NOT NULL,
+                    score REAL NOT NULL,
+                    bound TEXT NOT NULL CHECK (
+                        bound IN ('exact', 'lower', 'upper')
+                    ),
+                    evaluation_version INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (
+                        position_key, action_key, depth,
+                        evaluation_version, bound
+                    )
+                );
+                PRAGMA user_version = 2;
                 """
             )
             version = _SCHEMA_VERSION
-        if version != _SCHEMA_VERSION:
+        if version == 1 and allow_uninitialized:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS search_results (
+                    position_key TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    depth INTEGER NOT NULL,
+                    score REAL NOT NULL,
+                    bound TEXT NOT NULL CHECK (
+                        bound IN ('exact', 'lower', 'upper')
+                    ),
+                    evaluation_version INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (
+                        position_key, action_key, depth,
+                        evaluation_version, bound
+                    )
+                );
+                PRAGMA user_version = 2;
+                """
+            )
+            version = 2
+        if version not in (1, _SCHEMA_VERSION):
             raise sqlite3.DatabaseError(
                 "Unsupported move-learning database schema version {}".format(
                     version)
@@ -309,6 +487,16 @@ class MoveLearningStore:
             raise sqlite3.DatabaseError(
                 "Move-learning database is missing its hint table"
             )
+        if version >= 2:
+            results_table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'search_results'"
+            ).fetchone()
+            if results_table is None:
+                raise sqlite3.DatabaseError(
+                    "Move-learning database is missing its search-result table"
+                )
+        return version
 
     def _page_size(self):
         return self._connection.execute(
@@ -331,9 +519,13 @@ class MoveLearningStore:
 
     def _enforce_size_limit(self):
         while self.path.exists() and self.path.stat().st_size > self.max_file_size_bytes:
-            row_count = self._connection.execute(
-                "SELECT COUNT(*) FROM move_hints"
-            ).fetchone()[0]
+            row_count = sum(
+                self._connection.execute(
+                    "SELECT COUNT(*) FROM {}".format(table)
+                ).fetchone()[0]
+                for table in ("move_hints", "search_results")
+                if self._supports_search_results or table == "move_hints"
+            )
             if row_count == 0:
                 raise sqlite3.DatabaseError(
                     "Move-learning database schema exceeds its configured limit"
@@ -344,12 +536,25 @@ class MoveLearningStore:
     def _delete_oldest(self, count):
         self._connection.execute("BEGIN IMMEDIATE")
         try:
-            self._connection.execute(
-                "DELETE FROM move_hints WHERE rowid IN ("
-                "SELECT rowid FROM move_hints "
-                "ORDER BY last_seen ASC, rowid ASC LIMIT ?)",
-                (count,),
-            )
+            tables = ["move_hints"]
+            if self._supports_search_results:
+                tables.append("search_results")
+            oldest = []
+            for table in tables:
+                row = self._connection.execute(
+                    "SELECT MIN(last_seen) FROM {}".format(table)
+                ).fetchone()[0]
+                if row is not None:
+                    oldest.append((row, table))
+            if oldest:
+                _, table = min(oldest)
+                self._connection.execute(
+                    "DELETE FROM {} WHERE rowid IN ("
+                    "SELECT rowid FROM {} "
+                    "ORDER BY last_seen ASC, rowid ASC LIMIT ?)".format(
+                        table, table),
+                    (count,),
+                )
             self._connection.execute("COMMIT")
         except sqlite3.Error:
             if self._connection.in_transaction:
@@ -358,12 +563,66 @@ class MoveLearningStore:
         self._connection.execute(
             "PRAGMA incremental_vacuum({})".format(count))
         self._hint_cache.clear()
+        self._search_result_cache.clear()
 
     def get_action_scores(self, state, actions):
         position_key = learning_position_key(state)
         if position_key is None:
             return {}
         return self.get_hints(position_key, actions)
+
+    def get_search_results(
+        self, state, legal_actions=None, state_key=None,
+    ):
+        if self._connection is None or not self._supports_search_results:
+            return {}
+        position_key = state_key or search_result_position_key(state)
+        if position_key is None:
+            return {}
+        cache_key = (position_key, _SEARCH_RESULT_EVALUATION_VERSION)
+        with self._lock:
+            cached = self._search_result_cache.get(cache_key)
+            if cached is None:
+                rows = self._connection.execute(
+                    "SELECT action_key, depth, score, bound, "
+                    "evaluation_version FROM search_results "
+                    "WHERE position_key = ? AND evaluation_version = ? "
+                    "ORDER BY depth DESC, last_seen DESC",
+                    cache_key,
+                ).fetchall()
+                cached = {}
+                for action_key, depth, score, bound, evaluation_version in rows:
+                    try:
+                        action = decode_action(action_key)
+                    except (ValueError, TypeError, json.JSONDecodeError) as error:
+                        raise sqlite3.DatabaseError(
+                            "Invalid persistent search action: {}".format(error)
+                        ) from None
+                    cached.setdefault(action, []).append(SearchResultUpdate(
+                        position_key,
+                        action_key,
+                        depth,
+                        score,
+                        bound,
+                        evaluation_version,
+                    ))
+                cached = {
+                    action: tuple(records)
+                    for action, records in cached.items()
+                }
+                self._search_result_cache[cache_key] = cached
+                if len(self._search_result_cache) > _SEARCH_RESULT_CACHE_SIZE:
+                    self._search_result_cache.popitem(last=False)
+            else:
+                self._search_result_cache.move_to_end(cache_key)
+            if legal_actions is None:
+                return dict(cached)
+            legal = set(legal_actions)
+            return {
+                action: records
+                for action, records in cached.items()
+                if action in legal
+            }
 
     def clear_hint_cache(self):
         with self._lock:
@@ -425,9 +684,7 @@ class MoveLearningStore:
                 except sqlite3.OperationalError as error:
                     if "full" not in str(error).lower():
                         raise
-                    row_count = self._connection.execute(
-                        "SELECT COUNT(*) FROM move_hints"
-                    ).fetchone()[0]
+                    row_count = self._search_result_row_count()
                     if row_count:
                         self._delete_oldest(max(
                             1,
@@ -442,6 +699,99 @@ class MoveLearningStore:
             self._hint_cache.clear()
             self._enforce_size_limit()
             self._set_max_page_count()
+
+    def apply_search_result_updates(self, updates):
+        if not updates:
+            return
+        if self.read_only or self._connection is None:
+            raise RuntimeError("The move-learning store is not writable")
+        if not self._supports_search_results:
+            raise sqlite3.DatabaseError(
+                "The move-learning database does not support search results")
+        with self._lock:
+            batch_size = min(_WRITE_BATCH_SIZE, len(updates))
+            offset = 0
+            while offset < len(updates):
+                batch = updates[offset:offset + batch_size]
+                try:
+                    self._write_search_result_updates(batch)
+                except sqlite3.OperationalError as error:
+                    if "full" not in str(error).lower():
+                        raise
+                    row_count = self._search_result_row_count()
+                    if row_count:
+                        self._delete_oldest(max(
+                            1,
+                            min(_PRUNE_BATCH_SIZE, row_count // 8 or 1),
+                        ))
+                    elif batch_size > 1:
+                        batch_size = max(1, batch_size // 2)
+                    else:
+                        raise
+                    continue
+                offset += len(batch)
+            self._search_result_cache.clear()
+            self._enforce_size_limit()
+            self._set_max_page_count()
+
+    def _write_search_result_updates(self, updates):
+        connection = self._connection
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            now = int(time.time())
+            for update in updates:
+                if (
+                    update.depth < 1
+                    or update.evaluation_version
+                    != _SEARCH_RESULT_EVALUATION_VERSION
+                    or update.bound not in ("exact", "lower", "upper")
+                    or not math.isfinite(update.score)
+                ):
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO search_results (
+                        position_key, action_key, depth, score, bound,
+                        evaluation_version, last_seen
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (
+                        position_key, action_key, depth,
+                        evaluation_version, bound
+                    ) DO UPDATE SET
+                        score = CASE
+                            WHEN excluded.bound = 'lower'
+                                THEN MAX(search_results.score, excluded.score)
+                            WHEN excluded.bound = 'upper'
+                                THEN MIN(search_results.score, excluded.score)
+                            ELSE excluded.score
+                        END,
+                        last_seen = excluded.last_seen
+                    """,
+                    (
+                        update.position_key,
+                        update.action_key,
+                        update.depth,
+                        update.score,
+                        update.bound,
+                        update.evaluation_version,
+                        now,
+                    ),
+                )
+            connection.execute("COMMIT")
+        except sqlite3.Error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    def _search_result_row_count(self):
+        count = self._connection.execute(
+            "SELECT COUNT(*) FROM move_hints"
+        ).fetchone()[0]
+        if self._supports_search_results:
+            count += self._connection.execute(
+                "SELECT COUNT(*) FROM search_results"
+            ).fetchone()[0]
+        return count
 
     def _write_updates(self, updates):
         connection = self._connection
@@ -485,3 +835,4 @@ class MoveLearningStore:
                 self._connection.close()
                 self._connection = None
             self._hint_cache.clear()
+            self._search_result_cache.clear()

@@ -2074,6 +2074,8 @@ def test_parallel_search_matches_serial_search_and_reports_completed_depths():
         time_limit_seconds=15,
         max_depth=2,
         metrics_enabled=True,
+        learning_enabled=False,
+        learning_save_enabled=False,
     )
     serial_progress = []
     parallel_progress = []

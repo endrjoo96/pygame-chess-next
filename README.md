@@ -181,21 +181,35 @@ normalne uruchomienie aplikacji.
 | `ai.search.learning.enabled` | Włącza odczyt trwałych wskazówek kolejności ruchów; `false` wyłącza cały mechanizm. Domyślnie `false`, w dostarczonym `run.yaml` ustawiono `true`. |
 | `ai.search.learning.save_enabled` | Włącza zapis zebranych wskazówek; przy `false` mechanizm działa tylko do odczytu. Domyślnie `false`, w dostarczonym `run.yaml` ustawiono `true`. Wymaga `ai.search.learning.enabled=true`. |
 | `ai.search.learning.max_file_size` | Maksymalny rozmiar bazy SQLite z podpowiedziami; co najmniej `16k`, dodatnia liczba z opcjonalnym sufiksem `k`, `M` lub `G` (mnożniki binarne). Domyślnie 1/4 fizycznej pamięci RAM, gdy parametr pominięto; w dostarczonym `run.yaml` ustawiono `16G`. |
+| `ai.search.learning.soft_cutoff_threshold` | Próg miękkiego obniżenia priorytetu w perspektywie gracza wykonującego ruch; domyślnie `-20`. Wymaga `ai.search.cache.enabled=true` oraz wiarygodnego wyniku dla tego samego pełnego stanu i głębokości. |
 | `ai.search.metrics.enabled` | `true` włącza zbiorcze pomiary faz wyszukiwania, węzłów, odcięć, cache i workerów; raport jest emitowany raz po wyszukiwaniu. `false` wyłącza dodatkowe timery; domyślnie `false`. Benchmark ma osobny przełącznik `--metrics`, domyślnie `on`, i nie zmienia konfiguracji gry. |
 
-Trwałe uczenie zapisuje wyłącznie wskazówki porządkowania ruchów, nigdy ocen
-ani wyników alpha-beta. Sygnały są zbierane tylko w pozycjach bez aktywnych
-efektów i niedokończonych akcji oraz na liniach, które od początku wyszukiwania
-nie użyły karty; niewykorzystane karty w rękach lub na planszy nie wykluczają
-pozycji. Wskazówki obejmują ruchy preferowane, odcinające i najsłabsze. Każda
-podpowiedź jest ponownie sprawdzana względem aktualnej listy legalnych ruchów,
-więc baza nie wpływa na legalność ani wynik wyszukiwania. Baza SQLite znajduje
-się domyślnie w katalogu danych użytkownika (`%LOCALAPPDATA%` w Windows,
+Trwała baza zawiera dwie osobne tabele. `move_hints` gromadzi ogólne sygnały
+preferowanych, odcinających i słabych zwykłych ruchów; jej wskazówki są
+filtrowane względem aktualnych legalnych akcji i służą tylko do kolejności.
+`search_results` przechowuje dla pełnego, stabilnie zahashowanego stanu każdą
+wiarygodnie ukończoną akcję, głębokość, wynik z perspektywy czarnych oraz bound
+alpha-beta (`exact`, `lower`, `upper`). Klucz obejmuje też obie ręce, efekty,
+karty planszowe i stan RNG. Wpisy są wersjonowane względem oceny/reguł i
+oddzielne dla każdej głębokości; zwiększenie wersji oceny/reguł wymaga
+unieważnienia albo migracji starych wyników. Workery otwierają bazę read-only,
+a proces główny zapisuje aktualizacje po ukończonej iteracji.
+
+Wyniki exact dla zgodnego stanu i głębokości mogą zastąpić ponowne liczenie
+akcji, a granice są używane tylko wtedy, gdy rzeczywiście spełniają warunek
+bieżącego okna alpha-beta. Wynik poniżej progu `-20` obniża priorytet gałęzi
+względem strony na ruchu, ale nie usuwa ruchu z listy legalnych opcji.
+Soft-cutoff korzysta wyłącznie z wiarygodnych wyników na tej samej głębokości;
+gdy wszystkie ruchy są oznaczone jako słabe, najlepszy z nich jest ponownie
+sprawdzany jako awaryjny kandydat. Płytsza analiza nie gwarantuje optymalności
+na większej głębokości, a próg pozostaje heurystyką, nie dowodem najlepszego
+ruchu w całej partii.
+
+Baza SQLite znajduje się domyślnie w katalogu danych użytkownika
+(`%LOCALAPPDATA%` w Windows,
 `~/.local/share` w Linuxie lub `~/Library/Application Support` w macOS);
-zmienną `CHESS_MOVE_LEARNING_DB_PATH`
-można wskazać inną lokalizację. Workery otwierają bazę tylko do odczytu, a
-proces główny zapisuje aktualizacje. Błąd bazy jest logowany na poziomie
-`ERROR`, po czym bot kontynuuje bez trwałych wskazówek.
+zmienną `CHESS_MOVE_LEARNING_DB_PATH` można wskazać inną lokalizację. Błąd bazy
+jest logowany na poziomie `ERROR`, po czym bot kontynuuje bez trwałych wskazówek.
 Okno diagnostyczne pokazuje rozmiar bazy, workery aktualnie pobierające z niej
 wskazówki oraz to, czy wybrany ruch miał podpowiedź w bazie.
 

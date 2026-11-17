@@ -326,6 +326,20 @@ def _load_run_config():
             "'ai.search.metrics.enabled' must be true or false in {}".format(
                 properties_path))
 
+    try:
+        ai_search_learning_soft_cutoff_threshold = float(
+            properties.get(
+                "ai.search.learning.soft_cutoff_threshold", "-20"))
+    except ValueError:
+        raise ValueError(
+            "'ai.search.learning.soft_cutoff_threshold' must be a finite "
+            "number in {}".format(properties_path)
+        ) from None
+    if not math.isfinite(ai_search_learning_soft_cutoff_threshold):
+        raise ValueError(
+            "'ai.search.learning.soft_cutoff_threshold' must be a finite "
+            "number in {}".format(properties_path))
+
     return (
         run_mode,
         log_level,
@@ -343,6 +357,7 @@ def _load_run_config():
         learning_save_enabled_value == "true",
         learning_max_file_size,
         ai_search_metrics_enabled_value == "true",
+        ai_search_learning_soft_cutoff_threshold,
     )
 
 
@@ -363,6 +378,7 @@ def _load_run_config():
     AI_SEARCH_LEARNING_SAVE_ENABLED,
     AI_SEARCH_LEARNING_MAX_FILE_SIZE,
     AI_SEARCH_METRICS_ENABLED,
+    AI_SEARCH_LEARNING_SOFT_CUTOFF_THRESHOLD,
 ) = _load_run_config()
 
 

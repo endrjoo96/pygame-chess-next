@@ -61,6 +61,7 @@ ai:
         False,
         2 * 1024 ** 3,
         True,
+        -20.0,
     )
 
 
@@ -328,7 +329,7 @@ def test_search_metrics_default_to_disabled(monkeypatch, tmp_path):
         run_config, "_load_properties",
         lambda: ({"mode": "PROD"}, tmp_path / "run.yaml"),
     )
-    assert run_config._load_run_config()[-1] is False
+    assert run_config._load_run_config()[-2] is False
 
 
 def test_ponder_cpu_worker_usage_defaults_to_full_usage(monkeypatch, tmp_path):
@@ -448,7 +449,42 @@ def test_search_metrics_enabled_configuration(
             tmp_path / "run.yaml",
         ),
     )
-    assert run_config._load_run_config()[-1] is expected
+    assert run_config._load_run_config()[-2] is expected
+
+
+@pytest.mark.parametrize(("value", "expected"), [("-20", -20.0), ("1.5", 1.5)])
+def test_learning_soft_cutoff_threshold_configuration(
+    monkeypatch, tmp_path, value, expected,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {
+                "mode": "PROD",
+                "ai.search.learning.soft_cutoff_threshold": value,
+            },
+            tmp_path / "run.yaml",
+        ),
+    )
+    assert run_config._load_run_config()[-1] == expected
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "invalid"])
+def test_run_config_rejects_non_finite_learning_cutoff_threshold(
+    monkeypatch, tmp_path, value,
+):
+    monkeypatch.setattr(
+        run_config, "_load_properties",
+        lambda: (
+            {
+                "mode": "PROD",
+                "ai.search.learning.soft_cutoff_threshold": value,
+            },
+            tmp_path / "run.yaml",
+        ),
+    )
+    with pytest.raises(ValueError, match="soft_cutoff_threshold"):
+        run_config._load_run_config()
 
 
 @pytest.mark.parametrize(

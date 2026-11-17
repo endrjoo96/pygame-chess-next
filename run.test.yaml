@@ -22,5 +22,6 @@ ai:
       enabled: true
       save_enabled: true
       max_file_size: 16M
+      soft_cutoff_threshold: -20
     metrics:
       enabled: true

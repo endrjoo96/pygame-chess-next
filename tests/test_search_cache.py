@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
@@ -306,6 +307,15 @@ def test_search_config_rejects_invalid_cache_settings(settings):
         SearchConfig(**settings)
 
 
+@pytest.mark.parametrize(
+    "threshold",
+    [float("nan"), float("inf"), "not-a-number", True],
+)
+def test_search_config_rejects_invalid_soft_cutoff_threshold(threshold):
+    with pytest.raises(ValueError, match="soft-cutoff threshold"):
+        SearchConfig(learning_soft_cutoff_threshold=threshold)
+
+
 @dataclass(frozen=True)
 class TreeState:
     name: str
@@ -395,6 +405,208 @@ def test_white_player_minimizes_and_upper_bound_can_cut_off(monkeypatch):
     assert ai._cache.get(root.cache_key(), 1).bound == Bound.UPPER
     assert ai._search_with_proof(root, 1, 0.0, math.inf) == (-2.0, True)
     assert ai._cache_score_hits == 1
+
+
+@pytest.mark.parametrize(
+    ("turn", "scores", "expected_score"),
+    [
+        (COLOR.BLACK, (-25.0, -10.0), -10.0),
+        (COLOR.WHITE, (25.0, 10.0), 10.0),
+    ],
+)
+def test_persistent_soft_cutoff_reuses_good_line_and_skips_proven_bad_move(
+    monkeypatch, turn, scores, expected_score,
+):
+    root = TreeState("persistent-root", turn)
+    actions = [
+        GameAction(GameActionType.MOVE, 1, 2),
+        GameAction(GameActionType.MOVE, 1, 3),
+    ]
+    records = {
+        action: (
+            SimpleNamespace(
+                depth=1,
+                bound="exact",
+                score=score,
+            ),
+        )
+        for action, score in zip(actions, scores)
+    }
+    evaluated = []
+    monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
+    monkeypatch.setattr(
+        GameSimulation, "available_actions",
+        lambda state: actions if state == root else [],
+    )
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action",
+        lambda _state, action: TreeState(str(action.destination), COLOR.WHITE),
+    )
+    monkeypatch.setattr(
+        ChessAI, "_order_actions", lambda self, state, moves: list(moves))
+    monkeypatch.setattr(
+        ChessAI, "evaluate",
+        staticmethod(lambda state: evaluated.append(state.name) or 0.0),
+    )
+    ai = ChessAI(
+        SearchConfig(
+            cache_enabled=False,
+            learning_enabled=True,
+            learning_save_enabled=False,
+            learning_soft_cutoff_threshold=-20,
+        ),
+        max_workers=1,
+        initialize_move_learning=False,
+    )
+    ai._deadline = time.monotonic() + 10
+    monkeypatch.setattr(
+        ai, "_persistent_search_results",
+        lambda _state, _actions, *_args: records)
+
+    score, reliable = ai._search_with_proof(root, 1, -math.inf, math.inf)
+
+    assert reliable
+    assert score == expected_score
+    assert ai._nodes == 1
+    assert evaluated == []
+
+
+def test_all_persistently_bad_moves_reactivates_best_as_fresh_fallback(
+    monkeypatch,
+):
+    root = TreeState("fallback-root", COLOR.BLACK)
+    actions = [
+        GameAction(GameActionType.MOVE, 1, 2),
+        GameAction(GameActionType.MOVE, 1, 3),
+    ]
+    records = {
+        actions[0]: (SimpleNamespace(depth=1, bound="exact", score=-25.0),),
+        actions[1]: (SimpleNamespace(depth=1, bound="exact", score=-40.0),),
+    }
+    evaluated = []
+    monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
+    monkeypatch.setattr(
+        GameSimulation, "available_actions",
+        lambda state: actions if state == root else [],
+    )
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action",
+        lambda _state, action: TreeState(str(action.destination), COLOR.WHITE),
+    )
+    monkeypatch.setattr(
+        ChessAI, "_order_actions", lambda self, state, moves: list(moves))
+    monkeypatch.setattr(
+        ChessAI, "evaluate",
+        staticmethod(
+            lambda state: evaluated.append(state.name) or -30.0),
+    )
+    ai = ChessAI(
+        SearchConfig(
+            cache_enabled=False,
+            learning_enabled=True,
+            learning_save_enabled=False,
+        ),
+        max_workers=1,
+        initialize_move_learning=False,
+    )
+    ai._deadline = time.monotonic() + 10
+    monkeypatch.setattr(
+        ai, "_persistent_search_results",
+        lambda _state, _actions, *_args: records)
+
+    score, reliable = ai._search_with_proof(root, 1, -math.inf, math.inf)
+
+    assert reliable
+    assert score == -30.0
+    assert evaluated == ["2"]
+
+
+def test_persisted_upper_bound_skips_action_only_after_alpha_proves_it_cannot_win(
+    monkeypatch,
+):
+    root = TreeState("bound-root", COLOR.BLACK)
+    actions = [
+        GameAction(GameActionType.MOVE, 1, 2),
+        GameAction(GameActionType.MOVE, 1, 3),
+    ]
+    records = {
+        actions[0]: (SimpleNamespace(depth=1, bound="upper", score=-5.0),),
+    }
+    evaluated = []
+    monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
+    monkeypatch.setattr(
+        GameSimulation, "available_actions",
+        lambda state: actions if state == root else [],
+    )
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action",
+        lambda _state, action: TreeState(str(action.destination), COLOR.WHITE),
+    )
+    monkeypatch.setattr(
+        ChessAI, "_order_actions", lambda self, state, moves: list(moves))
+    monkeypatch.setattr(
+        ChessAI, "evaluate",
+        staticmethod(lambda state: evaluated.append(state.name) or 1.0),
+    )
+    ai = ChessAI(
+        SearchConfig(cache_enabled=False, learning_enabled=True),
+        max_workers=1,
+        initialize_move_learning=False,
+    )
+    ai._deadline = time.monotonic() + 10
+    monkeypatch.setattr(
+        ai, "_persistent_search_results",
+        lambda _state, _actions, *_args: records)
+
+    score, reliable = ai._search_with_proof(root, 1, -math.inf, math.inf)
+
+    assert reliable
+    assert score == 1.0
+    assert evaluated == ["3"]
+
+
+def test_white_persistent_lower_bound_skips_action_after_beta_is_good_enough(
+    monkeypatch,
+):
+    root = TreeState("white-bound-root", COLOR.WHITE)
+    actions = [
+        GameAction(GameActionType.MOVE, 1, 2),
+        GameAction(GameActionType.MOVE, 1, 3),
+    ]
+    records = {
+        actions[0]: (SimpleNamespace(depth=1, bound="lower", score=25.0),),
+    }
+    evaluated = []
+    monkeypatch.setattr("logic.chess_ai._LMR_ENABLED", False)
+    monkeypatch.setattr(
+        GameSimulation, "available_actions",
+        lambda state: actions if state == root else [],
+    )
+    monkeypatch.setattr(
+        GameSimulation, "_apply_generated_action",
+        lambda _state, action: TreeState(str(action.destination), COLOR.BLACK),
+    )
+    monkeypatch.setattr(
+        ChessAI, "_order_actions", lambda self, state, moves: list(moves))
+    monkeypatch.setattr(
+        ChessAI, "evaluate",
+        staticmethod(lambda state: evaluated.append(state.name) or 10.0),
+    )
+    ai = ChessAI(
+        SearchConfig(cache_enabled=False, learning_enabled=True),
+        max_workers=1,
+        initialize_move_learning=False,
+    )
+    ai._deadline = time.monotonic() + 10
+    monkeypatch.setattr(
+        ai, "_persistent_search_results",
+        lambda _state, _actions, *_args: records)
+
+    score, reliable = ai._search_with_proof(root, 1, -math.inf, math.inf)
+
+    assert reliable
+    assert score == 10.0
+    assert evaluated == ["3"]
 
 
 def test_transposed_subtree_preserves_fixed_depth_score_with_cache(monkeypatch):
