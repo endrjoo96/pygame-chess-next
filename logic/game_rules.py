@@ -2,6 +2,7 @@ import copy
 import random
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
@@ -37,6 +38,7 @@ class GameAction:
     captured_color: COLOR = COLOR.EMPTY
     captured_index: int = -1
     secondary_source: int = 0
+    promotion_type: Optional[PIECE_TYPE] = None
 
     @staticmethod
     def _format_position(position):
@@ -63,11 +65,20 @@ class GameAction:
             fields.append(
                 "secondary_source={}".format(
                     self._format_position(self.secondary_source)))
+        if self.promotion_type is not None:
+            fields.append("promotion_type={}".format(self.promotion_type.value))
         return "GameAction({})".format(", ".join(fields))
 
 
 class GameRules:
     """Mutowalne reguły przejścia stanu, niezależne od interfejsu gry."""
+
+    PAWN_PROMOTION_TYPES = (
+        PIECE_TYPE.QUEEN,
+        PIECE_TYPE.ROOK,
+        PIECE_TYPE.BISHOP,
+        PIECE_TYPE.KNIGHT,
+    )
 
     @classmethod
     def apply_action(
@@ -118,7 +129,12 @@ class GameRules:
                             state, captured_pawn, captured_position)
                         state.pieces_locations[captured_position] = Piece()
                 cls._move_piece(
-                    state, action.destination, rng, advance_board_card_clock)
+                    state,
+                    action.destination,
+                    rng,
+                    advance_board_card_clock,
+                    action.promotion_type,
+                )
         elif action.action_type in (
             GameActionType.APPLY_PASSIVE,
             GameActionType.APPLY_BUFF,
@@ -355,13 +371,27 @@ class GameRules:
                 trap.caster_position = position_moves[trap.caster_position]
 
     @classmethod
-    def _move_piece(cls, state, destination, rng, advance_board_card_clock):
+    def _move_piece(
+        cls, state, destination, rng, advance_board_card_clock,
+        promotion_type=None,
+    ):
         source_position = state.selected_piece_position
         if source_position <= 0:
             return
 
         moving_color = state.current_turn
         piece = state.pieces_locations[source_position]
+        promotion_rank = 7 if moving_color == COLOR.WHITE else 0
+        reaches_promotion_rank = (
+            piece.get_type() == PIECE_TYPE.PAWN
+            and id_to_xy(destination)[1] == promotion_rank
+        )
+        if reaches_promotion_rank:
+            if promotion_type not in cls.PAWN_PROMOTION_TYPES:
+                raise ValueError("A pawn reaching the final rank must be promoted")
+        elif promotion_type is not None:
+            raise ValueError("Only a pawn reaching the final rank can be promoted")
+
         officer_followers = cls._officer_follower_positions(
             state, source_position, piece)
         en_passant_target = cls._en_passant_target_after_pawn_move(
@@ -369,7 +399,9 @@ class GameRules:
         state.en_passant_target = None
         state.en_passant_targets = []
         first_double_move = (
-            cls._selected_card_is_double_move(state) and state.double_move_step == 0
+            cls._selected_card_is_double_move(state)
+            and state.double_move_step == 0
+            and promotion_type is None
         )
         if state.double_move_step == 0:
             cls._advance_stun_effects(state, moving_color)
@@ -415,6 +447,8 @@ class GameRules:
         collected_board_card = followers_collected_card or collected_board_card
         if en_passant_target is not None:
             follower_en_passant_targets.insert(0, en_passant_target)
+        if promotion_type is not None:
+            piece.promote_to(promotion_type)
 
         if not first_double_move and used_card is not None and used_card.consume_use() == 0:
             card_deck.pop(card_index)

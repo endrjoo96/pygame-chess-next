@@ -7,6 +7,11 @@
 - Gra nie używa szacha, mata ani pata: król może wejść na atakowane pole, a ruch nie jest odrzucany z powodu zagrożenia króla.
 - Ruchy figur mogą być zmieniane przez zaklęcia. Dostępne pola są podświetlane po wybraniu figury.
 
+## Awans piona
+
+- Gdy pion dotrze do przeciwległego krańcowego wiersza, natychmiast wybierz w oknie pop-up hetmana, wieżę, gońca lub skoczka.
+- Awans w ten sposób nie wymaga karty i nie nakłada ogłuszenia. Karty awansu nadal pozwalają zmieniać typ figur także poza krańcowym wierszem, zgodnie z opisem karty.
+
 ## Sterowanie
 
 - Kliknij własną figurę, a następnie podświetlone pole, aby wykonać ruch.

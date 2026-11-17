@@ -87,6 +87,7 @@ def make_game(card_type=None, uses=None):
     game.selected_piece_position = 0
     game.moves = []
     game.resurrection_moves = []
+    game.pending_promotion_actions = None
     game.selected_card = (COLOR.WHITE, 0) if cards else None
     game.selected_captured_piece = None
     game.selected_trebuchet_pawn_position = 0
@@ -254,39 +255,34 @@ def test_player_input_is_blocked_while_action_animation_is_active(monkeypatch):
     game.process_player_turn()
 
 
-def test_ai_thinking_blurs_and_reuses_the_background(monkeypatch):
+def test_ai_thinking_overlay_keeps_translucent_black_background(monkeypatch):
     import pygame
 
     game = GameLogicLoop.__new__(GameLogicLoop)
     game.screen = pygame.Surface((160, 120))
     game.context = SimpleNamespace(comic_sans_font=None)
-    game._ai_thinking_background = None
-    blurred_sources = []
-
-    def blur(source):
-        blurred_sources.append(source.copy())
-        background = pygame.Surface(source.get_size())
-        background.fill((80, 90, 100))
-        return background
+    game.screen.fill((0, 0, 0))
+    game.screen.set_at((5, 5), (255, 0, 0))
+    game.screen.set_at((6, 5), (0, 255, 0))
 
     class FakeFont:
         @staticmethod
         def render(_text, _antialias, _color):
             return pygame.Surface((80, 20), pygame.SRCALPHA)
 
-    monkeypatch.setattr("logic.stage.game_logic_loop.blur_surface", blur)
     monkeypatch.setattr(
         "logic.stage.game_logic_loop.SysFont",
         lambda *_args, **_kwargs: FakeFont(),
     )
 
     game.draw_ai_thinking_overlay()
-    game.screen.fill((10, 20, 30))
-    game.draw_ai_thinking_overlay()
+    red_pixel = game.screen.get_at((5, 5))
+    green_pixel = game.screen.get_at((6, 5))
 
-    assert len(blurred_sources) == 1
-    assert blurred_sources[0].get_at((0, 0))[:3] != (10, 20, 30)
-    assert game._ai_thinking_background.get_size() == (160, 120)
+    assert red_pixel.r > 0
+    assert red_pixel.g == 0
+    assert green_pixel.r == 0
+    assert green_pixel.g > 0
 
 
 def click_board(game, position, monkeypatch):
@@ -344,6 +340,47 @@ def test_upgrade_uses_selected_target_and_applies_card_stun(monkeypatch):
     assert game.cards_processor.get_cards_for(COLOR.WHITE) == []
     assert game.current_turn == COLOR.BLACK
     assert game.turns_started[COLOR.BLACK] == 1
+
+
+def test_pawn_move_to_final_rank_opens_promotion_popup_and_applies_choice(monkeypatch):
+    game = make_game()
+    game.screen = SimpleNamespace(
+        get_width=lambda: 1240,
+        get_height=lambda: 880,
+    )
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN, POS.A7.value)
+    game.pieces_locations[POS.A7.value] = pawn
+
+    game._GameLogicLoop__select_piece_for_movement(POS.A7.value, pawn)
+    click_board(game, POS.A8.value, monkeypatch)
+
+    assert game.pending_promotion_actions is not None
+    assert game.pieces_locations[POS.A7.value] is pawn
+    assert {
+        action.promotion_type for action in game.pending_promotion_actions
+    } == {
+        PIECE_TYPE.QUEEN,
+        PIECE_TYPE.ROOK,
+        PIECE_TYPE.BISHOP,
+        PIECE_TYPE.KNIGHT,
+    }
+
+    _, buttons = game._GameLogicLoop__get_promotion_popup_layout()
+    selected_button = next(
+        button for action, button in buttons
+        if action.promotion_type == PIECE_TYPE.ROOK
+    )
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.utils.left_click_event", lambda: True)
+    monkeypatch.setattr(
+        "logic.stage.game_logic_loop.utils.get_mouse_event",
+        lambda: selected_button.center,
+    )
+    game.process_player_turn()
+
+    assert game.pending_promotion_actions is None
+    assert game.pieces_locations[POS.A8.value].get_type() == PIECE_TYPE.ROOK
+    assert game.current_turn == COLOR.BLACK
 
 
 def test_teleport_swaps_selected_piece_with_occupied_square(monkeypatch):

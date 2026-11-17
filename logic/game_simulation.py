@@ -23,6 +23,29 @@ class GameSimulation:
         EnchantmentCardType.ROOK_TOWER_THROW,
     }
     TREBUCHET_RANGE = 5
+    PAWN_PROMOTION_TYPES = GameRules.PAWN_PROMOTION_TYPES
+
+    @classmethod
+    def _append_move_actions(
+        cls, actions, piece, source, destination, card_index=-1,
+    ):
+        promotion_rank = 7 if piece.get_color() == COLOR.WHITE else 0
+        promotion_types = (
+            cls.PAWN_PROMOTION_TYPES
+            if (
+                piece.get_type() == PIECE_TYPE.PAWN
+                and id_to_xy(destination)[1] == promotion_rank
+            )
+            else (None,)
+        )
+        for promotion_type in promotion_types:
+            actions.append(GameAction(
+                GameActionType.MOVE,
+                source,
+                destination,
+                card_index,
+                promotion_type=promotion_type,
+            ))
 
     @staticmethod
     def destinations_for(
@@ -98,12 +121,13 @@ class GameSimulation:
             )
             if basic_destinations:
                 for destination in basic_destinations:
-                    actions.append(GameAction(
-                        GameActionType.MOVE,
+                    cls._append_move_actions(
+                        actions,
+                        piece,
                         source,
                         xy_to_id(*destination),
                         selected_double_card,
-                    ))
+                    )
 
             if in_double_move:
                 continue
@@ -181,12 +205,13 @@ class GameSimulation:
                         card,
                         occupancy,
                     ):
-                        actions.append(GameAction(
-                            GameActionType.MOVE,
+                        cls._append_move_actions(
+                            actions,
+                            piece,
                             source,
                             xy_to_id(*destination),
                             card_index,
-                        ))
+                        )
                 elif card.is_passive() and can_move:
                     action_type = (
                         GameActionType.APPLY_BUFF
@@ -228,12 +253,13 @@ class GameSimulation:
                     if not can_move:
                         continue
                     for destination in basic_destinations:
-                        actions.append(GameAction(
-                            GameActionType.MOVE,
+                        cls._append_move_actions(
+                            actions,
+                            piece,
                             source,
                             xy_to_id(*destination),
                             card_index,
-                        ))
+                        )
                 elif card.allows_captured_piece_selection():
                     actions.extend(cls._resurrection_actions(
                         state, source, card_index, card_type.resurrected_piece_type))

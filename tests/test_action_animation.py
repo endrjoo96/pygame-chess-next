@@ -110,6 +110,40 @@ def test_move_and_used_card_animate_together(monkeypatch):
     assert animation.hidden_card_slot is None
 
 
+def test_promoting_pawn_animation_uses_the_moving_pawns_sprite(monkeypatch):
+    monkeypatch.setattr(
+        "logic.stage.action_animation.pygame.time.get_ticks", lambda: 0)
+    source = 49
+    destination = 57
+    before = AnimationState({
+        source: Piece(COLOR.WHITE, PIECE_TYPE.PAWN),
+        destination: Piece(),
+    })
+    after = AnimationState({
+        source: Piece(),
+        destination: Piece(COLOR.WHITE, PIECE_TYPE.QUEEN),
+    })
+
+    animation = ActionAnimation.from_transition(
+        before,
+        after,
+        GameAction(
+            GameActionType.MOVE,
+            source,
+            destination,
+            promotion_type=PIECE_TYPE.QUEEN,
+        ),
+        make_context(),
+        FakeCardsProcessor(),
+        object(),
+        300,
+    )
+
+    assert animation is not None
+    assert animation.hidden_piece_positions() == (destination,)
+    assert animation.piece_motions[0].piece_name == "white_pawn"
+
+
 def test_teleport_animates_both_swapped_pieces(monkeypatch):
     monkeypatch.setattr(
         "logic.stage.action_animation.pygame.time.get_ticks", lambda: 0)

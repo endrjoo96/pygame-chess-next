@@ -26,6 +26,7 @@ from processors import input_processor
 from processors.capturing_piece_processor import CaptureProcessor
 from processors.cards_processor import CardsProcessor
 from processors.movement_processor import process_possible_basic_moves
+from utils import utils
 from utils.gamecontext import GameContext
 from utils.logging import log_debug, log_error, log_info, log_logic, log_warn
 from utils.run_config import (
@@ -35,7 +36,6 @@ from utils.run_config import (
     UI_ACTION_ANIMATION_DURATION_MS,
     resolve_game_seed,
 )
-from utils.visual import blur_surface
 
 
 class GameLogicLoop(object):
@@ -59,7 +59,6 @@ class GameLogicLoop(object):
         self._ai_active_generation = None
         self._ponder_future: Optional[Future] = None
         self._ponder_cancel_event = Event()
-        self._ai_thinking_background: Optional[Surface] = None
         self._action_animation: Optional[ActionAnimation] = None
         self._position_evaluation = 0.0
         self._position_evaluation_stale = True
@@ -126,7 +125,6 @@ class GameLogicLoop(object):
     def reset(self):
         """Przywraca planszę, talie i liczniki do stanu początkowego nowej partii."""
         self._cancel_pondering()
-        self._ai_thinking_background = None
         self._action_animation = None
         self._position_evaluation_stale = True
         log_info(
@@ -143,6 +141,7 @@ class GameLogicLoop(object):
         self.turns_started = {COLOR.WHITE: 1, COLOR.BLACK: 0}
         self.moves = []
         self.resurrection_moves = []
+        self.pending_promotion_actions = None
         self.selected_piece_position = 0
         self.selected_card = None
         self.selected_captured_piece = None
@@ -361,8 +360,6 @@ class GameLogicLoop(object):
             and self.current_turn == COLOR.BLACK
             and self._ai_future is not None
         )
-        if not thinking:
-            self._ai_thinking_background = None
         return thinking
 
     @property
@@ -429,14 +426,7 @@ class GameLogicLoop(object):
         )
 
     def draw_ai_thinking_overlay(self):
-        """Rysuje rozmyte tło ze spinnerem podczas obliczeń bota."""
-        if (
-            self._ai_thinking_background is None
-            or self._ai_thinking_background.get_size() != self.screen.get_size()
-        ):
-            self._ai_thinking_background = blur_surface(self.screen)
-        self.screen.blit(self._ai_thinking_background, (0, 0))
-
+        """Rysuje półprzezroczyste, czarne tło ze spinnerem podczas obliczeń bota."""
         overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 100))
         self.screen.blit(overlay, (0, 0))
@@ -538,12 +528,17 @@ class GameLogicLoop(object):
                 x += step_x
                 y += step_y
         symbol = piece_symbols.get(piece.get_type(), "?")
+        promotion_suffix = (
+            "={}".format(piece_symbols.get(action.promotion_type, "?"))
+            if action.promotion_type is not None else ""
+        )
         if piece.get_type() == PIECE_TYPE.PAWN and is_capture:
-            return "{}x{}".format(source_square[0], destination_square)
+            return "{}x{}{}".format(
+                source_square[0], destination_square, promotion_suffix)
         return "{}{}{}".format(
             symbol,
             "x" if is_capture else "",
-            destination_square,
+            destination_square + promotion_suffix,
         )
 
     def apply_ai_action(self, action):
@@ -697,6 +692,93 @@ class GameLogicLoop(object):
         if animation is not None and not animation.draw(
             self.screen, self.chess_pieces, animation_time):
             self._action_animation = None
+        self.__draw_promotion_popup()
+
+    def __get_promotion_popup_layout(self):
+        """Zwraca prostokąt okna promocji oraz przyciski jego wyborów."""
+        button_width = 100
+        button_height = 94
+        button_gap = 12
+        padding = 24
+        panel_width = (
+            padding * 2
+            + len(self.pending_promotion_actions) * button_width
+            + (len(self.pending_promotion_actions) - 1) * button_gap
+        )
+        panel_height = 190
+        panel = pygame.Rect(
+            (self.screen.get_width() - panel_width) // 2,
+            (self.screen.get_height() - panel_height) // 2,
+            panel_width,
+            panel_height,
+        )
+        buttons = []
+        for index, action in enumerate(self.pending_promotion_actions):
+            button = pygame.Rect(
+                panel.x + padding + index * (button_width + button_gap),
+                panel.y + 72,
+                button_width,
+                button_height,
+            )
+            buttons.append((action, button))
+        return panel, buttons
+
+    def __draw_promotion_popup(self):
+        """Wyświetla modalny wybór figury po dotarciu piona do końca planszy."""
+        if not self.pending_promotion_actions:
+            return
+
+        panel, buttons = self.__get_promotion_popup_layout()
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+        pygame.draw.rect(self.screen, (36, 39, 48), panel, border_radius=10)
+        pygame.draw.rect(self.screen, (218, 196, 132), panel, 2, border_radius=10)
+
+        title_font = SysFont(self.context.comic_sans_font, 24)
+        title = title_font.render("Wybierz figurę do promocji", True, (245, 245, 245))
+        self.screen.blit(
+            title,
+            (panel.centerx - title.get_width() // 2, panel.y + 18),
+        )
+
+        labels = {
+            PIECE_TYPE.QUEEN: "Hetman",
+            PIECE_TYPE.ROOK: "Wieża",
+            PIECE_TYPE.BISHOP: "Goniec",
+            PIECE_TYPE.KNIGHT: "Skoczek",
+        }
+        source_piece = self.pieces_locations[buttons[0][0].source]
+        mouse_position = pygame.mouse.get_pos()
+        label_font = SysFont(self.context.comic_sans_font, 17)
+        for action, button in buttons:
+            color = (
+                (91, 98, 112)
+                if button.collidepoint(mouse_position)
+                else (57, 62, 73)
+            )
+            pygame.draw.rect(self.screen, color, button, border_radius=7)
+            pygame.draw.rect(
+                self.screen, (145, 150, 162), button, 1, border_radius=7)
+            piece_name = "{}_{}".format(
+                source_piece.get_color().value, action.promotion_type.value)
+            thumbnail_width = int(self.context.piece_cell_thumbnail_width)
+            thumbnail_height = int(self.context.piece_cell_thumbnail_height)
+            self.chess_pieces.draw(
+                self.screen,
+                piece_name,
+                (
+                    button.centerx - thumbnail_width // 2,
+                    button.y + 5,
+                ),
+                True,
+            )
+            label = label_font.render(
+                labels[action.promotion_type], True, (245, 245, 245))
+            self.screen.blit(
+                label,
+                (button.centerx - label.get_width() // 2, button.bottom - 24),
+            )
 
     def __draw_promotion_targets(self):
         """Podświetla własne figury możliwe do ulepszenia wybraną kartą."""
@@ -831,6 +913,10 @@ class GameLogicLoop(object):
         if self.is_action_animation_active:
             return
 
+        if self.pending_promotion_actions is not None:
+            self.__handle_promotion_choice()
+            return
+
         if not self.__selected_card_allows_captured_piece_selection():
             self.selected_captured_piece = None
             self.resurrection_moves = []
@@ -841,6 +927,21 @@ class GameLogicLoop(object):
             return
 
         self.__handle_sidebar_click()
+
+    def __handle_promotion_choice(self):
+        """Zatwierdza wybraną figurę z modalnego okna promocji."""
+        if not utils.left_click_event():
+            return
+        mouse_position = utils.get_mouse_event()
+        _, buttons = self.__get_promotion_popup_layout()
+        action = next(
+            (action for action, button in buttons if button.collidepoint(mouse_position)),
+            None,
+        )
+        if action is None:
+            return
+        self.pending_promotion_actions = None
+        self.__apply_domain_action(action)
 
     def __handle_board_click(self, position):
         """Obsługuje planszowe kliknięcie zależnie od wybranej karty i figury."""
@@ -1003,6 +1104,39 @@ class GameLogicLoop(object):
         for move in self.moves:
             if xy_to_id(move[0], move[1]) != position:
                 continue
+            source = self.selected_piece_position
+            moving_piece = self.pieces_locations[source]
+            promotion_rank = 7 if self.current_turn == COLOR.WHITE else 0
+            if (
+                moving_piece.get_type() == PIECE_TYPE.PAWN
+                and id_to_xy(position)[1] == promotion_rank
+            ):
+                selected_card_index = (
+                    self.selected_card[1]
+                    if self.selected_card is not None
+                    and self.selected_card[0] == self.current_turn
+                    else -1
+                )
+                promotion_actions = tuple(
+                    action
+                    for action in GameSimulation.available_actions(
+                        GameState.from_game(self))
+                    if (
+                        action.action_type == GameActionType.MOVE
+                        and action.source == source
+                        and action.destination == position
+                        and action.card_index == selected_card_index
+                        and action.promotion_type is not None
+                    )
+                )
+                if promotion_actions:
+                    self.pending_promotion_actions = promotion_actions
+                    return
+                log_error(
+                    "No legal promotion choice found for pawn at {}".format(
+                        POS(source).name)
+                )
+                return
             if piece.exists():
                 self.capture_piece(position)
             else:

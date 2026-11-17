@@ -1,21 +1,21 @@
-mode: DIAG
+mode: PROD
 log:
   level: WARN
 game:
   seed: ""
 ui:
-  action_animation_duration_ms: 300
+  action_animation_duration_ms: 500
 ai:
   search:
     max_depth: 7
-    time_limit_seconds: 20.0
+    time_limit_seconds: 15.0
     cpu:
       workers: 4
       worker_usage: 75
     ponder:
       enabled: true
       cpu:
-        worker_usage: 25
+        worker_usage: 15
     cache:
       enabled: true
       max_entries: 8k

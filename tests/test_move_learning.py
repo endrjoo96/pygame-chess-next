@@ -5,6 +5,7 @@ import pytest
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
+from constants.pos import POS
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from logic.move_learning import (
@@ -14,6 +15,7 @@ from logic.move_learning import (
     MoveLearningUpdate,
     learning_position_key,
     encode_action,
+    decode_action,
     default_move_learning_path,
     is_learning_position_eligible,
     is_plain_move,
@@ -70,6 +72,20 @@ def test_learning_keys_allow_hand_cards_but_reject_board_cards_and_effects():
     assert not is_learning_position_eligible(state)
     assert learning_position_key(state) is None
     assert is_plain_move(GameAction(GameActionType.PROMOTE, 8))
+
+
+def test_move_learning_serializes_promotion_choices_and_reads_legacy_actions():
+    promotion = GameAction(
+        GameActionType.MOVE,
+        POS.A7.value,
+        POS.A8.value,
+        promotion_type=PIECE_TYPE.QUEEN,
+    )
+
+    assert decode_action(encode_action(promotion)) == promotion
+    assert decode_action(
+        '["move",13,21,-1,"",-1,0]'
+    ) == GameAction(GameActionType.MOVE, 13, 21)
 
 
 def test_learning_key_distinguishes_turn_and_piece_move_rights():

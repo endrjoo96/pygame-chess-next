@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 import pygame
 
 from constants.piece_color import COLOR
+from constants.piece_type import PIECE_TYPE
 from constants.pos import id_to_xy
 from logic.game_rules import GameAction, GameActionType
 from utils.gamecontext import GameContext
@@ -87,6 +88,7 @@ class ActionAnimation:
     @classmethod
     def _make_piece_motion(
         cls, before_state, after_state, context, source, destination,
+        promotion_type=None,
     ):
         if source not in range(1, 65) or destination not in range(1, 65):
             return None
@@ -97,7 +99,14 @@ class ActionAnimation:
             not before_piece.exists()
             or not after_piece.exists()
             or before_piece.get_color() != after_piece.get_color()
-            or before_piece.get_type() != after_piece.get_type()
+            or (
+                before_piece.get_type() != after_piece.get_type()
+                and not (
+                    promotion_type is not None
+                    and before_piece.get_type() == PIECE_TYPE.PAWN
+                    and after_piece.get_type() == promotion_type
+                )
+            )
         ):
             return None
         return PieceMotion(
@@ -115,7 +124,7 @@ class ActionAnimation:
         ):
             motion = cls._make_piece_motion(
                 before_state, after_state, context,
-                action.source, action.destination)
+                action.source, action.destination, action.promotion_type)
             return (motion,) if motion is not None else ()
 
         if action.action_type == GameActionType.TELEPORT:

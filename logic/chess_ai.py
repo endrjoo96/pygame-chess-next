@@ -3710,7 +3710,12 @@ class ChessAI:
         target = state.pieces_locations.get(action.destination)
         if target is not None and target.exists():
             score += PIECE_VALUES[target.get_type()] * 1.5
-        if action.action_type == GameActionType.PROMOTE:
+        if action.promotion_type is not None:
+            score += (
+                PIECE_VALUES[action.promotion_type]
+                - PIECE_VALUES[PIECE_TYPE.PAWN]
+            )
+        elif action.action_type == GameActionType.PROMOTE:
             score += 3
         elif action.action_type == GameActionType.RESURRECT:
             score += 2

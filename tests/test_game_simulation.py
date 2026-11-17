@@ -546,6 +546,64 @@ def test_promotion_action_applies_upgrade_stun_and_consumes_card(empty_state):
     assert empty_state.pieces_locations[9] is pawn
 
 
+@pytest.mark.parametrize(
+    "color,source,destination",
+    (
+        (COLOR.WHITE, POS.A7.value, POS.A8.value),
+        (COLOR.BLACK, POS.A2.value, POS.A1.value),
+    ),
+)
+def test_pawn_reaching_the_final_rank_has_four_promotion_actions(
+    empty_state, color, source, destination,
+):
+    empty_state.current_turn = color
+    pawn = Piece(color, PIECE_TYPE.PAWN, source)
+    empty_state.pieces_locations[source] = pawn
+
+    actions = [
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.source == source and action.destination == destination
+    ]
+
+    assert {action.promotion_type for action in actions} == {
+        PIECE_TYPE.QUEEN,
+        PIECE_TYPE.ROOK,
+        PIECE_TYPE.BISHOP,
+        PIECE_TYPE.KNIGHT,
+    }
+
+    for action in actions:
+        result = GameSimulation.apply(empty_state, action)
+        assert result.pieces_locations[destination].get_type() == action.promotion_type
+        assert not result.pieces_locations[source].exists()
+        assert empty_state.pieces_locations[source] is pawn
+
+
+def test_promoting_with_a_double_move_card_finishes_the_turn(empty_state):
+    pawn = Piece(COLOR.WHITE, PIECE_TYPE.PAWN, POS.A7.value)
+    empty_state.pieces_locations[POS.A7.value] = pawn
+    empty_state.white_cards.append(
+        EnchantmentCardType.PIECE_DOUBLE_MOVE.create(uses=2))
+    action = next(
+        action
+        for action in GameSimulation.available_actions(empty_state)
+        if (
+            action.source == POS.A7.value
+            and action.destination == POS.A8.value
+            and action.card_index == 0
+            and action.promotion_type == PIECE_TYPE.QUEEN
+        )
+    )
+
+    result = GameSimulation.apply(empty_state, action)
+
+    assert result.current_turn == COLOR.BLACK
+    assert result.pieces_locations[POS.A8.value].get_type() == PIECE_TYPE.QUEEN
+    assert result.double_move_step == 0
+    assert len(result.white_cards) == 1
+    assert result.white_cards[0].get_remaining_uses() == 1
+
+
 def test_return_to_start_action_moves_piece_to_an_empty_matching_start_square(empty_state):
     rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK, starting_position=1)
     empty_state.pieces_locations[17] = rook

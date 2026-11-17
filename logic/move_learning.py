@@ -9,12 +9,13 @@ from pathlib import Path
 from threading import RLock
 
 from constants.piece_color import COLOR
+from constants.piece_type import PIECE_TYPE
 from logic.game_rules import GameAction, GameActionType
 from models.game_state import GameState
 
 
 _SCHEMA_VERSION = 3
-_SEARCH_RESULT_EVALUATION_VERSION = 2
+_SEARCH_RESULT_EVALUATION_VERSION = 3
 _MOVE_HINT_KEY_VERSION = 2
 _LEGACY_MOVE_HINT_KEY_VERSIONS = (1,)
 _MIN_DATABASE_SIZE_BYTES = 16 * 1024
@@ -316,13 +317,14 @@ def encode_action(action):
         action.captured_color.value,
         action.captured_index,
         action.secondary_source,
+        action.promotion_type.value if action.promotion_type is not None else None,
     )
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
 
 
 def decode_action(action_key):
     values = json.loads(action_key)
-    if not isinstance(values, list) or len(values) != 7:
+    if not isinstance(values, list) or len(values) not in (7, 8):
         raise ValueError("Invalid serialized move-learning action")
     return GameAction(
         GameActionType(values[0]),
@@ -332,6 +334,7 @@ def decode_action(action_key):
         COLOR(values[4]),
         values[5],
         values[6],
+        PIECE_TYPE(values[7]) if len(values) == 8 and values[7] is not None else None,
     )
 
 
