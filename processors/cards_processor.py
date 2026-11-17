@@ -336,11 +336,18 @@ class CardsProcessor:
         for font_size in range(13, 0, -1):
             card_font = self.small_font if font_size == 13 else pygame.font.SysFont(
                 GameContext().comic_sans_font, font_size)
-            rendered_card_text = card_font.render(
-                card.get_description(), True, PREDEFINED_COLOR.white, wraplength=text_width)
-            if rendered_card_text.get_height() <= text_height:
+            description_lines = self.__wrap_text(
+                card.get_description(), card_font, text_width)
+            line_height = card_font.get_linesize()
+            description_height = len(description_lines) * line_height
+            if description_height <= text_height:
                 break
 
-        screen.blit(
-            rendered_card_text,
-            (x + margin, text_top + max(0, (text_height - rendered_card_text.get_height()) // 2)))
+        description_top = text_top + max(
+            0, (text_height - description_height) // 2)
+        for line_index, line in enumerate(description_lines):
+            rendered_line = card_font.render(
+                line, True, PREDEFINED_COLOR.white)
+            screen.blit(
+                rendered_line,
+                (x + margin, description_top + line_index * line_height))
