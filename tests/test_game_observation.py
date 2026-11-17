@@ -99,6 +99,7 @@ def test_observation_preserves_all_en_passant_targets_and_rune_traps():
             enchantment=EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
             placed_on_turn=2,
             remaining_owner_turns=1,
+            caster_position=27,
         )
     ]
 
@@ -110,6 +111,7 @@ def test_observation_preserves_all_en_passant_targets_and_rune_traps():
     assert restored.rune_traps[0].position == 36
     assert restored.rune_traps[0].owner == COLOR.WHITE
     assert restored.rune_traps[0].remaining_owner_turns == 1
+    assert restored.rune_traps[0].caster_position == 27
     restored.en_passant_targets.append(47)
     restored.rune_traps[0].remaining_owner_turns = 0
     assert state.en_passant_targets == [45, 46]

@@ -10,12 +10,12 @@ ai:
     max_depth: 7
     time_limit_seconds: 20.0
     cpu:
-      workers: 16
+      workers: 4
       worker_usage: 75
     ponder:
       enabled: true
       cpu:
-        worker_usage: 35
+        worker_usage: 25
     cache:
       enabled: true
       max_entries: 8k

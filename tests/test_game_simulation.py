@@ -1157,6 +1157,54 @@ def test_rune_trap_kills_the_first_piece_that_crosses_its_square(empty_state):
     assert triggered.captured_white[-1].get_type() == PIECE_TYPE.ROOK
 
 
+def test_rune_trap_follows_its_caster_and_disappears_when_caster_is_captured(
+    empty_state,
+):
+    caster_start = POS.B1.value
+    trap_position = POS.C1.value
+    black_rook_start = POS.C8.value
+    empty_state.pieces_locations[caster_start] = Piece(
+        COLOR.WHITE, PIECE_TYPE.KNIGHT, caster_start)
+    empty_state.pieces_locations[black_rook_start] = Piece(
+        COLOR.BLACK, PIECE_TYPE.ROOK, black_rook_start)
+    empty_state.white_cards.append(
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create())
+
+    placement = next(
+        action for action in GameSimulation.available_actions(empty_state)
+        if action.action_type == GameActionType.PLACE_RUNE
+        and action.source == caster_start
+        and action.destination == trap_position
+    )
+    after_placement = GameSimulation.apply(empty_state, placement)
+    assert after_placement.rune_traps[0].caster_position == caster_start
+    assert after_placement.rune_traps[0].remaining_owner_turns == 5
+
+    black_move = next(
+        action for action in GameSimulation.available_actions(after_placement)
+        if action.source == black_rook_start
+        and action.destination == POS.C7.value
+    )
+    after_black = GameSimulation.apply(after_placement, black_move)
+    knight_move = next(
+        action for action in GameSimulation.available_actions(after_black)
+        if action.source == caster_start
+        and action.destination == POS.C3.value
+    )
+    after_knight = GameSimulation.apply(after_black, knight_move)
+    assert after_knight.rune_traps[0].caster_position == POS.C3.value
+
+    capture = next(
+        action for action in GameSimulation.available_actions(after_knight)
+        if action.source == POS.C7.value
+        and action.destination == POS.C3.value
+    )
+    after_capture = GameSimulation.apply(after_knight, capture)
+
+    assert after_capture.rune_traps == []
+    assert after_capture.captured_black[-1].get_type() == PIECE_TYPE.KNIGHT
+
+
 def test_knight_only_triggers_a_rune_when_landing_on_it(empty_state):
     source = POS.C3.value
     destination = POS.E4.value
@@ -1181,38 +1229,59 @@ def test_knight_only_triggers_a_rune_when_landing_on_it(empty_state):
     assert [trap.position for trap in result.rune_traps] == [trap_position]
 
 
-def test_rune_trap_expires_after_two_owner_turns(empty_state):
+def test_rune_trap_expires_after_five_owner_turns(empty_state):
     white_rook = POS.A1.value
     black_rook = POS.H8.value
     empty_state.pieces_locations[white_rook] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
     empty_state.pieces_locations[black_rook] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    empty_state.turns_started[COLOR.WHITE] = 2
+    empty_state.turns_started[COLOR.BLACK] = 1
     empty_state.rune_traps.append(RuneTrap(
         POS.H1.value,
         COLOR.WHITE,
         EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
-        placed_on_turn=0,
+        placed_on_turn=1,
     ))
 
-    white_move = next(
-        action for action in GameSimulation.available_actions(empty_state)
-        if action.source == white_rook and action.destination == POS.A2.value
-    )
-    after_white = GameSimulation.apply(empty_state, white_move)
-    assert after_white.rune_traps[0].remaining_owner_turns == 1
+    state = empty_state
+    for turn_index in range(5):
+        source = POS["A{}".format(turn_index + 1)].value
+        destination = POS["A{}".format(turn_index + 2)].value
+        white_move = next(
+            action for action in GameSimulation.available_actions(state)
+            if action.source == source and action.destination == destination
+        )
+        state = GameSimulation.apply(state, white_move)
 
-    black_move = next(
-        action for action in GameSimulation.available_actions(after_white)
-        if action.source == black_rook and action.destination == POS.H7.value
-    )
-    after_black = GameSimulation.apply(after_white, black_move)
-    assert after_black.rune_traps[0].remaining_owner_turns == 1
+        if turn_index < 4:
+            assert state.rune_traps[0].remaining_owner_turns == 4 - turn_index
+            black_source = POS["H{}".format(8 - turn_index)].value
+            black_destination = POS["H{}".format(7 - turn_index)].value
+            black_move = next(
+                action for action in GameSimulation.available_actions(state)
+                if (
+                    action.source == black_source
+                    and action.destination == black_destination
+                )
+            )
+            state = GameSimulation.apply(state, black_move)
 
-    next_white_move = next(
-        action for action in GameSimulation.available_actions(after_black)
-        if action.source == POS.A2.value and action.destination == POS.A3.value
+    assert state.rune_traps == []
+
+
+def test_game_state_cache_key_includes_rune_caster_position(empty_state):
+    trap = RuneTrap(
+        POS.C3.value,
+        COLOR.WHITE,
+        EnchantmentCardType.KNIGHT_RUNIC_TRAP.create(),
+        placed_on_turn=1,
+        caster_position=POS.B1.value,
     )
-    after_second_white_turn = GameSimulation.apply(after_black, next_white_move)
-    assert after_second_white_turn.rune_traps == []
+    empty_state.rune_traps.append(trap)
+    another_caster_state = empty_state.clone()
+    another_caster_state.rune_traps[0].caster_position = POS.G1.value
+
+    assert empty_state.cache_key() != another_caster_state.cache_key()
 
 
 def test_officer_moves_adjacent_pawns_and_preserves_each_en_passant_target(empty_state):

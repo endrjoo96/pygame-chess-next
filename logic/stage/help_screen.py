@@ -1,8 +1,21 @@
+import re
 from pathlib import Path
 
 import pygame
 
 from utils import utils
+
+
+_ICON_SIZE = 22
+_ICON_TOKEN = re.compile(
+    r":(PASSIVE|BUFF|REUSABLE|DELAY_BEFORE_USE|STUN_AFTER_USE):")
+_ICON_FILES = {
+    "PASSIVE": "card_mod_passive.png",
+    "BUFF": "card_mod_buff.png",
+    "REUSABLE": "card_mod_reusable.png",
+    "DELAY_BEFORE_USE": "card_mod_delay.png",
+    "STUN_AFTER_USE": "card_mod_stun.png",
+}
 
 
 class HelpScreen:
@@ -15,16 +28,51 @@ class HelpScreen:
         self._content_height = 0
         self._scroll = 0
         self._max_scroll = 0
+        self._scrollbar_track = None
+        self._scrollbar_thumb = None
+        self._dragging_scrollbar = False
+        self._scrollbar_drag_offset = 0
         self._title_font = pygame.font.SysFont(None, 40, bold=True)
         self._heading_font = pygame.font.SysFont(None, 28, bold=True)
         self._card_font = pygame.font.SysFont(None, 22, bold=True)
         self._body_font = pygame.font.SysFont(None, 19)
         self._footer_font = pygame.font.SysFont(None, 18)
         self._button_font = pygame.font.SysFont(None, 22)
+        resource_dir = Path(__file__).resolve().parents[2] / "res"
+        self._icons = {
+            token: pygame.transform.smoothscale(
+                pygame.image.load(str(resource_dir / filename)),
+                (_ICON_SIZE, _ICON_SIZE),
+            )
+            for token, filename in _ICON_FILES.items()
+        }
 
     def scroll(self, amount):
         self._scroll = max(
             0, min(self._max_scroll, self._scroll - amount * 54))
+
+    def begin_scroll_drag(self, position):
+        self._dragging_scrollbar = False
+        if self._scrollbar_thumb is None or self._scrollbar_track is None:
+            return False
+        if self._scrollbar_thumb.collidepoint(position):
+            self._scrollbar_drag_offset = (
+                position[1] - self._scrollbar_thumb.top)
+        elif self._scrollbar_track.collidepoint(position):
+            self._scrollbar_drag_offset = self._scrollbar_thumb.height // 2
+        else:
+            return False
+
+        self._dragging_scrollbar = True
+        self._drag_scrollbar_to(position[1])
+        return True
+
+    def drag_scrollbar(self, y):
+        if self._dragging_scrollbar:
+            self._drag_scrollbar_to(y)
+
+    def end_scroll_drag(self):
+        self._dragging_scrollbar = False
 
     def draw(self, screen):
         screen_size = screen.get_size()
@@ -121,12 +169,28 @@ class HelpScreen:
                 spacing = 2
 
             text = text.replace("**", "").replace("`", "")
-            for wrapped_line in self._wrap_line(font, text, text_width):
-                rendered_lines.append((
-                    font.render(wrapped_line, True, color),
-                    (12, y),
-                ))
-                y += font.get_linesize() + spacing
+            for wrapped_line in self._wrap_inline(font, text, text_width):
+                line_height = max(
+                    font.get_linesize(),
+                    _ICON_SIZE if any(kind == "icon" for kind, _, _ in wrapped_line)
+                    else 0,
+                )
+                x = 12
+                for kind, value, gap in wrapped_line:
+                    x += gap
+                    if kind == "icon":
+                        image = self._icons[value]
+                    else:
+                        image = font.render(value, True, color)
+                    rendered_lines.append((
+                        image,
+                        (
+                            x,
+                            y + (line_height - image.get_height()) // 2,
+                        ),
+                    ))
+                    x += image.get_width()
+                y += line_height + spacing
 
         self._content_width = width
         self._content_height = y + 16
@@ -135,24 +199,37 @@ class HelpScreen:
         for image, position in rendered_lines:
             self._content_surface.blit(image, position)
 
-    @staticmethod
-    def _wrap_line(font, text, max_width):
-        words = text.split()
-        if not words:
-            return ("",)
-        lines = []
-        current = words[0]
-        for word in words[1:]:
-            candidate = "{} {}".format(current, word)
-            if font.size(candidate)[0] <= max_width:
-                current = candidate
+    def _wrap_inline(self, font, text, max_width):
+        tokens = []
+        pieces = _ICON_TOKEN.split(text)
+        for index, piece in enumerate(pieces):
+            if index % 2:
+                tokens.append(("icon", piece))
             else:
-                lines.append(current)
-                current = word
-        lines.append(current)
-        return lines
+                tokens.extend(
+                    ("text", word) for word in piece.split())
+
+        lines = [[]]
+        line_width = 0
+        space_width = font.size(" ")[0]
+        for kind, value in tokens:
+            token_width = (
+                self._icons[value].get_width()
+                if kind == "icon"
+                else font.size(value)[0]
+            )
+            gap = space_width if lines[-1] else 0
+            if lines[-1] and line_width + gap + token_width > max_width:
+                lines.append([])
+                line_width = 0
+                gap = 0
+            lines[-1].append((kind, value, gap))
+            line_width += gap + token_width
+        return [line for line in lines if line]
 
     def _draw_scrollbar(self, screen, view_rect):
+        self._scrollbar_track = None
+        self._scrollbar_thumb = None
         if self._max_scroll <= 0:
             return
 
@@ -166,9 +243,25 @@ class HelpScreen:
         thumb_travel = view_rect.height - thumb_height
         thumb_top = view_rect.top + round(
             thumb_travel * self._scroll / self._max_scroll)
-        pygame.draw.rect(
-            screen,
-            (190, 190, 190),
-            pygame.Rect(track.x, thumb_top, track.width, thumb_height),
-            border_radius=2,
+        thumb = pygame.Rect(track.x, thumb_top, track.width, thumb_height)
+        self._scrollbar_track = track
+        self._scrollbar_thumb = thumb
+        pygame.draw.rect(screen, (190, 190, 190), thumb, border_radius=2)
+
+    def _drag_scrollbar_to(self, y):
+        if self._scrollbar_track is None or self._scrollbar_thumb is None:
+            return
+        thumb_travel = (
+            self._scrollbar_track.height - self._scrollbar_thumb.height)
+        if thumb_travel <= 0:
+            return
+        thumb_top = max(
+            self._scrollbar_track.top,
+            min(
+                self._scrollbar_track.bottom - self._scrollbar_thumb.height,
+                y - self._scrollbar_drag_offset,
+            ),
         )
+        progress = (
+            (thumb_top - self._scrollbar_track.top) / thumb_travel)
+        self._scroll = round(progress * self._max_scroll)

@@ -8,6 +8,7 @@ from constants.piece_type import PIECE_TYPE
 from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from logic.move_learning import (
+    _SEARCH_RESULT_EVALUATION_VERSION,
     MoveLearningAccumulator,
     MoveLearningStore,
     MoveLearningUpdate,
@@ -305,7 +306,19 @@ def test_v2_search_results_migrate_as_cutoff_hints(tmp_path):
     key = search_result_position_key(state)
     connection.execute(
         "INSERT INTO search_results VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (key, encode_action(action), 3, -25.0, "exact", 1, 1),
+        (key, encode_action(action), 3, -100.0, "exact", 1, 1),
+    )
+    connection.execute(
+        "INSERT INTO search_results VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            key,
+            encode_action(action),
+            3,
+            -25.0,
+            "exact",
+            _SEARCH_RESULT_EVALUATION_VERSION,
+            2,
+        ),
     )
     connection.commit()
     connection.close()

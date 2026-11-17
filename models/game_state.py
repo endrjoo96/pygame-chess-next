@@ -43,7 +43,8 @@ class RuneTrap:
     owner: COLOR
     enchantment: Enchantment
     placed_on_turn: int
-    remaining_owner_turns: int = 2
+    remaining_owner_turns: int = 5
+    caster_position: Optional[int] = None
 
 
 @dataclass
@@ -203,6 +204,7 @@ class GameState:
                     enchantment_key(trap.enchantment),
                     trap.placed_on_turn,
                     trap.remaining_owner_turns,
+                    trap.caster_position,
                 )
                 for trap in self.rune_traps
             ),

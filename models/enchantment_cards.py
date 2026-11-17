@@ -107,7 +107,8 @@ class EnchantmentCardType(Enum):
     KNIGHT_RUNIC_TRAP = (
         [], 0.12, "Pułapka runiczna",
         "Postaw runę na pustym sąsiednim polu. Pierwsza figura, która na nią wejdzie "
-        "lub przez nią przejdzie, ginie; runa znika po 2 kolejnych turach rzucającego.",
+        "lub przez nią przejdzie, ginie; runa znika po 5 kolejnych turach rzucającego "
+        "albo po zbiciu skoczka, który ją postawił.",
         PIECE_TYPE.KNIGHT, any_piece_behaviors.no_additional_moves)
     PAWN_OFFICER = (
         [EnchantmentType.PASSIVE], 0.2, "Oficer",

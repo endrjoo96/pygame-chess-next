@@ -761,6 +761,7 @@ def test_player_can_place_rune_by_selecting_a_knight_and_empty_square():
     game._GameLogicLoop__handle_board_click(trap_position)
 
     assert [trap.position for trap in game.rune_traps] == [trap_position]
+    assert game.rune_traps[0].caster_position == knight_position
     assert game.current_turn == COLOR.BLACK
     assert game.cards_processor.white_cards == []
 

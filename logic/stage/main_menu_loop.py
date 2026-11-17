@@ -193,6 +193,12 @@ class Game:
                 self._help_screen = None
             elif event.type == pygame.MOUSEWHEEL:
                 self._help_screen.scroll(event.y)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                self._help_screen.begin_scroll_drag(event.pos)
+            elif event.type == pygame.MOUSEMOTION:
+                self._help_screen.drag_scrollbar(event.pos[1])
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                self._help_screen.end_scroll_drag()
         elif event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
             if (
                 self.menu_showed

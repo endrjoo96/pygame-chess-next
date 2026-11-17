@@ -108,13 +108,14 @@ class GameRules:
             else:
                 target = state.pieces_locations[action.destination]
                 if target.exists() and not cls._is_rook_tower_throw_selected(state):
-                    cls._capture_piece(state, target)
+                    cls._capture_piece(state, target, action.destination)
                 else:
                     captured_position = cls.en_passant_capture_position(
                         state, action.source, action.destination)
                     if captured_position is not None:
                         captured_pawn = state.pieces_locations[captured_position]
-                        cls._capture_piece(state, captured_pawn)
+                        cls._capture_piece(
+                            state, captured_pawn, captured_position)
                         state.pieces_locations[captured_position] = Piece()
                 cls._move_piece(
                     state, action.destination, rng, advance_board_card_clock)
@@ -134,6 +135,10 @@ class GameRules:
         elif action.action_type == GameActionType.TELEPORT:
             source_piece = state.pieces_locations[action.source]
             destination_piece = state.pieces_locations[action.destination]
+            cls._move_rune_casters(state, {
+                action.source: action.destination,
+                action.destination: action.source,
+            })
             source_piece.set_has_moved()
             destination_piece.set_has_moved()
             state.pieces_locations[action.source] = destination_piece
@@ -172,6 +177,7 @@ class GameRules:
                 state.current_turn,
                 card,
                 state.turns_started[state.current_turn],
+                caster_position=action.source,
             ))
             cls._discard_selected_card(state)
             state.selected_card = None
@@ -236,6 +242,7 @@ class GameRules:
         _, _, _, card = cls._get_used_card(state, color)
         collected_card = False
         if not cls._trigger_rune_on_route(state, pawn_position, destination):
+            cls._move_rune_casters(state, {pawn_position: destination})
             state.pieces_locations[pawn_position] = Piece()
             state.pieces_locations[destination] = pawn
             pawn.set_has_moved()
@@ -280,7 +287,8 @@ class GameRules:
                 target_position = xy_to_id(target_x, target_y)
                 target_piece = state.pieces_locations[target_position]
                 if target_piece.exists():
-                    GameRules._capture_piece(state, target_piece)
+                    GameRules._capture_piece(
+                        state, target_piece, target_position)
                     state.pieces_locations[target_position] = Piece()
 
         state.pieces_locations[position] = Piece()
@@ -327,7 +335,11 @@ class GameRules:
                 cls._apply_passive_enchantment(state, position, enchantment)
 
     @staticmethod
-    def _capture_piece(state, piece):
+    def _capture_piece(state, piece, position):
+        state.rune_traps = [
+            trap for trap in state.rune_traps
+            if trap.caster_position != position
+        ]
         piece.set_has_moved()
         piece.clear_effects()
         captured = (
@@ -335,6 +347,12 @@ class GameRules:
             if piece.get_color() == COLOR.WHITE else state.captured_white
         )
         captured.append(piece)
+
+    @staticmethod
+    def _move_rune_casters(state, position_moves):
+        for trap in state.rune_traps:
+            if trap.caster_position in position_moves:
+                trap.caster_position = position_moves[trap.caster_position]
 
     @classmethod
     def _move_piece(cls, state, destination, rng, advance_board_card_clock):
@@ -367,6 +385,8 @@ class GameRules:
             if not cls._trigger_rune_on_route(
                 state, rook_source, rook_destination
             ):
+                cls._move_rune_casters(
+                    state, {rook_source: rook_destination})
                 rook = state.pieces_locations[rook_source]
                 state.pieces_locations[rook_source] = Piece()
                 state.pieces_locations[rook_destination] = rook
@@ -380,6 +400,7 @@ class GameRules:
         ):
             cls._capture_rook_throw_route(state, source_position, destination)
 
+        cls._move_rune_casters(state, {source_position: destination})
         state.pieces_locations[source_position] = Piece()
         state.pieces_locations[destination] = piece
         piece.set_has_moved()
@@ -513,7 +534,8 @@ class GameRules:
 
             target_piece = state.pieces_locations[follower_destination]
             if target_piece.exists():
-                cls._capture_piece(state, target_piece)
+                cls._capture_piece(
+                    state, target_piece, follower_destination)
             en_passant_target = cls._en_passant_target_after_pawn_move(
                 follower, state.current_turn, follower_source, follower_destination)
             state.pieces_locations[follower_source] = Piece()
@@ -563,7 +585,7 @@ class GameRules:
             if trap is None:
                 continue
             state.rune_traps.remove(trap)
-            cls._capture_piece(state, piece)
+            cls._capture_piece(state, piece, source)
             state.pieces_locations[source] = Piece()
             return True
         return False
@@ -694,14 +716,14 @@ class GameRules:
             target_position = xy_to_id(target_x, target_y)
             target_piece = state.pieces_locations[target_position]
             if target_piece.exists():
-                cls._capture_piece(state, target_piece)
+                cls._capture_piece(state, target_piece, target_position)
                 state.pieces_locations[target_position] = Piece()
             target_x += step_x
             target_y += step_y
 
         target_piece = state.pieces_locations[destination]
         if target_piece.exists():
-            cls._capture_piece(state, target_piece)
+            cls._capture_piece(state, target_piece, destination)
 
     @staticmethod
     def _collect_board_card(state, destination, moving_color):
