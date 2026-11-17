@@ -92,6 +92,44 @@ def make_game(play_against_ai=True):
     return game
 
 
+def test_game_initialization_supports_window_without_dynamic_attributes(
+    monkeypatch,
+):
+    class FakeScreen:
+        def fill(self, _color):
+            pass
+
+    class FakeImage:
+        def convert(self):
+            return self
+
+    class StrictWindow:
+        __slots__ = ()
+
+        @staticmethod
+        def from_display_module():
+            return StrictWindow()
+
+    screen = FakeScreen()
+    monkeypatch.setattr("logic.stage.main_menu_loop.Window", StrictWindow)
+    monkeypatch.setattr("logic.stage.main_menu_loop.PositionEvaluationBar", object)
+    monkeypatch.setattr("logic.stage.main_menu_loop.Game._create_blurred_menu_background",
+                        lambda _self: None)
+    monkeypatch.setattr(pygame.display, "init", lambda: None)
+    monkeypatch.setattr(pygame.display, "set_mode", lambda *_args: screen)
+    monkeypatch.setattr(pygame.display, "set_caption", lambda _title: None)
+    monkeypatch.setattr(pygame.display, "set_icon", lambda _icon: None)
+    monkeypatch.setattr(pygame.display, "flip", lambda: None)
+    monkeypatch.setattr(pygame.font, "init", lambda: None)
+    monkeypatch.setattr(pygame.image, "load", lambda _path: FakeImage())
+    monkeypatch.setattr(pygame.time, "Clock", object)
+
+    game = Game()
+
+    assert game.screen is screen
+    assert isinstance(game.window, StrictWindow)
+
+
 @pytest.mark.parametrize("run_mode", [RunMode.DEBUG, RunMode.DIAG])
 def test_ai_startup_reports_worker_progress_before_creating_game(
     monkeypatch, run_mode,
@@ -347,6 +385,20 @@ def test_help_screen_scrolls_and_escape_returns_to_pause():
         pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
     assert game._help_screen is None
     assert game.paused
+
+
+@pytest.mark.parametrize(
+    "event_type", [pygame.VIDEORESIZE, pygame.WINDOWRESIZED])
+def test_window_resize_keeps_minimum_game_dimensions(event_type):
+    class FakeWindow:
+        size = (900, 1000)
+
+    game = make_game()
+    game.window = FakeWindow()
+
+    game._handle_app_event(pygame.event.Event(event_type))
+
+    assert game.window.size == (1240, 1000)
 
 
 def test_menu_uses_its_blurred_board_background(monkeypatch):

@@ -65,7 +65,6 @@ class Game:
         self.screen = pygame.display.set_mode(
             [context.screen_width, context.screen_height], pygame.RESIZABLE | pygame.SCALED)
         self.window = Window.from_display_module()
-        self.window.minimum_size = (context.screen_width, context.screen_height)
 
         # set background color
         self.screen.fill(context.bg_color)
@@ -188,6 +187,8 @@ class Game:
     def _handle_app_event(self, event):
         if event.type == pygame.QUIT:
             self.running = False
+        elif event.type in (pygame.VIDEORESIZE, pygame.WINDOWRESIZED):
+            self._enforce_minimum_window_size()
         elif self._help_screen is not None:
             if event.type == pygame.KEYDOWN and event.key == K_ESCAPE:
                 self._help_screen = None
@@ -227,6 +228,17 @@ class Game:
             and not self.paused
         ):
             self.chess.reset()
+
+    def _enforce_minimum_window_size(self):
+        context = GameContext()
+        width, height = self.window.size
+        minimum_width = context.screen_width
+        minimum_height = context.screen_height
+        if width < minimum_width or height < minimum_height:
+            self.window.size = (
+                max(width, minimum_width),
+                max(height, minimum_height),
+            )
 
     def menu(self):
         """Rysuje menu startowe i przełącza do gry po kliknięciu lub Enterze."""
