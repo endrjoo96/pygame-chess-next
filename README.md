@@ -6,6 +6,13 @@ nakładających efekty lub pozwalających na specjalne akcje.
 
 ## Uruchamianie
 
+Wymagany jest Python 3.10 lub nowszy oraz zależności `pygame` i `PyYAML`.
+Nie są instalowane automatycznie — zainstaluj je w używanym środowisku:
+
+```shell
+python -m pip install pygame PyYAML
+```
+
 Uruchom grę z katalogu projektu:
 
 ```shell
