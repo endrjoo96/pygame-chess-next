@@ -40,6 +40,44 @@ Ruch figury i użycie karty są animowane; podczas animacji nie można wykonać
 następnej akcji.
 Menu, pauza i ekran namysłu AI używają rozmytego tła z planszą.
 
+## Wersja webowa i gra sieciowa
+
+Wersja webowa używa Pygbag i nie dołącza modułów AI. GitHub Pages hostuje
+statyczną paczkę, a osobny serwer WebSocket obsługuje pokoje i sygnalizację
+WebRTC; same akcje gry są przesyłane bezpośrednio między przeglądarkami przez
+DataChannel. Host gra białymi, gość czarnymi. Połączenia wymagające serwera
+TURN mogą nie zadziałać, ponieważ obecna konfiguracja korzysta wyłącznie z
+publicznego serwera STUN.
+
+Aby zbudować paczkę lokalnie, ustaw adres dostępnego serwera sygnalizacyjnego
+(`ws://` lokalnie lub `wss://` dla wdrożenia HTTPS) i uruchom:
+
+```shell
+python -m pip install -r web/requirements.txt
+$env:SIGNALING_SERVER_URL = "wss://twoj-serwer.example"
+python web/build.py
+```
+
+Wynikiem jest katalog `web/build`, który można opublikować jako statyczną
+stronę. `SIGNALING_SERVER_URL` może być pusty, ale wtedy dostępna jest tylko
+gra lokalna. Workflow GitHub Actions buduje paczkę i wdraża ją do Pages po
+pushu na `master` lub ręcznym uruchomieniu. W ustawieniach repozytorium wybierz
+**Settings → Pages → Build and deployment → GitHub Actions** oraz dodaj
+zmienną repozytorium Actions `SIGNALING_SERVER_URL` z adresem `wss://`
+wdrożonego serwera.
+
+Serwer sygnalizacyjny można uruchomić na dowolnej usłudze obsługującej Python
+i WebSocket:
+
+```shell
+python -m pip install -r server/requirements.txt
+python -m server.signaling
+```
+
+Serwer nasłuchuje na `0.0.0.0` i porcie z `PORT` (domyślnie `8765`); w
+środowisku lokalnym ustaw `SIGNALING_SERVER_URL` na
+`ws://localhost:8765`. Pages nie hostuje procesu serwera.
+
 ## Bot
 
 Bot gra czarnymi. Podczas namysłu plansza jest przyciemniona, wyświetla się

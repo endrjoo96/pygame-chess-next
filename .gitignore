@@ -5,3 +5,5 @@ program.prof
 __pycache__
 *.pyc
 /log.txt
+/web/build/
+move-learning.sqlite3

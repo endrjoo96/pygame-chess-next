@@ -1,0 +1,9 @@
+mode: PROD
+log:
+  level: WARN
+ui:
+  action_animation_duration_ms: 0
+ai:
+  search:
+    learning:
+      max_file_size: 16k

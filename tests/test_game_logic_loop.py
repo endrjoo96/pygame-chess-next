@@ -162,7 +162,7 @@ def test_position_evaluation_is_cached_and_refreshed_after_action(monkeypatch):
         return next(score_values)
 
     monkeypatch.setattr(
-        "logic.stage.game_logic_loop.ChessAI.evaluate", evaluate)
+        "logic.chess_ai.ChessAI.evaluate", evaluate)
 
     assert game.position_evaluation == -1.25
     assert game.position_evaluation == -1.25
@@ -187,7 +187,7 @@ def test_position_evaluation_cache_is_invalidated_by_reset(monkeypatch):
     game = make_game()
     scores = iter((1.0, 2.0))
     monkeypatch.setattr(
-        "logic.stage.game_logic_loop.ChessAI.evaluate",
+        "logic.chess_ai.ChessAI.evaluate",
         lambda state: next(scores),
     )
     monkeypatch.setattr(
@@ -834,3 +834,56 @@ def test_player_can_recruit_a_pawn_on_the_home_rank():
     assert game.pieces_locations[destination].get_type() == PIECE_TYPE.PAWN
     assert game.cards_processor.white_cards[0].get_remaining_uses() == 1
     assert game.current_turn == COLOR.BLACK
+
+
+def test_network_game_emits_successfully_applied_local_actions(monkeypatch):
+    import logic.stage.game_logic_loop as game_logic_loop
+
+    monkeypatch.setattr(game_logic_loop, "UI_ACTION_ANIMATION_DURATION_MS", 0)
+    sent_actions = []
+    game = make_game()
+    game.local_player_color = COLOR.WHITE
+    game.action_callback = sent_actions.append
+    game.pieces_locations[POS.A1.value] = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
+    action = GameAction(GameActionType.MOVE, POS.A1.value, POS.B1.value)
+
+    game._GameLogicLoop__apply_domain_action(action)
+
+    assert sent_actions == [action]
+
+
+def test_network_game_applies_peer_actions_without_echoing_them(monkeypatch):
+    import logic.stage.game_logic_loop as game_logic_loop
+
+    monkeypatch.setattr(game_logic_loop, "UI_ACTION_ANIMATION_DURATION_MS", 0)
+    sent_actions = []
+    game = make_game()
+    game.local_player_color = COLOR.WHITE
+    game.action_callback = sent_actions.append
+    game.current_turn = COLOR.BLACK
+    game.pieces_locations[POS.H8.value] = Piece(COLOR.BLACK, PIECE_TYPE.ROOK)
+    state = GameState.from_game(game)
+    action = next(
+        action
+        for action in GameSimulation.available_actions(state)
+        if action.action_type == GameActionType.MOVE
+    )
+
+    game.apply_network_action(action)
+
+    assert game.current_turn is COLOR.WHITE
+    assert not game.pieces_locations[action.source].exists()
+    assert game.pieces_locations[action.destination].get_color() is COLOR.BLACK
+    assert sent_actions == []
+
+
+def test_network_game_rejects_peer_action_during_local_turn():
+    game = make_game()
+    game.local_player_color = COLOR.WHITE
+
+    try:
+        game.apply_network_action(GameAction(GameActionType.MOVE, 1, 2))
+    except ValueError as error:
+        assert "local player's turn" in str(error)
+    else:
+        raise AssertionError("A peer action was accepted during the local turn")

@@ -4,7 +4,12 @@ import secrets
 from enum import Enum, IntEnum
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:
+    if os.environ.get("CHESS_WEB_MODE") != "1":
+        raise
+    yaml = None
 
 from utils.system_info import physical_memory_bytes
 
@@ -18,8 +23,12 @@ RUN_CONFIG_PATH = Path(
 )
 
 
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    pass
+if yaml is None:
+    class _UniqueKeySafeLoader:
+        pass
+else:
+    class _UniqueKeySafeLoader(yaml.SafeLoader):
+        pass
 
 
 def _construct_unique_mapping(loader, node, deep=False):
@@ -47,10 +56,11 @@ def _construct_unique_mapping(loader, node, deep=False):
     return mapping
 
 
-_UniqueKeySafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_mapping,
-)
+if yaml is not None:
+    _UniqueKeySafeLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        _construct_unique_mapping,
+    )
 
 
 class RunMode(Enum):
@@ -71,6 +81,15 @@ class LogLevel(IntEnum):
 def _load_properties():
     """Odczytuje run.yaml i spłaszcza zagnieżdżone ustawienia do kluczy z kropkami."""
     properties_path = RUN_CONFIG_PATH
+    if yaml is None:
+        if os.environ.get("CHESS_WEB_MODE") != "1":
+            raise RuntimeError("PyYAML is required to load run configuration")
+        return {
+            "mode": "PROD",
+            "log.level": "WARN",
+            "ai.search.learning.max_file_size": "16k",
+            "ui.action_animation_duration_ms": "0",
+        }, properties_path
     try:
         with properties_path.open(encoding="utf-8") as config_file:
             config = yaml.load(config_file, Loader=_UniqueKeySafeLoader)

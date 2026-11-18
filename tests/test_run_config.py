@@ -7,6 +7,26 @@ def test_pytest_uses_run_test_yaml():
     assert run_config.RUN_CONFIG_PATH.name == "run.test.yaml"
 
 
+def test_web_mode_uses_embedded_defaults_without_pyyaml(monkeypatch):
+    monkeypatch.setattr(run_config, "yaml", None)
+    monkeypatch.setenv("CHESS_WEB_MODE", "1")
+
+    properties, path = run_config._load_properties()
+
+    assert properties["mode"] == "PROD"
+    assert properties["ui.action_animation_duration_ms"] == "0"
+    assert properties["ai.search.learning.max_file_size"] == "16k"
+    assert path == run_config.RUN_CONFIG_PATH
+
+
+def test_missing_pyyaml_is_explicit_outside_web_mode(monkeypatch):
+    monkeypatch.setattr(run_config, "yaml", None)
+    monkeypatch.delenv("CHESS_WEB_MODE", raising=False)
+
+    with pytest.raises(RuntimeError, match="PyYAML is required"):
+        run_config._load_properties()
+
+
 def test_run_config_loads_nested_yaml_values(monkeypatch, tmp_path):
     config_path = tmp_path / "run.yaml"
     config_path.write_text(

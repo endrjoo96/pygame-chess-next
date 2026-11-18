@@ -11,12 +11,9 @@ from pygame.font import SysFont
 from constants.pos import id_to_xy, xy_to_id, POS
 from constants.piece_type import PIECE_TYPE
 from constants.predefined_colors import PREDEFINED_COLOR
-from logic.chess_ai import ChessAI
-from logic.game_rules import GameAction, GameActionType, GameRules
+from logic.game_rules import GameAction, GameActionType
 from logic.game_simulation import GameSimulation
 from logic.stage.action_animation import ActionAnimation
-from models.ai_search_stats import AISearchStats
-from models.game_observation import GameObservation
 from models.game_state import GameState
 from models.chess_pieces import Piece, COLOR
 from models.enchantment_cards import EnchantmentCardType
@@ -37,17 +34,26 @@ from utils.run_config import (
     resolve_game_seed,
 )
 
-
 class GameLogicLoop(object):
-    def __init__(self, screen: Surface, black_ai=None, seed=None):
+    def __init__(
+        self, screen: Surface, black_ai=None, seed=None, *,
+        local_player_color=None, action_callback=None,
+    ):
         """Tworzy stan rozgrywki, procesory i zasoby wizualne dla powierzchni ekranu."""
+        if local_player_color is not None and black_ai is not None:
+            raise ValueError("Network games cannot use an AI opponent")
         self.context = GameContext()
         # display surface
         self.screen = screen
         self.black_ai = black_ai
+        self.local_player_color = local_player_color
+        self.action_callback = action_callback
+        self._applying_network_action = False
         self.seed = resolve_game_seed() if seed is None else seed
         self.rng = random.Random(self.seed)
-        self._ai_executor = ThreadPoolExecutor(max_workers=1)
+        self._ai_executor = (
+            ThreadPoolExecutor(max_workers=1) if black_ai is not None else None
+        )
         self._ai_future: Optional[Future] = None
         self._ai_best_move = None
         self._ai_best_move_from_learning = None
@@ -108,10 +114,20 @@ class GameLogicLoop(object):
     def position_evaluation(self) -> float:
         """Zwraca ocenę bieżącej pozycji w perspektywie białych."""
         if self._position_evaluation_stale:
-            self._position_evaluation = -ChessAI.evaluate(
+            self._position_evaluation = -self._chess_ai_class().evaluate(
                 GameState.from_game(self))
             self._position_evaluation_stale = False
         return self._position_evaluation
+
+    @staticmethod
+    def _chess_ai_class():
+        return __import__(
+            "logic.chess_ai", fromlist=["ChessAI"]).ChessAI
+
+    @classmethod
+    def _is_chess_ai(cls, candidate):
+        return candidate is not None and isinstance(
+            candidate, cls._chess_ai_class())
 
     @property
     def is_action_animation_active(self) -> bool:
@@ -159,7 +175,7 @@ class GameLogicLoop(object):
         if self._ai_future is not None:
             self._ai_future.cancel()
             self._ai_future = None
-        if isinstance(self.black_ai, ChessAI):
+        if self._is_chess_ai(self.black_ai):
             self.black_ai.clear_search_cache()
         with self._ai_progress_lock:
             self._ai_generation += 1
@@ -190,7 +206,8 @@ class GameLogicLoop(object):
             self._ai_future.cancel()
         if self._ponder_future is not None and self._ponder_future.done():
             self._reap_pondering()
-        self._ai_executor.shutdown(wait=True, cancel_futures=True)
+        if self._ai_executor is not None:
+            self._ai_executor.shutdown(wait=True, cancel_futures=True)
         self._reap_pondering()
         if self._ai_future is not None:
             try:
@@ -199,7 +216,7 @@ class GameLogicLoop(object):
                 pass
             except Exception as error:
                 log_error("AI search failed during shutdown: {}".format(error))
-        if isinstance(self.black_ai, ChessAI):
+        if self._is_chess_ai(self.black_ai):
             self.black_ai.close()
 
     def play_turn(self):
@@ -219,7 +236,10 @@ class GameLogicLoop(object):
         if winner is None:
             if self.current_turn == COLOR.BLACK and self.black_ai is not None:
                 self.play_ai_turn()
-            else:
+            elif (
+                getattr(self, "local_player_color", None) is None
+                or self.current_turn == self.local_player_color
+            ):
                 self.process_player_turn()
             winner = self.capture_processor.get_winner()
         if winner is not None:
@@ -233,6 +253,9 @@ class GameLogicLoop(object):
             return
 
         if self._ai_future is None:
+            GameObservation = __import__(
+                "models.game_observation", fromlist=["GameObservation"]
+            ).GameObservation
             state = GameState.from_game(self)
             observation = GameObservation.from_state(state, COLOR.BLACK)
             with self._ai_progress_lock:
@@ -249,7 +272,7 @@ class GameLogicLoop(object):
                 notation = self._format_ai_action_notation(state, action)
                 learning_hint_used = (
                     self.black_ai.action_has_learning_hint(action)
-                    if isinstance(self.black_ai, ChessAI) else None
+                    if self._is_chess_ai(self.black_ai) else None
                 )
                 with self._ai_progress_lock:
                     if generation == self._ai_generation:
@@ -258,7 +281,7 @@ class GameLogicLoop(object):
 
             log_info("Starting AI search for black")
             search_options = {}
-            if isinstance(self.black_ai, ChessAI):
+            if self._is_chess_ai(self.black_ai):
                 search_options["cache_generation"] = (
                     self.black_ai.search_cache_generation()
                 )
@@ -316,7 +339,7 @@ class GameLogicLoop(object):
 
     def _start_pondering(self):
         if (
-            not isinstance(self.black_ai, ChessAI)
+            not self._is_chess_ai(self.black_ai)
             or not self.black_ai.ponder_enabled
             or self.current_turn != COLOR.WHITE
             or self.capture_processor.get_winner() is not None
@@ -336,7 +359,7 @@ class GameLogicLoop(object):
         if future is None:
             return
         self._ponder_cancel_event.set()
-        if isinstance(self.black_ai, ChessAI):
+        if self._is_chess_ai(self.black_ai):
             self.black_ai.cancel_ponder()
         if future.cancel():
             self._ponder_future = None
@@ -363,7 +386,11 @@ class GameLogicLoop(object):
         return thinking
 
     @property
-    def ai_search_stats(self) -> AISearchStats:
+    def ai_search_stats(self):
+        AISearchStats = __import__(
+            "models.ai_search_stats", fromlist=["AISearchStats"]
+        ).AISearchStats
+
         with self._ai_progress_lock:
             best_move = self._ai_best_move
             best_move_from_learning = self._ai_best_move_from_learning
@@ -379,7 +406,7 @@ class GameLogicLoop(object):
             None, None, None, None, None, None, None, None, None, (), None,
             (),
         )
-        if isinstance(self.black_ai, ChessAI):
+        if self._is_chess_ai(self.black_ai):
             cache_stats = self.black_ai.cache_diagnostics()
             cache_deepest_entry_depth = cache_stats[4]
             workers = self.black_ai.worker_stats()
@@ -546,6 +573,20 @@ class GameLogicLoop(object):
         log_logic("Applying AI action {}".format(action))
         self.__apply_domain_action(action)
 
+    def apply_network_action(self, action):
+        """Waliduje i stosuje akcję peera bez ponownego wysyłania jej do sieci."""
+        if self.local_player_color is None:
+            raise RuntimeError("Network actions require a network game")
+        if self.current_turn == self.local_player_color:
+            raise ValueError("Received a network action during the local player's turn")
+        if self.is_action_animation_active:
+            raise RuntimeError("Cannot apply a network action during an animation")
+        self._applying_network_action = True
+        try:
+            self.__apply_domain_action(action)
+        finally:
+            self._applying_network_action = False
+
     def __apply_domain_action(self, action):
         state = GameState.from_game(self)
         result = GameSimulation.apply(
@@ -599,6 +640,11 @@ class GameLogicLoop(object):
             self._cancel_pondering()
         self._action_animation = action_animation
         self._position_evaluation_stale = True
+        callback = getattr(self, "action_callback", None)
+        if callback is not None and not getattr(
+            self, "_applying_network_action", False
+        ):
+            callback(action)
 
     # method to draw pieces on the chess board
     def draw_pieces(self):

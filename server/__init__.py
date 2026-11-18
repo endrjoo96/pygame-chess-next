@@ -1,0 +1,1 @@
+"""Serwer sygnalizacyjny gry sieciowej."""
