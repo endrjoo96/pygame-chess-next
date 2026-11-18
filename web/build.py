@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -74,7 +75,8 @@ def _publish_build(source_dir):
     index_path = built_web / "index.html"
     if not index_path.is_file():
         raise RuntimeError("Pygbag build is missing index.html")
-    html = index_path.read_text(encoding="utf-8")
+    html = _set_canvas_viewport_scale(
+        index_path.read_text(encoding="utf-8"))
     scripts = (
         '<script src="config.js"></script>\n'
         '<script src="network.js"></script>\n'
@@ -82,16 +84,27 @@ def _publish_build(source_dir):
     if "</body>" not in html:
         raise RuntimeError("Pygbag index.html has no closing body tag")
     if "network.js" not in html:
-        index_path.write_text(
-            html.replace("</body>", scripts + "</body>"),
-            encoding="utf-8",
-        )
+        html = html.replace("</body>", scripts + "</body>")
+    index_path.write_text(html, encoding="utf-8")
 
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
     shutil.copytree(built_web, OUTPUT_DIR)
     shutil.copy2(source_dir / "config.js", OUTPUT_DIR / "config.js")
     shutil.copy2(source_dir / "network.js", OUTPUT_DIR / "network.js")
+
+
+def _set_canvas_viewport_scale(html):
+    """Make Pygbag fill the browser viewport instead of using its half-size default."""
+    html, replacements = re.subn(
+        r"(\bgui_divider\s*:\s*)\d+",
+        r"\g<1>1",
+        html,
+        count=1,
+    )
+    if replacements != 1:
+        raise RuntimeError("Pygbag index.html is missing the gui_divider setting")
+    return html
 
 
 def main():
