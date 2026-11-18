@@ -56,6 +56,35 @@ def test_game_action_log_string_uses_chess_square_names():
     assert str(action) == "GameAction(type=move, source=E2, destination=E6)"
 
 
+def test_initial_state_factory_is_seeded_and_has_a_complete_board():
+    first = GameSimulation.create_initial_state(1234)
+    repeated = GameSimulation.create_initial_state(1234)
+    different_seed = GameSimulation.create_initial_state(1235)
+
+    assert first.cache_key() == repeated.cache_key()
+    assert first.cache_key() != different_seed.cache_key()
+    assert len(first.pieces_locations) == 64
+    assert sum(piece.exists() for piece in first.pieces_locations.values()) == 32
+    assert first.current_turn is COLOR.WHITE
+    assert first.turns_started == {COLOR.WHITE: 1, COLOR.BLACK: 0}
+    assert first.white_cards == []
+    assert first.black_cards == []
+    assert GameSimulation.available_actions(first)
+    assert (
+        first.board_card_available
+        == bool(first.board_cards)
+    )
+    if first.board_card_available:
+        assert first.pending_board_card_delay == 0
+    else:
+        assert 1 <= first.pending_board_card_delay <= 5
+
+
+def test_initial_state_factory_rejects_non_integer_seed():
+    with pytest.raises(ValueError, match="seed"):
+        GameSimulation.create_initial_state(True)
+
+
 def test_available_actions_and_simulation_share_board_move_rules(empty_state):
     rook = Piece(COLOR.WHITE, PIECE_TYPE.ROOK)
     empty_state.pieces_locations[1] = rook

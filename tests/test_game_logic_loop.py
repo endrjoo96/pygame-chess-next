@@ -118,6 +118,8 @@ def make_game(card_type=None, uses=None):
     game._ponder_future = None
     game._ponder_cancel_event = Event()
     game._action_animation = None
+    game._applying_network_action = False
+    game._network_action_pending = False
     game._position_evaluation = 0.0
     game._position_evaluation_stale = True
     game.rng = random.Random(23)
@@ -198,6 +200,18 @@ def test_position_evaluation_cache_is_invalidated_by_reset(monkeypatch):
 
     assert game._position_evaluation_stale
     assert game.position_evaluation == -2.0
+    game._ai_executor.shutdown(wait=True)
+
+
+def test_reset_uses_the_shared_simulation_initial_state():
+    game = make_game()
+    game.seed = 1789
+
+    game.reset()
+
+    assert GameState.from_game(game).cache_key() == (
+        GameSimulation.create_initial_state(1789).cache_key()
+    )
     game._ai_executor.shutdown(wait=True)
 
 
@@ -836,7 +850,7 @@ def test_player_can_recruit_a_pawn_on_the_home_rank():
     assert game.current_turn == COLOR.BLACK
 
 
-def test_network_game_emits_successfully_applied_local_actions(monkeypatch):
+def test_network_game_waits_for_server_before_applying_local_action(monkeypatch):
     import logic.stage.game_logic_loop as game_logic_loop
 
     monkeypatch.setattr(game_logic_loop, "UI_ACTION_ANIMATION_DURATION_MS", 0)
@@ -850,6 +864,17 @@ def test_network_game_emits_successfully_applied_local_actions(monkeypatch):
     game._GameLogicLoop__apply_domain_action(action)
 
     assert sent_actions == [action]
+    assert game.current_turn is COLOR.WHITE
+    assert game.pieces_locations[POS.A1.value].get_type() is PIECE_TYPE.ROOK
+    assert not game.pieces_locations[POS.B1.value].exists()
+    assert game._network_action_pending
+
+    game.apply_authoritative_action(action)
+
+    assert game.current_turn is COLOR.BLACK
+    assert not game.pieces_locations[POS.A1.value].exists()
+    assert game.pieces_locations[POS.B1.value].get_color() is COLOR.WHITE
+    assert not game._network_action_pending
 
 
 def test_network_game_applies_peer_actions_without_echoing_them(monkeypatch):
@@ -887,3 +912,17 @@ def test_network_game_rejects_peer_action_during_local_turn():
         assert "local player's turn" in str(error)
     else:
         raise AssertionError("A peer action was accepted during the local turn")
+
+
+def test_network_game_can_reject_pending_action_without_changing_position():
+    game = make_game()
+    game.local_player_color = COLOR.WHITE
+    game._network_action_pending = True
+    game.selected_piece_position = POS.A1.value
+    game.moves = [(0, 1)]
+
+    game.reject_pending_network_action()
+
+    assert not game._network_action_pending
+    assert game.selected_piece_position == 0
+    assert game.moves == []

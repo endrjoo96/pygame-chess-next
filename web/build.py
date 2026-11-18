@@ -45,7 +45,7 @@ def _copy_python_tree(source_name, destination):
         shutil.copy2(path, target)
 
 
-def _stage_application(app_dir, signaling_url):
+def _stage_application(app_dir, game_server_url):
     for package in PACKAGE_DIRS:
         _copy_python_tree(package, app_dir)
     for filename in LOGIC_FILES:
@@ -61,8 +61,8 @@ def _stage_application(app_dir, signaling_url):
     shutil.copy2(WEB_DIR / "run.yaml", app_dir / "run.yaml")
     shutil.copy2(WEB_DIR / "network.js", app_dir / "network.js")
     (app_dir / "config.js").write_text(
-        "window.CHESS_SIGNALING_URL = {};\n".format(
-            json.dumps(signaling_url)),
+        "window.CHESS_GAME_SERVER_URL = {};\n".format(
+            json.dumps(game_server_url)),
         encoding="utf-8",
     )
 
@@ -95,14 +95,17 @@ def _publish_build(source_dir):
 
 
 def main():
-    signaling_url = os.environ.get("SIGNALING_SERVER_URL", "").strip()
-    if signaling_url and not signaling_url.startswith(("wss://", "ws://")):
-        raise ValueError("SIGNALING_SERVER_URL must use ws:// or wss://")
+    game_server_url = os.environ.get(
+        "GAME_SERVER_URL",
+        os.environ.get("SIGNALING_SERVER_URL", ""),
+    ).strip()
+    if game_server_url and not game_server_url.startswith(("wss://", "ws://")):
+        raise ValueError("GAME_SERVER_URL must use ws:// or wss://")
 
     with tempfile.TemporaryDirectory(prefix="chess-next-web-") as temporary_dir:
         source_dir = Path(temporary_dir) / "app"
         source_dir.mkdir()
-        _stage_application(source_dir, signaling_url)
+        _stage_application(source_dir, game_server_url)
         subprocess.run(
             [
                 sys.executable,

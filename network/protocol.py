@@ -9,7 +9,7 @@ from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
 from logic.game_rules import GameAction, GameActionType
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 ROOM_CODE_LENGTH = 6
 _ROOM_CODE_PATTERN = re.compile(r"^[A-HJ-NP-Z2-9]{6}$")
 
@@ -30,15 +30,29 @@ def encode_action(action: GameAction) -> dict[str, Any]:
 
 
 def decode_action(payload: dict[str, Any]) -> GameAction:
+    if not isinstance(payload, dict):
+        raise ValueError("An action payload must be an object")
+
+    def integer(name, default=None):
+        value = payload.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("Invalid integer field '{}'".format(name))
+        return value
+
     promotion = payload.get("promotion_type")
+    captured_color = payload.get("captured_color", COLOR.EMPTY.value)
+    if not isinstance(captured_color, str):
+        raise ValueError("Invalid captured color")
+    if promotion is not None and not isinstance(promotion, str):
+        raise ValueError("Invalid promotion type")
     return GameAction(
         action_type=GameActionType(payload["type"]),
-        source=int(payload["source"]),
-        destination=int(payload.get("destination", 0)),
-        card_index=int(payload.get("card_index", -1)),
-        captured_color=COLOR(payload.get("captured_color", COLOR.EMPTY.value)),
-        captured_index=int(payload.get("captured_index", -1)),
-        secondary_source=int(payload.get("secondary_source", 0)),
+        source=integer("source"),
+        destination=integer("destination", 0),
+        card_index=integer("card_index", -1),
+        captured_color=COLOR(captured_color),
+        captured_index=integer("captured_index", -1),
+        secondary_source=integer("secondary_source", 0),
         promotion_type=PIECE_TYPE(promotion) if promotion is not None else None,
     )
 

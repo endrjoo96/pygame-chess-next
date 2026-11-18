@@ -1,4 +1,4 @@
-"""Klient DataChannel P2P korzystający z mostu JavaScript przeglądarki."""
+"""Klient WebSocket do wysyłania akcji do autorytatywnego serwera gry."""
 
 import json
 
@@ -12,12 +12,11 @@ from network.protocol import (
 )
 
 
-class WebRtcPeer:
-    """Udostępnia klientowi gry zdarzenia i akcje przez WebRTC DataChannel."""
+class WebSocketGameClient:
+    """Udostępnia klientowi gry zdarzenia i akcje przez most JavaScript."""
 
     def __init__(self):
-        self._outgoing_sequence = 0
-        self._incoming_sequence = 0
+        self._next_sequence = 0
 
     @staticmethod
     def _bridge():
@@ -28,23 +27,24 @@ class WebRtcPeer:
             raise RuntimeError("The browser network bridge is not loaded")
         return bridge
 
-    def start_host(self, signaling_url, seed):
-        if isinstance(seed, bool) or not isinstance(seed, int):
-            raise ValueError("The game seed must be an integer")
-        self._bridge().startHost(signaling_url, str(seed))
+    def start_host(self, game_server_url):
+        self._next_sequence = 0
+        self._bridge().startHost(game_server_url)
 
-    def start_guest(self, signaling_url, room_code):
+    def start_guest(self, game_server_url, room_code):
         normalized_code = normalize_room_code(room_code)
         if normalized_code is None:
             raise ValueError("Invalid room code")
-        self._bridge().startGuest(signaling_url, normalized_code)
+        self._next_sequence = 0
+        self._bridge().startGuest(game_server_url, normalized_code)
 
     def poll_events(self):
         raw = str(self._bridge().popMessages())
         try:
             messages = json.loads(raw)
         except (TypeError, ValueError) as error:
-            raise RuntimeError("The browser network bridge returned invalid JSON") from error
+            raise RuntimeError(
+                "The browser network bridge returned invalid JSON") from error
         if not isinstance(messages, list) or any(
             not isinstance(message, dict)
             or not isinstance(message.get("t"), str)
@@ -56,12 +56,10 @@ class WebRtcPeer:
     def send_action(self, action: GameAction):
         message = encode_message(
             "action",
-            seq=self._outgoing_sequence,
+            seq=self._next_sequence,
             action=encode_action(action),
         )
-        if not self._bridge().sendMessage(message):
-            raise RuntimeError("The WebRTC DataChannel is not connected")
-        self._outgoing_sequence += 1
+        return bool(self._bridge().sendMessage(message))
 
     def receive_action(self, message):
         if (
@@ -69,19 +67,19 @@ class WebRtcPeer:
             or message.get("v") != PROTOCOL_VERSION
             or message.get("t") != "action"
         ):
-            raise ValueError("Expected a network action message")
+            raise ValueError("Expected an authoritative action message")
         sequence = message.get("seq")
         if (
             isinstance(sequence, bool)
             or not isinstance(sequence, int)
-            or sequence != self._incoming_sequence
+            or sequence != self._next_sequence
         ):
-            raise ValueError("Unexpected network action sequence")
+            raise ValueError("Unexpected authoritative action sequence")
         try:
             action = decode_action(message["action"])
         except (KeyError, TypeError, ValueError) as error:
-            raise ValueError("Invalid network action") from error
-        self._incoming_sequence += 1
+            raise ValueError("Invalid authoritative action") from error
+        self._next_sequence += 1
         return action
 
     def close(self):

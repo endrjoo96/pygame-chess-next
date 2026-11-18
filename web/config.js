@@ -1,1 +1,1 @@
-window.CHESS_SIGNALING_URL = "";
+window.CHESS_GAME_SERVER_URL = "";

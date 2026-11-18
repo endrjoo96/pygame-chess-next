@@ -30,7 +30,7 @@ jobs:
       - name: Build web package
         run: python web/build.py
         env:
-          SIGNALING_SERVER_URL: ${{ vars.SIGNALING_SERVER_URL }}
+          GAME_SERVER_URL: ${{ vars.GAME_SERVER_URL || vars.SIGNALING_SERVER_URL }}
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

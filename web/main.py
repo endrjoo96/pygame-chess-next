@@ -1,6 +1,5 @@
 import asyncio
 import os
-import secrets
 
 os.environ["CHESS_WEB_MODE"] = "1"
 
@@ -9,7 +8,7 @@ from pygame.locals import K_ESCAPE
 
 from constants.piece_color import COLOR
 from logic.stage.game_logic_loop import GameLogicLoop
-from network.peer import WebRtcPeer
+from network.client import WebSocketGameClient
 from network.protocol import build_invite_url, room_code_from_invite_url
 from utils import utils
 from utils.gamecontext import GameContext
@@ -30,9 +29,9 @@ def _browser_window():
     return window
 
 
-def _signaling_url():
+def _game_server_url():
     window = _browser_window()
-    value = getattr(window, "CHESS_SIGNALING_URL", "")
+    value = getattr(window, "CHESS_GAME_SERVER_URL", "")
     return str(value).strip()
 
 
@@ -104,12 +103,12 @@ async def main():
     pygame.display.set_caption("Chess NEXT - gra sieciowa")
     board_image = pygame.image.load(context.board_src).convert()
     _initialize_board_coordinates(context, board_image)
-    peer = WebRtcPeer()
+    peer = WebSocketGameClient()
     status = "Wybierz tryb gry"
     invite_url = ""
     room_code = room_code_from_invite_url(
         str(_browser_window().location.href))
-    signaling_url = _signaling_url()
+    game_server_url = _game_server_url()
     game = None
     local_color = None
     game_seed = None
@@ -122,11 +121,11 @@ async def main():
     buttons = _menu_buttons(screen)
 
     if room_code is not None:
-        if signaling_url:
-            peer.start_guest(signaling_url, room_code)
+        if game_server_url:
+            peer.start_guest(game_server_url, room_code)
             status = "Dołączanie do pokoju {}".format(room_code)
         else:
-            status = "Brak skonfigurowanego serwera sygnalizacyjnego"
+            status = "Brak skonfigurowanego serwera gry"
 
     try:
         while running:
@@ -141,7 +140,9 @@ async def main():
                         game = None
                         peer.close()
                         local_color = None
+                        room_code = None
                         invite_url = ""
+                        pending_messages.clear()
                         status = "Wybierz tryb gry"
                     else:
                         running = False
@@ -153,37 +154,52 @@ async def main():
                     room_code = message.get("room")
                     invite_url = build_invite_url(
                         str(_browser_window().location.href), room_code)
-                    status = "Pokój {} utworzony; wyślij zaproszenie".format(
+                    status = "Pokój {} utworzony; wyślij link i czekaj".format(
                         room_code)
                 elif message_type == "room_joined":
                     game_seed = int(message["seed"])
-                    local_color = COLOR.BLACK
-                    status = "Połączono z pokojem {}; oczekiwanie na P2P".format(
+                    status = "Dołączono do pokoju {}; uruchamianie gry".format(
                         message.get("room"))
-                elif message_type == "connected":
-                    if local_color is None:
-                        local_color = COLOR.WHITE
-                    if game is None:
-                        if game_seed is None:
-                            raise RuntimeError("The signaling server omitted the game seed")
-                        game = _new_game(
-                            screen,
-                            game_seed,
-                            player_color=local_color,
-                            action_callback=peer.send_action,
-                        )
-                    status = "Połączono P2P; grasz {}".format(
+                elif message_type == "player_joined":
+                    status = "Drugi gracz dołączył; rozpoczynanie partii"
+                elif message_type == "game_started":
+                    game_seed = int(message["seed"])
+                    local_color = COLOR(message["color"])
+                    game = _new_game(
+                        screen,
+                        game_seed,
+                        player_color=local_color,
+                        action_callback=peer.send_action,
+                    )
+                    status = "Partia na serwerze; grasz {}".format(
                         local_color.value)
                 elif message_type == "action":
                     pending_messages.append(message)
                 elif message_type == "peer_disconnected":
-                    status = "Przeciwnik rozłączył się"
+                    _close_game(game)
+                    game = None
+                    room_code = None
+                    invite_url = ""
+                    local_color = None
+                    pending_messages.clear()
+                    status = "Przeciwnik rozłączył się; pokój został zamknięty"
+                elif message_type == "action_rejected":
+                    if game is not None:
+                        game.reject_pending_network_action()
+                    status = "Serwer odrzucił akcję: {}".format(
+                        message.get("reason", "nieznany"))
                 elif message_type == "error":
                     status = "Błąd połączenia: {}".format(
                         message.get("reason", "nieznany"))
                     log_error(status)
-                elif message_type == "signaling_disconnected":
-                    status = "Utracono połączenie z serwerem sygnalizacyjnym"
+                elif message_type == "server_disconnected":
+                    _close_game(game)
+                    game = None
+                    local_color = None
+                    room_code = None
+                    invite_url = ""
+                    pending_messages.clear()
+                    status = "Utracono połączenie z serwerem gry"
                 elif message_type == "invite_copied":
                     status = "Skopiowano link zaproszenia"
 
@@ -212,20 +228,23 @@ async def main():
                         status = "Gra lokalna dla dwóch graczy"
                         utils.begin_input_frame([])
                     elif buttons[1].collidepoint(mouse_position):
-                        if not signaling_url:
-                            status = "Ustaw CHESS_SIGNALING_URL w web/config.js"
+                        if not game_server_url:
+                            status = "Brak adresu serwera gry w config.js"
                         else:
-                            game_seed = secrets.randbits(64)
-                            local_color = COLOR.WHITE
-                            peer.start_host(signaling_url, game_seed)
+                            room_code = None
+                            invite_url = ""
+                            pending_messages.clear()
+                            local_color = None
+                            peer.start_host(game_server_url)
                             status = "Tworzenie pokoju..."
                     elif buttons[2].collidepoint(mouse_position):
                         if room_code is None:
                             status = "Otwórz link zaproszenia z kodem pokoju"
-                        elif not signaling_url:
-                            status = "Ustaw CHESS_SIGNALING_URL w web/config.js"
+                        elif not game_server_url:
+                            status = "Brak adresu serwera gry w config.js"
                         else:
-                            peer.start_guest(signaling_url, room_code)
+                            pending_messages.clear()
+                            peer.start_guest(game_server_url, room_code)
                             status = "Dołączanie do pokoju {}".format(room_code)
 
                 _draw_text(
@@ -265,7 +284,7 @@ async def main():
                     message = pending_messages.pop(0)
                     try:
                         action = peer.receive_action(message)
-                        game.apply_network_action(action)
+                        game.apply_authoritative_action(action)
                     except (ValueError, RuntimeError) as error:
                         status = "Odrzucono akcję sieciową: {}".format(error)
                         log_error(status)

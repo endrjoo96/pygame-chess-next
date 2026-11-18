@@ -1,15 +1,18 @@
+import random
 from typing import List
 
 from constants.piece_color import COLOR
 from constants.piece_type import PIECE_TYPE
-from constants.pos import id_to_xy, xy_to_id
+from constants.pos import POS, id_to_xy, xy_to_id
 from models.enchantment_cards import EnchantmentCardType
 from models.game_state import GameState
 from models.starting_positions import pieces_starting_positions_map
+from models.chess_pieces import Piece
 from logic.game_rules import GameAction, GameActionType, GameRules
 from processors.bitboard_move_generator import BoardBitboards
 from processors.movement_processor import process_possible_basic_moves
-from utils.logging import log_error
+from utils.logging import log_debug, log_error, log_logic
+from utils.run_config import RUN_MODE, RunMode
 
 
 class GameSimulation:
@@ -24,6 +27,68 @@ class GameSimulation:
     }
     TREBUCHET_RANGE = 5
     PAWN_PROMOTION_TYPES = GameRules.PAWN_PROMOTION_TYPES
+
+    @classmethod
+    def create_initial_state(cls, seed: int) -> GameState:
+        """Tworzy początkowy stan domenowy bez inicjalizowania interfejsu Pygame."""
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError("The game seed must be an integer")
+
+        rng = random.Random(seed)
+        pieces = {position: Piece() for position in range(1, 65)}
+        for position, piece in pieces_starting_positions_map.items():
+            pieces[position.value] = Piece(
+                piece.get_color(), piece.get_type(), position.value)
+
+        pending_delay = (
+            0 if RUN_MODE is RunMode.DEBUG else rng.randint(1, 5)
+        )
+        log_logic(
+            "Board card placement: scheduled; delay={} turn(s) (run mode={})".format(
+                pending_delay, RUN_MODE.value)
+        )
+        state = GameState(
+            pieces_locations=pieces,
+            current_turn=COLOR.WHITE,
+            turns_started={COLOR.WHITE: 1, COLOR.BLACK: 0},
+            white_cards=[],
+            black_cards=[],
+            captured_white=[],
+            captured_black=[],
+            board_card_available=False,
+            board_card_position=POS.D5.value,
+            board_enchantment=None,
+            pending_board_card_delay=pending_delay,
+            random_state=rng.getstate(),
+        )
+        if pending_delay == 0:
+            empty_positions = [
+                position for position, piece in pieces.items()
+                if not piece.exists()
+            ]
+            log_debug(
+                "Board card placement: found {} empty square(s)".format(
+                    len(empty_positions))
+            )
+            card_position = rng.choice(empty_positions)
+            log_debug(
+                "Board card placement: selected square {}".format(
+                    POS(card_position).name)
+            )
+            card = EnchantmentCardType.create_random(rng)
+            state.board_card_available = True
+            state.board_card_position = card_position
+            state.board_enchantment = card
+            state.board_cards = [(card_position, card)]
+            state.random_state = rng.getstate()
+            log_logic(
+                "Board card placement: '{}' is now available on {}; next-card countdown starts at {} turn(s)".format(
+                    card.get_title(),
+                    POS(card_position).name,
+                    pending_delay,
+                )
+            )
+        return state
 
     @classmethod
     def _append_move_actions(

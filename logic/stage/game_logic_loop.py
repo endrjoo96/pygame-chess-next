@@ -49,6 +49,7 @@ class GameLogicLoop(object):
         self.local_player_color = local_player_color
         self.action_callback = action_callback
         self._applying_network_action = False
+        self._network_action_pending = False
         self.seed = resolve_game_seed() if seed is None else seed
         self.rng = random.Random(self.seed)
         self._ai_executor = (
@@ -142,6 +143,7 @@ class GameLogicLoop(object):
         """Przywraca planszę, talie i liczniki do stanu początkowego nowej partii."""
         self._cancel_pondering()
         self._action_animation = None
+        self._network_action_pending = False
         self._position_evaluation_stale = True
         log_info(
             "Initializing game state: seed={}, mode={}, log_level={}, black_ai={}".format(
@@ -151,7 +153,6 @@ class GameLogicLoop(object):
                 self.black_ai is not None,
             )
         )
-        self.rng.seed(self.seed)
         # clear moves lists
         self.current_turn = COLOR.WHITE
         self.turns_started = {COLOR.WHITE: 1, COLOR.BLACK: 0}
@@ -188,16 +189,26 @@ class GameLogicLoop(object):
         self.capture_processor.reset()
         self.cards_processor.reset_decks()
 
-        # two dimensonal dictionary containing details about each board location
-        # storage format is [piece_name, currently_selected, x_y_coordinate]
-        # # reset the board
-        for i in range(1, 65):
-            # [piece name, currently selected]
-            self.pieces_locations[i] = Piece()
-        for position, piece in pieces_starting_positions_map.items():
-            self.pieces_locations[position.value] = Piece(
-                piece.get_color(), piece.get_type(), position.value)
-        self.__schedule_next_board_card()
+        initial_state = GameSimulation.create_initial_state(self.seed)
+        self.pieces_locations = initial_state.pieces_locations
+        self.current_turn = initial_state.current_turn
+        self.turns_started = initial_state.turns_started
+        self.board_card_available = initial_state.board_card_available
+        self.board_card_position = initial_state.board_card_position
+        self.board_enchantment = initial_state.board_enchantment
+        self.board_cards = initial_state.board_cards
+        self.rune_traps = initial_state.rune_traps
+        self.pending_board_card_delay = initial_state.pending_board_card_delay
+        self.en_passant_target = initial_state.en_passant_target
+        self.en_passant_targets = initial_state.en_passant_targets
+        self.selected_card = initial_state.selected_card
+        self.selected_piece_position = initial_state.selected_piece_position
+        self.selected_captured_piece = initial_state.selected_captured_piece
+        self.double_move_step = initial_state.double_move_step
+        self.double_move_collected_board_card = (
+            initial_state.double_move_collected_board_card)
+        self.resurrection_moves = initial_state.resurrection_moves
+        self.rng.setstate(initial_state.random_state)
 
     def close(self):
         """Kończy wyszukiwanie i zamyka zasoby AI przy zamykaniu aplikacji."""
@@ -239,7 +250,7 @@ class GameLogicLoop(object):
             elif (
                 getattr(self, "local_player_color", None) is None
                 or self.current_turn == self.local_player_color
-            ):
+            ) and not self._network_action_pending:
                 self.process_player_turn()
             winner = self.capture_processor.get_winner()
         if winner is not None:
@@ -574,20 +585,59 @@ class GameLogicLoop(object):
         self.__apply_domain_action(action)
 
     def apply_network_action(self, action):
-        """Waliduje i stosuje akcję peera bez ponownego wysyłania jej do sieci."""
+        """Stosuje akcję przeciwnika odebraną z serwera."""
         if self.local_player_color is None:
             raise RuntimeError("Network actions require a network game")
         if self.current_turn == self.local_player_color:
             raise ValueError("Received a network action during the local player's turn")
+        self.apply_authoritative_action(action)
+
+    def apply_authoritative_action(self, action):
+        """Stosuje zatwierdzoną przez serwer akcję obu graczy."""
+        if self.local_player_color is None:
+            raise RuntimeError("Network actions require a network game")
+        if (
+            self.current_turn == self.local_player_color
+            and not self._network_action_pending
+        ):
+            raise ValueError("Received an unexpected action during the local player's turn")
+        if (
+            self.current_turn != self.local_player_color
+            and self._network_action_pending
+        ):
+            raise ValueError("Received an action while a local action is pending")
         if self.is_action_animation_active:
-            raise RuntimeError("Cannot apply a network action during an animation")
+            raise RuntimeError("Cannot apply an authoritative action during an animation")
         self._applying_network_action = True
         try:
             self.__apply_domain_action(action)
         finally:
             self._applying_network_action = False
+            self._network_action_pending = False
+
+    def reject_pending_network_action(self):
+        """Odrzuca oczekującą akcję i czyści wybór interfejsu."""
+        self._network_action_pending = False
+        if self.double_move_step == 0:
+            self.selected_card = None
+            self.selected_piece_position = 0
+            self.selected_captured_piece = None
+            self.selected_trebuchet_pawn_position = 0
+            self.resurrection_moves = []
+            self.moves = []
 
     def __apply_domain_action(self, action):
+        callback = getattr(self, "action_callback", None)
+        if callback is not None and not getattr(
+            self, "_applying_network_action", False
+        ):
+            if self._network_action_pending:
+                raise RuntimeError("A network action is already awaiting confirmation")
+            if callback(action) is False:
+                raise RuntimeError("The game server is not connected")
+            self._network_action_pending = True
+            return
+
         state = GameState.from_game(self)
         result = GameSimulation.apply(
             state, action, advance_board_card_clock=True)
@@ -640,11 +690,6 @@ class GameLogicLoop(object):
             self._cancel_pondering()
         self._action_animation = action_animation
         self._position_evaluation_stale = True
-        callback = getattr(self, "action_callback", None)
-        if callback is not None and not getattr(
-            self, "_applying_network_action", False
-        ):
-            callback(action)
 
     # method to draw pieces on the chess board
     def draw_pieces(self):

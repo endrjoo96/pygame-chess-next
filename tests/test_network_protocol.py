@@ -39,6 +39,13 @@ def test_action_without_optional_fields_decodes_to_defaults():
     assert action.promotion_type is None
 
 
+def test_action_decoder_rejects_boolean_in_integer_fields():
+    import pytest
+
+    with pytest.raises(ValueError, match="integer"):
+        decode_action({"type": "move", "source": True, "destination": 2})
+
+
 def test_message_roundtrip():
     raw = encode_message("action", action={"type": "move"})
     message = decode_message(raw)
