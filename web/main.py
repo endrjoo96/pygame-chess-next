@@ -10,6 +10,7 @@ from constants.piece_color import COLOR
 from logic.stage.game_logic_loop import GameLogicLoop
 from network.client import WebSocketGameClient
 from network.protocol import build_invite_url, room_code_from_invite_url
+from utils.board_coordinates import initialize_board_coordinates
 from utils import utils
 from utils.gamecontext import GameContext
 from utils.logging import log_error
@@ -33,19 +34,6 @@ def _game_server_url():
     window = _browser_window()
     value = getattr(window, "CHESS_GAME_SERVER_URL", "")
     return str(value).strip()
-
-
-def _initialize_board_coordinates(context, board_image):
-    context.square_length = board_image.get_rect().width // 8
-    context.chessboard_coordinates.clear()
-    for x in range(8):
-        context.chessboard_coordinates.append([])
-        for y in range(8):
-            context.chessboard_coordinates[x].append([
-                context.board_offset_x + x * context.square_length,
-                context.board_offset_y + y * context.square_length,
-            ])
-        context.chessboard_coordinates[x].reverse()
 
 
 def _draw_button(screen, button, label, font, selected=False):
@@ -100,9 +88,12 @@ async def main():
         (context.screen_width, context.screen_height),
         pygame.RESIZABLE | pygame.SCALED,
     )
+    _browser_window().chessNetwork.syncViewport()
     pygame.display.set_caption("Chess NEXT - gra sieciowa")
     board_image = pygame.image.load(context.board_src).convert()
-    _initialize_board_coordinates(context, board_image)
+    flipped_board_image = pygame.transform.rotate(board_image, 180)
+    initialize_board_coordinates(context, board_image)
+    active_board_image = board_image
     peer = WebSocketGameClient()
     status = "Wybierz tryb gry"
     invite_url = ""
@@ -165,6 +156,11 @@ async def main():
                 elif message_type == "game_started":
                     game_seed = int(message["seed"])
                     local_color = COLOR(message["color"])
+                    flipped = local_color is COLOR.BLACK
+                    initialize_board_coordinates(
+                        context, board_image, flipped=flipped)
+                    active_board_image = (
+                        flipped_board_image if flipped else board_image)
                     game = _new_game(
                         screen,
                         game_seed,
@@ -224,6 +220,8 @@ async def main():
                     if buttons[0].collidepoint(mouse_position):
                         peer.close()
                         local_color = None
+                        initialize_board_coordinates(context, board_image)
+                        active_board_image = board_image
                         game = _new_game(screen, resolve_game_seed())
                         status = "Gra lokalna dla dwóch graczy"
                         utils.begin_input_frame([])
@@ -279,7 +277,7 @@ async def main():
                         _browser_window().chessNetwork.copyInvite(invite_url)
             else:
                 screen.fill((0, 0, 0))
-                screen.blit(board_image, context.board_starting_point)
+                screen.blit(active_board_image, context.board_starting_point)
                 while pending_messages and not game.is_action_animation_active:
                     message = pending_messages.pop(0)
                     try:

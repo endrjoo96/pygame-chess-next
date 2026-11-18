@@ -46,8 +46,9 @@ Wersja webowa używa Pygbag i nie dołącza modułów AI. GitHub Pages hostuje
 statyczną paczkę, a serwer WebSocket na Renderze zarządza pokojami, przechowuje
 stan partii i zatwierdza każdą akcję według wspólnych reguł gry. Obie
 przeglądarki łączą się z serwerem; WebRTC i bezpośrednie połączenie P2P nie są
-używane. Host gra białymi, gość czarnymi. Serwer odrzuca akcje nielegalne,
-wykonane poza kolejnością lub przez niewłaściwego gracza.
+używane. Po dołączeniu drugiego gracza serwer losuje kolor hosta, a gość dostaje
+przeciwny; plansza obraca się o 180° dla gracza czarnymi. Serwer odrzuca akcje
+nielegalne, wykonane poza kolejnością lub przez niewłaściwego gracza.
 
 Aby zbudować paczkę lokalnie, ustaw adres serwera gry (`ws://` lokalnie lub
 `wss://` dla wdrożenia HTTPS) i uruchom:

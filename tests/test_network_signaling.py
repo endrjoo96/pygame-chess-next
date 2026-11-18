@@ -2,6 +2,9 @@
 
 import asyncio
 
+import pytest
+
+from constants.piece_color import COLOR
 from logic.game_simulation import GameSimulation
 from network.protocol import decode_message, encode_action, encode_message
 from server.signaling import GameServer
@@ -19,8 +22,9 @@ class FakeWebSocket:
         self.closed = True
 
 
-async def _create_and_join(server, seed=7):
+async def _create_and_join(server, seed=7, host_color=COLOR.WHITE):
     server.seed_factory = lambda: seed
+    server.color_factory = lambda: host_color
     host, guest = FakeWebSocket(), FakeWebSocket()
     await server._create_room(
         host, decode_message(encode_message("create_room"))
@@ -32,19 +36,33 @@ async def _create_and_join(server, seed=7):
     return host, guest, code
 
 
-def test_room_creation_starts_game_when_guest_joins():
+@pytest.mark.parametrize(
+    ("host_color", "guest_color"),
+    ((COLOR.WHITE, COLOR.BLACK), (COLOR.BLACK, COLOR.WHITE)),
+)
+def test_room_creation_starts_game_with_randomly_assigned_sides(
+    host_color, guest_color,
+):
     async def scenario():
-        server = GameServer(seed_factory=lambda: 987654)
+        color_choices = []
+        server = GameServer(
+            seed_factory=lambda: 987654,
+            color_factory=lambda: color_choices.append(host_color) or host_color,
+        )
         host, guest = FakeWebSocket(), FakeWebSocket()
         await server._create_room(
             host, decode_message(encode_message("create_room", seed=1))
         )
         created = decode_message(host.sent[-1])
         code = created["room"]
+        assert color_choices == []
+        assert server.rooms[code].host_color is None
+
         await server._join_room(
             guest, decode_message(encode_message("join_room", room=code.lower()))
         )
 
+        assert color_choices == [host_color]
         assert created["t"] == "room_created"
         assert created["seed"] == "987654"
         assert decode_message(guest.sent[0]) == {
@@ -52,17 +70,48 @@ def test_room_creation_starts_game_when_guest_joins():
         }
         assert decode_message(host.sent[-1]) == {
             "v": 2, "t": "game_started", "room": code,
-            "seed": "987654", "color": "white",
+            "seed": "987654", "color": host_color.value,
         }
         assert decode_message(guest.sent[-1]) == {
             "v": 2, "t": "game_started", "room": code,
-            "seed": "987654", "color": "black",
+            "seed": "987654", "color": guest_color.value,
         }
         assert server.connections[host] == (code, "host")
         assert server.connections[guest] == (code, "guest")
         assert server.rooms[code].state.cache_key() == (
             GameSimulation.create_initial_state(987654).cache_key()
         )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("host_color", (COLOR.WHITE, COLOR.BLACK))
+def test_server_turn_validation_uses_randomly_assigned_sides(host_color):
+    async def scenario():
+        server = GameServer(seed_factory=lambda: 7)
+        host, guest, code = await _create_and_join(
+            server, host_color=host_color)
+        room = server.rooms[code]
+        white_player = host if host_color is COLOR.WHITE else guest
+        black_player = guest if host_color is COLOR.WHITE else host
+        action = GameSimulation.available_actions(room.state)[0]
+        encoded_action = encode_action(action)
+
+        await server._receive(
+            black_player,
+            encode_message("action", seq=0, action=encoded_action),
+        )
+        assert decode_message(black_player.sent[-1])["reason"] == "not_your_turn"
+        assert room.next_sequence == 0
+
+        await server._receive(
+            white_player,
+            encode_message("action", seq=0, action=encoded_action),
+        )
+        assert room.next_sequence == 1
+        assert room.state.current_turn is COLOR.BLACK
+        assert decode_message(host.sent[-1])["actor"] == COLOR.WHITE.value
+        assert decode_message(guest.sent[-1])["actor"] == COLOR.WHITE.value
 
     asyncio.run(scenario())
 
@@ -194,7 +243,10 @@ def test_websocket_clients_receive_only_server_accepted_actions():
         from websockets.asyncio.client import connect
         from websockets.asyncio.server import serve
 
-        game_server = GameServer(seed_factory=lambda: 41)
+        game_server = GameServer(
+            seed_factory=lambda: 41,
+            color_factory=lambda: COLOR.WHITE,
+        )
         async with serve(game_server.handle, "127.0.0.1", 0) as listener:
             port = listener.sockets[0].getsockname()[1]
             url = "ws://127.0.0.1:{}".format(port)

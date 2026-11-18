@@ -1899,20 +1899,21 @@ class GameLogicLoop(object):
         font_size = int(self.context.square_length / 3)
         font = pygame.font.SysFont(self.context.comic_sans_font, font_size)
         color = (120, 120, 120)
+        flipped = self.local_player_color == COLOR.BLACK
         top_margin = self.context.board_offset_y + self.context.square_length / 2
-        number_to_display = 8
         # display numbers on the left
         for row in range(0, 8):
-            rendered = font.render(str(number_to_display), True, color)
+            number = row + 1 if flipped else 8 - row
+            rendered = font.render(str(number), True, color)
             self.screen.blit(rendered,
                              (int(self.context.board_offset_x - rendered.get_width() - 10),
                               int(top_margin + (row * self.context.square_length - rendered.get_height() / 2))))
-            number_to_display -= 1
 
         # display letters on the bottom
         left_margin = self.context.board_offset_x + self.context.square_length / 2
         for column in range(0, 8):
-            rendered = font.render(chr(65 + column), True, color)
+            file_code = 72 - column if flipped else 65 + column
+            rendered = font.render(chr(file_code), True, color)
             self.screen.blit(rendered,
                              (int(left_margin + (column * self.context.square_length - rendered.get_width() / 2)),
                               int(self.context.board_offset_y + (self.context.square_length * 8) + 5)))

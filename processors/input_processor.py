@@ -19,11 +19,7 @@ def get_clicked_chessboard_field_id():
                                    context.square_length, context.square_length)
                 collision = rect.collidepoint(mouse_event[0], mouse_event[1])
                 if collision:
-                    selected = [rect.x, rect.y]
-                    # find x, y coordinates the selected square
-                    k = int((selected[0] - context.board_offset_x) / context.square_length)
-                    l = ((int((selected[1] - context.board_offset_y) / context.square_length)) - 7) * -1
-                    return xy_to_id(k, l)
+                    return xy_to_id(i, j)
     else:
         return None
 

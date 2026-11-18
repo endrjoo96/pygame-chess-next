@@ -27,16 +27,20 @@ class Room:
     state: GameState
     host: Any
     guest: Optional[Any] = None
+    host_color: Optional[COLOR] = None
     next_sequence: int = 0
 
 
 class GameServer:
     """Tworzy partie, waliduje akcje i rozsyła zatwierdzone ruchy."""
 
-    def __init__(self, seed_factory=None):
+    def __init__(self, seed_factory=None, color_factory=None):
         self.rooms: dict[str, Room] = {}
         self.connections: dict[Any, tuple[str, str]] = {}
         self.seed_factory = seed_factory or (lambda: secrets.randbits(64))
+        self.color_factory = color_factory or (
+            lambda: secrets.choice((COLOR.WHITE, COLOR.BLACK))
+        )
 
     def _new_room_code(self) -> str:
         while True:
@@ -94,6 +98,10 @@ class GameServer:
             return
 
         room.guest = websocket
+        room.host_color = self.color_factory()
+        guest_color = (
+            COLOR.BLACK if room.host_color is COLOR.WHITE else COLOR.WHITE
+        )
         self.connections[websocket] = (room.code, "guest")
         await self._send(
             websocket, "room_joined", room=room.code, seed=str(room.seed))
@@ -103,14 +111,14 @@ class GameServer:
             "game_started",
             room=room.code,
             seed=str(room.seed),
-            color=COLOR.WHITE.value,
+            color=room.host_color.value,
         )
         await self._send(
             websocket,
             "game_started",
             room=room.code,
             seed=str(room.seed),
-            color=COLOR.BLACK.value,
+            color=guest_color.value,
         )
 
     async def _receive(self, websocket, raw):
@@ -141,7 +149,11 @@ class GameServer:
             await self._reject_action(websocket, "unexpected_sequence")
             return
 
-        actor_color = COLOR.WHITE if role == "host" else COLOR.BLACK
+        actor_color = (
+            room.host_color if role == "host"
+            else COLOR.BLACK if room.host_color is COLOR.WHITE
+            else COLOR.WHITE
+        )
         if room.state.current_turn != actor_color:
             await self._reject_action(websocket, "not_your_turn")
             return

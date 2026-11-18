@@ -3,8 +3,20 @@
   const messages = [];
   let socket = null;
   let intentionalClose = false;
+  let viewportSyncQueued = false;
 
   const emit = (type, fields = {}) => messages.push({ t: type, ...fields });
+
+  const syncViewport = () => {
+    if (viewportSyncQueued) return;
+    viewportSyncQueued = true;
+    window.requestAnimationFrame(() => {
+      viewportSyncQueued = false;
+      if (typeof window_resize === "function") window_resize();
+    });
+  };
+
+  window.addEventListener("resize", syncViewport, { passive: true });
 
   const start = (url, request) => {
     close();
@@ -56,6 +68,7 @@
       socket.send(raw);
       return true;
     },
+    syncViewport,
     copyInvite: async url => {
       try {
         await navigator.clipboard.writeText(url);
