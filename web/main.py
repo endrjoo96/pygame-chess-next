@@ -98,7 +98,9 @@ async def main():
     pygame.init()
     context = GameContext()
     screen = pygame.display.set_mode(
-        (context.screen_width, context.screen_height), pygame.SCALED)
+        (context.screen_width, context.screen_height),
+        pygame.RESIZABLE | pygame.SCALED,
+    )
     pygame.display.set_caption("Chess NEXT - gra sieciowa")
     board_image = pygame.image.load(context.board_src).convert()
     _initialize_board_coordinates(context, board_image)
